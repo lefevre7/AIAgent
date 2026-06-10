@@ -9,6 +9,7 @@ import type {
   LanguageModelQueueJob,
   LanguageModelRequest,
   LanguageModelResponse,
+  LanguageModelStreamEvent,
   StructuredError
 } from "@/core/contracts";
 import { entityIdSchema, isoTimestampSchema, languageModelQueueJobSchema } from "@/core/contracts";
@@ -30,11 +31,14 @@ type FileLanguageModelQueueOptions = {
   stateRoot: string;
 };
 
+export type LanguageModelStreamSink = (event: LanguageModelStreamEvent) => void;
+
 export interface LanguageModelExecutionQueue {
   close?(): Promise<void>;
   execute(request: LanguageModelRequest): Promise<LanguageModelResponse>;
   getJob(jobId: string): Promise<LanguageModelQueueJob | null>;
   listJobs(): Promise<LanguageModelQueueJob[]>;
+  stream?(request: LanguageModelRequest, onEvent: LanguageModelStreamSink): Promise<LanguageModelResponse>;
 }
 
 export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
@@ -42,6 +46,9 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
   private processing = false;
   private readonly recoveryPromise: Promise<void>;
   private scheduledPump: NodeJS.Timeout | null = null;
+  // In-process bridge from a queued job to a live streaming sink. The disk
+  // queue stays the source of truth for job state; deltas are ephemeral.
+  private readonly deltaSinks = new Map<string, LanguageModelStreamSink>();
 
   constructor(private readonly options: FileLanguageModelQueueOptions) {
     this.recoveryPromise = this.recoverState();
@@ -49,6 +56,19 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
   }
 
   async execute(request: LanguageModelRequest): Promise<LanguageModelResponse> {
+    return this.enqueueAndWait(request);
+  }
+
+  async stream(request: LanguageModelRequest, onEvent: LanguageModelStreamSink): Promise<LanguageModelResponse> {
+    this.deltaSinks.set(request.id, onEvent);
+    try {
+      return await this.enqueueAndWait(request);
+    } finally {
+      this.deltaSinks.delete(request.id);
+    }
+  }
+
+  private async enqueueAndWait(request: LanguageModelRequest): Promise<LanguageModelResponse> {
     if (this.closed) {
       throw new Error("Language model queue is closed.");
     }
@@ -193,7 +213,9 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
         const adapter = this.options.resolveAdapter(claimedJob.request.provider);
         let finalizedJob: LanguageModelQueueJob;
         try {
-          const response = await adapter.generate(claimedJob.request);
+          const sink = this.deltaSinks.get(claimedJob.id);
+          const response =
+            sink && adapter.stream ? await this.streamJob(adapter, claimedJob.request, sink) : await adapter.generate(claimedJob.request);
           finalizedJob = languageModelQueueJobSchema.parse({
             ...claimedJob,
             completedAt: new Date().toISOString(),
@@ -235,6 +257,31 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
     } finally {
       this.processing = false;
     }
+  }
+
+  private async streamJob(
+    adapter: LanguageModelAdapter,
+    request: LanguageModelRequest,
+    sink: LanguageModelStreamSink
+  ): Promise<LanguageModelResponse> {
+    if (!adapter.stream) {
+      return adapter.generate(request);
+    }
+
+    let completed: LanguageModelResponse | null = null;
+    for await (const event of adapter.stream(request)) {
+      sink(event);
+      if (event.kind === "response.completed") {
+        completed = event.response;
+      } else if (event.kind === "response.error") {
+        throw new Error(event.error.message);
+      }
+    }
+
+    if (!completed) {
+      throw new Error("The language-model stream ended without a completed response.");
+    }
+    return completed;
   }
 
   private async claimNextJob(): Promise<LanguageModelQueueJob | null> {

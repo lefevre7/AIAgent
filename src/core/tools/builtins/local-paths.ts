@@ -1,4 +1,5 @@
 import { isUtf8 } from "node:buffer";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -50,6 +51,12 @@ const BINARY_MEDIA_TYPES = new Map<string, string>([
 export function resolveLocalPath(inputPath: string, baseDirectory: string): string {
   if (/^file:\/\//iu.test(inputPath)) {
     return path.resolve(fileURLToPath(inputPath));
+  }
+
+  // Expand a leading `~` to the home directory. Models routinely use paths like
+  // "~/temp"; without this they resolve to a literal "~" directory and fail.
+  if (inputPath === "~" || inputPath.startsWith("~/") || inputPath.startsWith("~\\")) {
+    return path.resolve(os.homedir(), inputPath.slice(inputPath === "~" ? 1 : 2));
   }
 
   if (path.isAbsolute(inputPath)) {

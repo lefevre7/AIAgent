@@ -35,6 +35,29 @@ export function createControlPlaneRouter(options: ControlPlaneRouterOptions): Ro
     }));
   });
 
+  router.get("/events/stream", (request, response) => {
+    response.writeHead(200, {
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "Content-Type": "text/event-stream"
+    });
+    response.write(": connected\n\n");
+
+    const unsubscribe = options.service.subscribeEvents(
+      (event) => {
+        response.write(`data: ${JSON.stringify(event)}\n\n`);
+      },
+      { sessionId: readStringField(request.query.sessionId) }
+    );
+
+    const heartbeat = setInterval(() => response.write(": ping\n\n"), 15_000);
+    heartbeat.unref?.();
+    request.on("close", () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
+  });
+
   router.get("/sessions/:sessionId", async (request, response) => {
     await respondWithJson(response, async () => options.service.getSessionView(request.params.sessionId));
   });

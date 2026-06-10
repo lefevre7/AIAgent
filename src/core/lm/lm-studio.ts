@@ -148,7 +148,11 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
       outputTokens: 0,
       totalTokens: 0
     };
-    const toolCallFragments: unknown[] = [];
+    // OpenAI/LM Studio streams tool calls as deltas: the name (and id) arrive in
+    // the first fragment for a given index, and `arguments` is concatenated across
+    // later fragments. Accumulate by index before normalizing, otherwise the
+    // argument JSON is split into separate incomplete calls and lost.
+    const toolCallAccumulator = new Map<number, { arguments: string; id?: string; name?: string }>();
 
     while (true) {
       const { done, value } = await reader.read();
@@ -175,7 +179,13 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
           choices?: Array<{
             delta?: {
               content?: string;
-              tool_calls?: unknown[];
+              reasoning?: string;
+              reasoning_content?: string;
+              tool_calls?: Array<{
+                function?: { arguments?: string; name?: string };
+                id?: string;
+                index?: number;
+              }>;
             };
             finish_reason?: string | null;
           }>;
@@ -204,6 +214,14 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
           continue;
         }
 
+        const reasoningDelta = choice.delta?.reasoning_content ?? choice.delta?.reasoning;
+        if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
+          yield {
+            delta: reasoningDelta,
+            kind: "response.reasoning"
+          };
+        }
+
         if (choice.delta?.content) {
           content += choice.delta.content;
           yield {
@@ -213,7 +231,20 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
         }
 
         if (choice.delta?.tool_calls) {
-          toolCallFragments.push(...choice.delta.tool_calls);
+          for (const fragment of choice.delta.tool_calls) {
+            const index = typeof fragment.index === "number" ? fragment.index : toolCallAccumulator.size;
+            const existing = toolCallAccumulator.get(index) ?? { arguments: "" };
+            if (typeof fragment.id === "string" && fragment.id.length > 0) {
+              existing.id = fragment.id;
+            }
+            if (typeof fragment.function?.name === "string" && fragment.function.name.length > 0) {
+              existing.name = fragment.function.name;
+            }
+            if (typeof fragment.function?.arguments === "string") {
+              existing.arguments += fragment.function.arguments;
+            }
+            toolCallAccumulator.set(index, existing);
+          }
         }
 
         if (choice.finish_reason) {
@@ -222,7 +253,13 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
       }
     }
 
-    const toolCalls = normalizeToolCallProposals(toolCallFragments, `${responseId}.tool`, request.availableTools);
+    const assembledToolCalls = Array.from(toolCallAccumulator.entries())
+      .sort(([left], [right]) => left - right)
+      .map(([, entry]) => ({
+        function: { arguments: entry.arguments, name: entry.name },
+        id: entry.id
+      }));
+    const toolCalls = normalizeToolCallProposals(assembledToolCalls, `${responseId}.tool`, request.availableTools);
     for (const toolCall of toolCalls) {
       yield {
         kind: "response.tool_call",

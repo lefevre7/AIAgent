@@ -606,7 +606,9 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
       embeddingsEnabled: true,
       extraPaths: [],
       ftsEnabled: true,
-      hardFailOnStartup: true,
+      // Degrade to lexical retrieval (with a warning) when the embedding provider
+      // is unavailable, so the runtime still boots. Set true to require it.
+      hardFailOnStartup: false,
       includeSessionSummaries: true,
       mmrLambda: 0.7,
       retrievalLimit: 8,

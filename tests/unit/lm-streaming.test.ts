@@ -13,12 +13,12 @@ describe("language-model adapter streaming", () => {
               const encoder = new TextEncoder();
               controller.enqueue(
                 encoder.encode(
-                  'data: {"id":"chatcmpl-1","model":"mistralai/devstral-small-2-2512","choices":[{"delta":{"content":"Hello"}}]}\n'
+                  'data: {"id":"chatcmpl-1","model":"google/gemma-4-26b-a4b-qat","choices":[{"delta":{"content":"Hello"}}]}\n'
                 )
               );
               controller.enqueue(
                 encoder.encode(
-                  'data: {"id":"chatcmpl-1","model":"mistralai/devstral-small-2-2512","choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n'
+                  'data: {"id":"chatcmpl-1","model":"google/gemma-4-26b-a4b-qat","choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n'
                 )
               );
               controller.enqueue(encoder.encode("data: [DONE]\n"));
@@ -55,6 +55,82 @@ describe("language-model adapter streaming", () => {
         })
       })
     ]);
+  });
+
+  test("emits reasoning_content deltas as response.reasoning events", async () => {
+    const chunks = [
+      'data: {"id":"c1","model":"m","choices":[{"delta":{"reasoning_content":"Let me think. "}}]}\n',
+      'data: {"id":"c1","model":"m","choices":[{"delta":{"reasoning_content":"Mkdir then write."}}]}\n',
+      'data: {"id":"c1","model":"m","choices":[{"delta":{"content":"Done."}}]}\n',
+      'data: {"id":"c1","model":"m","choices":[{"finish_reason":"stop"}]}\n',
+      "data: [DONE]\n"
+    ];
+    const adapter = new LMStudioLanguageModelAdapter({
+      baseUrl: "http://localhost:1234/v1",
+      fetchImpl: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              const encoder = new TextEncoder();
+              for (const chunk of chunks) {
+                controller.enqueue(encoder.encode(chunk));
+              }
+              controller.close();
+            }
+          }),
+          { status: 200 }
+        ),
+      timeoutMs: 5_000
+    });
+
+    const events: Array<{ delta?: string; kind: string }> = [];
+    for await (const event of adapter.stream(buildRequest())) {
+      events.push(event as { delta?: string; kind: string });
+    }
+
+    const reasoning = events.filter((event) => event.kind === "response.reasoning").map((event) => event.delta);
+    expect(reasoning.join("")).toBe("Let me think. Mkdir then write.");
+    // Reasoning must not leak into the assistant answer content.
+    const completed = events.find((event) => event.kind === "response.completed") as
+      | { response: { message: { parts: Array<{ text?: string }> } } }
+      | undefined;
+    expect(completed?.response.message.parts).toEqual([{ kind: "text", text: "Done." }]);
+  });
+
+  test("reassembles tool-call arguments streamed across multiple SSE fragments", async () => {
+    const chunks = [
+      'data: {"id":"c1","model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell_command","arguments":""}}]}}]}\n',
+      'data: {"id":"c1","model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"command\\":\\"mkdir "}}]}}]}\n',
+      'data: {"id":"c1","model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"~/temp\\"}"}}]}}]}\n',
+      'data: {"id":"c1","model":"m","choices":[{"finish_reason":"tool_calls"}]}\n',
+      "data: [DONE]\n"
+    ];
+    const adapter = new LMStudioLanguageModelAdapter({
+      baseUrl: "http://localhost:1234/v1",
+      fetchImpl: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              const encoder = new TextEncoder();
+              for (const chunk of chunks) {
+                controller.enqueue(encoder.encode(chunk));
+              }
+              controller.close();
+            }
+          }),
+          { status: 200 }
+        ),
+      timeoutMs: 5_000
+    });
+
+    const events: Array<{ kind: string; toolCall?: { arguments?: unknown; toolName?: string } }> = [];
+    for await (const event of adapter.stream(buildRequest())) {
+      events.push(event as { kind: string; toolCall?: { arguments?: unknown; toolName?: string } });
+    }
+
+    const toolCallEvent = events.find((event) => event.kind === "response.tool_call");
+    expect(toolCallEvent?.toolCall?.toolName).toBe("shell_command");
+    expect(toolCallEvent?.toolCall?.arguments).toEqual({ command: "mkdir ~/temp" });
   });
 
   test("parses Ollama NDJSON responses into stream events", async () => {
@@ -129,7 +205,7 @@ function buildRequest(overrides: Partial<LanguageModelRequest> = {}): LanguageMo
       }
     ],
     metadata: {},
-    modelId: "mistralai/devstral-small-2-2512",
+    modelId: "google/gemma-4-26b-a4b-qat",
     provider: "lm_studio",
     responseFormat: {
       kind: "text"

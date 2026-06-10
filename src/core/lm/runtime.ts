@@ -7,7 +7,7 @@ import type {
   ProviderHealth
 } from "@/core/contracts";
 import type { AppConfig } from "@/core/config";
-import { FileLanguageModelQueue, type LanguageModelExecutionQueue } from "@/core/lm/queue";
+import { FileLanguageModelQueue, type LanguageModelExecutionQueue, type LanguageModelStreamSink } from "@/core/lm/queue";
 import { LMStudioLanguageModelAdapter } from "@/core/lm/lm-studio";
 import { OllamaLanguageModelAdapter } from "@/core/lm/ollama";
 
@@ -72,6 +72,11 @@ export class LanguageModelRuntime {
 
   async generate(request: LanguageModelInvocation): Promise<LanguageModelResponse> {
     return this.queue.execute(this.resolveRequest(request));
+  }
+
+  async stream(request: LanguageModelInvocation, onEvent: LanguageModelStreamSink): Promise<LanguageModelResponse> {
+    const resolved = this.resolveRequest(request);
+    return this.queue.stream ? this.queue.stream(resolved, onEvent) : this.queue.execute(resolved);
   }
 
   async close(): Promise<void> {

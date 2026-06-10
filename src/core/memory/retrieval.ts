@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import type { MemoryEntry, MemoryHit, MemoryQuery } from "@/core/contracts";
 import type { ProviderHealthStatus } from "@/core/contracts";
@@ -20,6 +20,13 @@ interface SqliteDatabase {
   exec(sql: string): void;
   prepare(sql: string): SqliteStatement;
 }
+
+// node:sqlite cannot be a static `import`: the bundler (esbuild via tsup) strips
+// the `node:` prefix and then resolves the unrelated `sqlite` npm package, which
+// has no DatabaseSync export. Loading it through createRequire keeps a real
+// runtime require to the builtin in both the tsx dev path and the bundled CLI.
+const loadNodeModule = createRequire(import.meta.url);
+const { DatabaseSync } = loadNodeModule("node:sqlite") as typeof import("node:sqlite");
 
 const RETRIEVAL_SCHEMA_VERSION = 1;
 const EMBEDDING_MODEL_HINTS = [
@@ -133,6 +140,7 @@ export class MemoryRetrievalEngine {
   private initialized = false;
   private readonly pendingAccessUpdates = new Set<string>();
   private resolvedEmbeddingModel: string | null = null;
+  private semanticDisabled = false;
 
   constructor(
     private readonly options: MemoryRetrievalOptions,
@@ -155,7 +163,20 @@ export class MemoryRetrievalEngine {
       this.options.embeddingModel = params.embeddingModel;
     }
     this.resolvedEmbeddingModel = this.options.embeddingModel ?? null;
+    // A freshly registered provider gets another chance at semantic retrieval.
+    this.semanticDisabled = false;
     this.markDirty();
+  }
+
+  private semanticEnabled(): boolean {
+    return this.options.embeddingsEnabled && !this.semanticDisabled;
+  }
+
+  private semanticStartupStatus(): ProviderHealthStatus {
+    if (this.semanticEnabled()) {
+      return "healthy";
+    }
+    return this.options.embeddingsEnabled ? "degraded" : "unavailable";
   }
 
   async initialize(): Promise<void> {
@@ -180,7 +201,7 @@ export class MemoryRetrievalEngine {
           modelId: this.resolvedEmbeddingModel,
           providerId: this.options.embeddingsEnabled ? this.options.embeddingProvider : null,
           semanticAvailable: false,
-          semanticStatus: this.options.embeddingsEnabled ? "healthy" : "unavailable",
+          semanticStatus: this.semanticStartupStatus(),
           warning: null
         }
       };
@@ -192,7 +213,7 @@ export class MemoryRetrievalEngine {
     const allScopedChunks = this.getAllChunks(query.scopes);
     let queryVector: number[] | null = null;
     let semanticAvailable = false;
-    let semanticStatus: ProviderHealthStatus = this.options.embeddingsEnabled ? "healthy" : "unavailable";
+    let semanticStatus: ProviderHealthStatus = this.semanticStartupStatus();
     let warning: string | null = null;
 
     if (this.options.embeddingsEnabled && this.embeddingRuntime && this.resolvedEmbeddingModel) {
@@ -265,9 +286,13 @@ export class MemoryRetrievalEngine {
       .prepare("SELECT COUNT(DISTINCT file_path) AS fileCount, COUNT(*) AS chunkCount FROM chunks")
       .get() ?? { chunkCount: 0, fileCount: 0 }) as { chunkCount?: number; fileCount?: number };
 
-    let embeddingStatus: ProviderHealthStatus = "unavailable";
-    if (this.options.embeddingsEnabled && this.embeddingRuntime) {
-      embeddingStatus = (await this.embeddingRuntime.health(this.options.embeddingProvider)).status;
+    let embeddingStatus: ProviderHealthStatus = this.semanticStartupStatus();
+    if (this.semanticEnabled() && this.embeddingRuntime) {
+      try {
+        embeddingStatus = (await this.embeddingRuntime.health(this.options.embeddingProvider)).status;
+      } catch {
+        embeddingStatus = "degraded";
+      }
     }
 
     return {
@@ -277,7 +302,7 @@ export class MemoryRetrievalEngine {
         hardFailOnStartup: this.options.hardFailOnStartup,
         modelId: this.resolvedEmbeddingModel,
         providerId: this.options.embeddingsEnabled ? this.options.embeddingProvider : null,
-        status: this.options.embeddingsEnabled ? embeddingStatus : "unavailable"
+        status: embeddingStatus
       },
       index: {
         chunkCount: counts.chunkCount ?? 0,
@@ -293,7 +318,7 @@ export class MemoryRetrievalEngine {
         enabled: this.options.ftsEnabled,
         ready: this.ftsAvailable
       },
-      modes: this.options.embeddingsEnabled ? ["lexical", "semantic", "hybrid"] : ["lexical"]
+      modes: this.semanticEnabled() ? ["lexical", "semantic", "hybrid"] : ["lexical"]
     };
   }
 
@@ -304,7 +329,7 @@ export class MemoryRetrievalEngine {
     const chunks = chunkDocuments(documents, this.options.chunkTargetChars, this.options.chunkOverlapChars);
     let embeddings: number[][] = [];
 
-    if (this.options.embeddingsEnabled && chunks.length > 0) {
+    if (this.semanticEnabled() && chunks.length > 0) {
       if (!this.embeddingRuntime || !this.resolvedEmbeddingModel) {
         throw new Error("Embeddings are enabled but the embedding runtime is not ready.");
       }
@@ -370,21 +395,46 @@ export class MemoryRetrievalEngine {
   }
 
   private async ensureEmbeddingStartupReadiness(): Promise<void> {
-    if (!this.options.embeddingsEnabled) {
+    if (!this.semanticEnabled()) {
       return;
     }
 
     if (!this.embeddingRuntime) {
-      throw new Error("Embeddings are enabled but no embedding runtime is configured.");
+      if (this.options.hardFailOnStartup) {
+        throw new Error("Embeddings are enabled but no embedding runtime is configured.");
+      }
+      this.degradeSemantic("no embedding runtime is configured");
+      return;
     }
 
-    this.resolvedEmbeddingModel ??= await this.resolveEmbeddingModel();
-    const health = await this.embeddingRuntime.health(this.options.embeddingProvider);
-    if (health.status !== "healthy" && this.options.hardFailOnStartup) {
-      throw new Error(
-        `Embedding provider "${this.options.embeddingProvider}" is not healthy: ${JSON.stringify(health.details)}`
-      );
+    try {
+      this.resolvedEmbeddingModel ??= await this.resolveEmbeddingModel();
+      const health = await this.embeddingRuntime.health(this.options.embeddingProvider);
+      if (health.status !== "healthy") {
+        throw new Error(
+          `Embedding provider "${this.options.embeddingProvider}" is not healthy: ${JSON.stringify(health.details)}`
+        );
+      }
+    } catch (error) {
+      // The embedding provider is required only when hardFailOnStartup is set.
+      // Otherwise memory degrades to lexical retrieval so the runtime still boots.
+      if (this.options.hardFailOnStartup) {
+        throw error;
+      }
+      this.degradeSemantic(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  private degradeSemantic(reason: string): void {
+    if (this.semanticDisabled) {
+      return;
+    }
+    this.semanticDisabled = true;
+    this.resolvedEmbeddingModel = null;
+    process.emitWarning(
+      `Semantic memory is disabled because the embedding provider "${this.options.embeddingProvider}" is unavailable (${reason}); memory will use lexical retrieval only.`,
+      { code: "AIA_EMBEDDINGS_DEGRADED" }
+    );
   }
 
   private buildConfigFingerprint(): string {

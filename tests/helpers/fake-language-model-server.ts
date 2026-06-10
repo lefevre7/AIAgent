@@ -70,6 +70,15 @@ export async function startFakeLanguageModelServer(
       const plan = await (options.plan?.(recordedRequest) ?? buildDefaultPlan(recordedRequest));
       responseCounter += 1;
 
+      if (recordedRequest.body?.stream === true) {
+        if (provider === "lm_studio") {
+          writeLmStudioStream(response, { modelId, plan, sequence: responseCounter });
+        } else {
+          writeOllamaStream(response, { modelId, plan });
+        }
+        return;
+      }
+
       response.writeHead(200, {
         "content-type": "application/json"
       });
@@ -168,6 +177,90 @@ function buildLmStudioResponse(params: {
       total_tokens: 60
     }
   };
+}
+
+function writeLmStudioStream(
+  response: import("node:http").ServerResponse,
+  params: { modelId: string; plan: FakeLanguageModelPlan; sequence: number }
+): void {
+  response.writeHead(200, {
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "content-type": "text/event-stream"
+  });
+  const id = `chatcmpl.fake.${params.sequence}`;
+  const send = (chunk: unknown): void => {
+    response.write(`data: ${JSON.stringify(chunk)}\n\n`);
+  };
+
+  if (params.plan.content) {
+    send({ choices: [{ delta: { content: params.plan.content }, finish_reason: null }], id, model: params.modelId });
+  }
+  (params.plan.toolCalls ?? []).forEach((toolCall, index) => {
+    const callId = toolCall.id ?? `fake-openai-tool.${params.sequence}.${index + 1}`;
+    const argsJson = JSON.stringify(toolCall.arguments ?? {});
+    const midpoint = Math.ceil(argsJson.length / 2);
+    // Emit tool calls the way LM Studio does: name/id first, then `arguments`
+    // streamed in pieces across later fragments for the same index.
+    send({
+      choices: [{ delta: { tool_calls: [{ function: { arguments: "", name: toolCall.name }, id: callId, index, type: "function" }] }, finish_reason: null }],
+      id,
+      model: params.modelId
+    });
+    send({
+      choices: [{ delta: { tool_calls: [{ function: { arguments: argsJson.slice(0, midpoint) }, index }] }, finish_reason: null }],
+      id,
+      model: params.modelId
+    });
+    send({
+      choices: [{ delta: { tool_calls: [{ function: { arguments: argsJson.slice(midpoint) }, index }] }, finish_reason: null }],
+      id,
+      model: params.modelId
+    });
+  });
+  send({
+    choices: [{ delta: {}, finish_reason: (params.plan.toolCalls?.length ?? 0) > 0 ? "tool_calls" : "stop" }],
+    id,
+    model: params.modelId,
+    usage: { completion_tokens: 18, prompt_tokens: 42, total_tokens: 60 }
+  });
+  response.write("data: [DONE]\n\n");
+  response.end();
+}
+
+function writeOllamaStream(
+  response: import("node:http").ServerResponse,
+  params: { modelId: string; plan: FakeLanguageModelPlan }
+): void {
+  response.writeHead(200, { "content-type": "application/x-ndjson" });
+  const send = (chunk: unknown): void => {
+    response.write(`${JSON.stringify(chunk)}\n`);
+  };
+
+  if (params.plan.content) {
+    send({ done: false, message: { content: params.plan.content }, model: params.modelId });
+  }
+  if ((params.plan.toolCalls?.length ?? 0) > 0) {
+    send({
+      done: false,
+      message: {
+        content: "",
+        tool_calls: (params.plan.toolCalls ?? []).map((toolCall) => ({
+          function: { arguments: toolCall.arguments ?? {}, name: toolCall.name }
+        }))
+      },
+      model: params.modelId
+    });
+  }
+  send({
+    done: true,
+    done_reason: (params.plan.toolCalls?.length ?? 0) > 0 ? "tool_calls" : "stop",
+    eval_count: 18,
+    message: { content: "" },
+    model: params.modelId,
+    prompt_eval_count: 42
+  });
+  response.end();
 }
 
 function buildOllamaResponse(params: { modelId: string; plan: FakeLanguageModelPlan }) {

@@ -288,6 +288,14 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
                       ))
                     )}
                   </div>
+                  {selectedSessionId ? (
+                    <div className="live-stream">
+                      <h4>Live response</h4>
+                      <pre id="live-reasoning-output" className="live-reasoning-output" aria-live="polite" />
+                      <pre id="live-stream-output" className="live-stream-output" aria-live="polite" />
+                      <script dangerouslySetInnerHTML={{ __html: buildLiveStreamScript(selectedSessionId) }} />
+                    </div>
+                  ) : null}
                 </section>
               </div>
 
@@ -487,6 +495,30 @@ function badgeClassForStatus(status: string): string {
   }
 }
 
+function buildLiveStreamScript(sessionId: string): string {
+  // sessionId matches the entity-id charset ([A-Za-z0-9._:-]); JSON-encoding it
+  // keeps the inline script safe. Streams assistant deltas + tool activity live.
+  return [
+    "(function(){",
+    `  var id = ${JSON.stringify(sessionId)};`,
+    '  var out = document.getElementById("live-stream-output");',
+    '  var reasoningOut = document.getElementById("live-reasoning-output");',
+    '  if (!out || typeof EventSource === "undefined") { return; }',
+    '  var es = new EventSource("/api/control-plane/events/stream?sessionId=" + encodeURIComponent(id));',
+    "  es.onmessage = function(e){",
+    "    try {",
+    "      var ev = JSON.parse(e.data);",
+    '      if (ev.topic === "message.delta") { out.textContent += ev.payload.delta; }',
+    '      else if (ev.topic === "message.reasoning") { if (reasoningOut) { reasoningOut.textContent += ev.payload.delta; } }',
+    '      else if (ev.topic === "tool.updated") { out.textContent += "\\n[tool] " + ev.payload.toolName + ": " + ev.payload.status + "\\n"; }',
+    '      else if (ev.topic === "message.created" && ev.payload.role === "assistant") { out.textContent += "\\n"; }',
+    "    } catch (err) {}",
+    "  };",
+    '  window.addEventListener("beforeunload", function(){ es.close(); });',
+    "})();"
+  ].join("\n");
+}
+
 function describeEvent(event: GatewayEvent): string {
   switch (event.topic) {
     case "approval.requested":
@@ -501,6 +533,10 @@ function describeEvent(event: GatewayEvent): string {
       } as Pick<ChannelDeliveryRecord, "channel" | "direction" | "message"> & ChannelDeliveryRecord);
     case "message.created":
       return summarizeMessage(event.payload);
+    case "message.delta":
+      return event.payload.delta;
+    case "message.reasoning":
+      return `reasoning: ${event.payload.delta}`;
     case "run.updated":
       return `${event.payload.kind} is ${event.payload.status}`;
     case "session.updated":

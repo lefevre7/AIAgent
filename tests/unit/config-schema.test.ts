@@ -14,7 +14,7 @@ describe("config defaults and env overrides", () => {
     });
 
     expect(appConfigSchema.parse(config).memory.userGlobalRoot).toBe("/tmp/test-home/.aia/memory");
-    expect(config.providers.lmStudio.model).toBe("mistralai/devstral-small-2-2512");
+    expect(config.providers.lmStudio.model).toBe("google/gemma-4-26b-a4b-qat");
     expect(config.browser.artifactRoot).toBe("./.aia/browser");
     expect(config.browser.headless).toBe(true);
     expect(config.externalAgents.enabled).toBe(false);
@@ -23,7 +23,7 @@ describe("config defaults and env overrides", () => {
     expect(config.image.artifactRoot).toBe("./.aia/images");
     expect(config.image.defaultProviderId).toBe("comfyui_local");
     expect(config.memory.embeddingProvider).toBe("lm_studio");
-    expect(config.memory.hardFailOnStartup).toBe(true);
+    expect(config.memory.hardFailOnStartup).toBe(false);
     expect(config.memory.sqlitePath).toBe("./.aia/memory.sqlite");
     expect(config.providers.imageProviders.comfyui_local?.enabled).toBe(false);
     expect(DEFAULT_APPROVAL_SETTINGS.defaultMode).toBe("ask");

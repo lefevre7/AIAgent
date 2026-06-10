@@ -32,6 +32,7 @@ type OllamaChatResponse = {
   eval_count?: number;
   message?: {
     content?: string;
+    thinking?: string;
     tool_calls?: unknown[];
   };
   model?: string;
@@ -162,6 +163,12 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
 
         const parsed = JSON.parse(trimmed) as OllamaChatResponse;
         modelId = parsed.model ?? modelId;
+        if (typeof parsed.message?.thinking === "string" && parsed.message.thinking.length > 0) {
+          yield {
+            delta: parsed.message.thinking,
+            kind: "response.reasoning"
+          };
+        }
         if (parsed.message?.content) {
           content += parsed.message.content;
           yield {

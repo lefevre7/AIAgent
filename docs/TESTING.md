@@ -14,6 +14,37 @@ npm run test:deterministic
 
 `npm run validate:penultimate` runs the full deterministic stack plus the live-suite runner in its default opt-in mode.
 
+## Coverage
+
+```bash
+npm run test:coverage
+```
+
+`vitest.coverage.config.ts` runs the unit (jsdom) and integration (node) suites as
+two named projects and aggregates V8 coverage across both. Per the project
+decision, **only `src/core/config/**` (plus `*.d.ts`) is excluded** from the
+denominator; everything else counts.
+
+Current measured coverage is ~75% lines / ~74% branches / ~80% functions, enforced
+by a threshold floor in the coverage config. The floor is set just under the
+measured numbers so regressions fail the gate; ratchet it upward as more
+deterministic tests land.
+
+Some areas are intentionally lower because they cannot be covered deterministically
+by the unit/integration suites and are exercised elsewhere (or not at all in CI):
+
+- **macOS-native voice** (`src/core/voice/apple-native.ts`, `local-system.ts`) — spawns
+  platform binaries; exercised by opt-in live voice tests.
+- **Server entrypoints** (`src/server/start.ts`, `index.ts`) — boot the HTTP/Next server.
+- **Web + gateway HTTP/WebSocket** (`src/web/home-page.tsx`, parts of `src/gateway`,
+  `src/server/control-plane/router.ts`) — exercised by the Playwright e2e suite, which
+  is not part of the V8-instrumented run.
+- **Network adapters** (`src/core/lm/http.ts`, `src/core/memory/embeddings.ts`) — exercised
+  by opt-in live provider suites.
+
+The coverage gate is intentionally separate from `validate:penultimate` so the main
+gate stays fast; run `npm run test:coverage` when changing core runtime code.
+
 Deterministic coverage now includes:
 
 - unit and integration coverage for the shared runtime, contracts, approvals, memory, MCP, browser, image, channel routing, and SDK surfaces

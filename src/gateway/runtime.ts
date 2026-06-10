@@ -163,6 +163,30 @@ export class GatewayRuntime
       memoryContextProvider: options.memoryService,
       memoryLifecycle: options.memoryService,
       model: options.modelRuntime,
+      onAssistantDelta: ({ delta, sessionId, turnId }) => {
+        void this.emitEvent(
+          {
+            createdAt: new Date().toISOString(),
+            id: `message-delta.${turnId}.${crypto.randomUUID()}`,
+            metadata: { sessionId },
+            payload: { delta, sessionId, turnId },
+            topic: "message.delta"
+          },
+          false
+        );
+      },
+      onAssistantReasoning: ({ delta, sessionId, turnId }) => {
+        void this.emitEvent(
+          {
+            createdAt: new Date().toISOString(),
+            id: `message-reasoning.${turnId}.${crypto.randomUUID()}`,
+            metadata: { sessionId },
+            payload: { delta, sessionId, turnId },
+            topic: "message.reasoning"
+          },
+          false
+        );
+      },
       onStatus: async ({ session, summary }) => {
         await this.emitEvent(
           {
@@ -510,6 +534,10 @@ export class GatewayRuntime
         return gatewayResponsePayloadSchemas["memory.query"].parse({
           hits: await this.options.memoryService.query(gatewayRequestPayloadSchemas["memory.query"].parse(request.payload))
         });
+      case "model.health":
+        return gatewayResponsePayloadSchemas["model.health"].parse(
+          await this.options.modelRuntime.health(gatewayRequestPayloadSchemas["model.health"].parse(request.payload).provider)
+        );
       case "run.cancel":
         return gatewayResponsePayloadSchemas["run.cancel"].parse({
           run: await this.cancelRun(gatewayRequestPayloadSchemas["run.cancel"].parse(request.payload).runId)
@@ -1456,6 +1484,10 @@ export class GatewayRuntime
       metadata: {
         ...pendingToolCall.metadata,
         approvalResolutionId: resolution.id,
+        // The operator's resolution comment is the answer for interactive
+        // tools (e.g. ask_user_question) and useful operator context for
+        // every other tool resumed after approval.
+        ...(typeof resolution.comment === "string" ? { approvalResolutionComment: resolution.comment } : {}),
         resumedFromToolCallId: pendingToolCall.id
       },
       result: undefined,
@@ -1939,12 +1971,14 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     }),
     registry: createDefaultToolRegistry({
       browserService,
+      channelService: params.channelService,
       commandRuntime,
       externalAgentService: params.externalAgentService,
       fetchImpl: params.fetchImpl,
       imageService,
       mcpManager,
       memoryService,
+      sessions,
       taskStateService,
       workspaceEngine
     })
@@ -2328,6 +2362,10 @@ export function deriveGatewayEventSessionId(event: GatewayEvent): string | undef
       return typeof event.metadata.sessionId === "string" ? event.metadata.sessionId : undefined;
     case "message.created":
       return event.payload.sessionId;
+    case "message.delta":
+      return event.payload.sessionId;
+    case "message.reasoning":
+      return event.payload.sessionId;
     case "run.updated":
       return event.payload.sessionId;
     case "session.updated":
@@ -2336,6 +2374,12 @@ export function deriveGatewayEventSessionId(event: GatewayEvent): string | undef
       return event.payload.sessionId;
     case "turn.updated":
       return event.payload.sessionId;
+    default: {
+      // Exhaustiveness guard: a new event topic must add a case above so
+      // session-filtered subscriptions (e.g. the CLI) don't silently drop it.
+      const exhaustive: never = event;
+      return exhaustive;
+    }
   }
 }
 

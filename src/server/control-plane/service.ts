@@ -8,6 +8,7 @@ import type {
   ChannelRuntimeStatus,
   ChannelWebhookEndpoint,
   GatewayApprovalRecord,
+  GatewayEvent,
   GatewayEventPage,
   GatewayRequestTopic,
   MemoryHit,
@@ -219,6 +220,23 @@ export class ControlPlaneService {
     return this.context.gatewayRuntime.replayEvents({
       limit: query.limit ?? 25,
       sessionId: query.sessionId
+    });
+  }
+
+  subscribeEvents(listener: (event: GatewayEvent) => void, filter: { sessionId?: string } = {}): () => void {
+    return this.context.gatewayRuntime.subscribe((event) => {
+      if (filter.sessionId) {
+        const eventSessionId =
+          typeof (event.metadata as { sessionId?: unknown }).sessionId === "string"
+            ? (event.metadata as { sessionId: string }).sessionId
+            : "payload" in event && typeof (event.payload as { sessionId?: unknown }).sessionId === "string"
+              ? (event.payload as { sessionId: string }).sessionId
+              : undefined;
+        if (eventSessionId && eventSessionId !== filter.sessionId) {
+          return;
+        }
+      }
+      listener(event);
     });
   }
 

@@ -40,6 +40,26 @@ test("runs a prompt end-to-end through the CLI against the fake provider", async
   }
 });
 
+test("runs when invoked through a symlinked bin (linked `aia`)", async () => {
+  // Reproduces the linked `aia` path: the shell invokes a symlink, so argv[1]
+  // is the symlink while import.meta.url resolves to the real module. The entry
+  // guard must resolve symlinks on both sides or the CLI silently no-ops.
+  const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-bin-"));
+  const symlinkPath = path.join(binDir, "aia");
+  await fs.symlink(path.resolve("src/cli.ts"), symlinkPath);
+
+  try {
+    const result = await runCommand(process.execPath, ["--import", "tsx", symlinkPath, "info"], {
+      ...process.env
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Surfaces:");
+    expect(result.stdout).toContain("bootstrap is in place");
+  } finally {
+    await fs.rm(binDir, { force: true, recursive: true });
+  }
+});
+
 async function runCommand(
   command: string,
   args: string[],

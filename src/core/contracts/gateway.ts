@@ -25,7 +25,7 @@ import {
 import { memoryHitSchema, memoryQuerySchema } from "@/core/contracts/memory";
 import { messagePartSchema, messageSchema } from "@/core/contracts/messages";
 import { taskStateSnapshotSchema } from "@/core/contracts/plans";
-import { providerIdSchema } from "@/core/contracts/providers";
+import { providerHealthSchema, providerIdSchema } from "@/core/contracts/providers";
 import {
   sessionRecordSchema,
   sessionSnapshotSchema,
@@ -125,6 +125,8 @@ export const gatewayEventTopicSchema = z.enum([
   "log.emitted",
   "memory.updated",
   "message.created",
+  "message.delta",
+  "message.reasoning",
   "run.updated",
   "session.updated",
   "tool.updated",
@@ -224,6 +226,18 @@ export const gatewayEventSchema = z.discriminatedUnion("topic", [
     .extend({
       payload: messageSchema,
       topic: z.literal("message.created")
+    })
+    .strict(),
+  gatewayEventBaseSchema
+    .extend({
+      payload: z.object({ delta: z.string(), sessionId: entityIdSchema, turnId: entityIdSchema }).strict(),
+      topic: z.literal("message.delta")
+    })
+    .strict(),
+  gatewayEventBaseSchema
+    .extend({
+      payload: z.object({ delta: z.string(), sessionId: entityIdSchema, turnId: entityIdSchema }).strict(),
+      topic: z.literal("message.reasoning")
     })
     .strict(),
   gatewayEventBaseSchema
@@ -341,6 +355,7 @@ export const gatewayRequestTopicSchema = z.enum([
   "gateway.health",
   "gateway.subscribe",
   "memory.query",
+  "model.health",
   "run.cancel",
   "session.cancel",
   "session.create",
@@ -395,6 +410,7 @@ export const gatewayRequestPayloadSchemas = {
   "gateway.health": z.object({}).strict(),
   "gateway.subscribe": gatewaySubscriptionSchema,
   "memory.query": memoryQuerySchema,
+  "model.health": z.object({ provider: providerIdSchema.optional() }).strict(),
   "run.cancel": gatewayRunCancelRequestSchema,
   "session.cancel": gatewaySessionCancelRequestSchema,
   "session.create": gatewaySessionCreateRequestSchema,
@@ -436,6 +452,7 @@ export const gatewayResponsePayloadSchemas = {
     })
     .strict(),
   "memory.query": z.object({ hits: z.array(memoryHitSchema) }).strict(),
+  "model.health": providerHealthSchema,
   "run.cancel": z.object({ run: gatewayRunRecordSchema }).strict(),
   "session.cancel": z.object({ run: gatewayRunRecordSchema }).strict(),
   "session.create": z

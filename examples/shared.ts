@@ -14,7 +14,7 @@ import {
   type ProviderHealth
 } from "@/core";
 import { createAIAgentSdkFromConfig, type AIAgentProviderRegistrations, type AIAgentSdk } from "@/sdk";
-import type { GatewaySessionSnapshot, JsonValue, Message, ModelToolCallProposal } from "@/core/contracts";
+import type { GatewaySessionSnapshot, JsonValue, LanguageModelStreamEvent, Message, ModelToolCallProposal } from "@/core/contracts";
 
 type ScriptedLanguageModelTurn =
   | LanguageModelResponse
@@ -55,6 +55,24 @@ export class ScriptedLanguageModelAdapter implements LanguageModelAdapter {
 
     this.turnIndex += 1;
     return typeof response === "function" ? await response(request, this.turnIndex - 1) : response;
+  }
+
+  async *stream(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent> {
+    const response = await this.generate(request);
+    const reasoning = typeof response.metadata.reasoning === "string" ? response.metadata.reasoning : "";
+    if (reasoning.length > 0) {
+      yield { delta: reasoning, kind: "response.reasoning" };
+    }
+    const text = response.message ? extractMessageText(response.message) : "";
+    if (text.length > 0) {
+      // Emit a couple of chunks so consumers exercise multi-delta streaming.
+      const midpoint = Math.ceil(text.length / 2);
+      yield { delta: text.slice(0, midpoint), kind: "response.delta" };
+      if (midpoint < text.length) {
+        yield { delta: text.slice(midpoint), kind: "response.delta" };
+      }
+    }
+    yield { kind: "response.completed", response };
   }
 
   async health(): Promise<ProviderHealth> {
@@ -142,6 +160,7 @@ export async function withExampleSdk<T>(
 }
 
 export function buildScriptedResponse(params: {
+  reasoning?: string;
   request: LanguageModelRequest;
   text: string;
   toolCalls?: ModelToolCallProposal[];
@@ -161,7 +180,7 @@ export function buildScriptedResponse(params: {
       turnId: params.request.turnId,
       visibility: "default"
     },
-    metadata: {},
+    metadata: params.reasoning ? { reasoning: params.reasoning } : {},
     modelId: params.request.modelId,
     provider: params.request.provider,
     stopReason: toolCalls.length > 0 ? "tool_calls" : "end_turn",

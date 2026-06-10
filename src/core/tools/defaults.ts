@@ -4,8 +4,10 @@ import type { BrowserAutomationService, ExternalAgentService, ImageService, Voic
 import { createExternalAgentApprovalTargetResolver } from "@/core/external-agents";
 import type { MCPManager } from "@/core/mcp";
 import { createMcpExecutableToolRegistry } from "@/core/mcp";
+import { createAskUserQuestionTool } from "@/core/tools/builtins/ask-user-question";
 import { createAttemptCompleteTool } from "@/core/tools/builtins/attempt-complete";
 import { createBrowserTools } from "@/core/tools/builtins/browser";
+import { createChannelSendTool } from "@/core/tools/builtins/channel-send";
 import { CommandRuntime } from "@/core/tools/builtins/command-runtime";
 import { createCommandTools } from "@/core/tools/builtins/commands";
 import { createExternalAgentTool } from "@/core/tools/builtins/external-agent";
@@ -15,10 +17,15 @@ import { createMemoryIndexTool } from "@/core/tools/builtins/memory-index";
 import { createMemorySearchTool } from "@/core/tools/builtins/memory-search";
 import { createMemoryStatusTool } from "@/core/tools/builtins/memory-status";
 import { createMemoryWriteTool } from "@/core/tools/builtins/memory-write";
+import { createNotebookEditTool } from "@/core/tools/builtins/notebook";
 import { createMcpReadResourceTool } from "@/core/tools/builtins/mcp-read-resource";
 import { createMcpReadResourceTemplateTool } from "@/core/tools/builtins/mcp-read-resource-template";
 import { createMcpSearchTool } from "@/core/tools/builtins/mcp-search";
+import { createPdfReadTool } from "@/core/tools/builtins/pdf-read";
+import { createSessionsSearchTool } from "@/core/tools/builtins/sessions-search";
+import { createThinkTool } from "@/core/tools/builtins/think";
 import { createToolSearchTool } from "@/core/tools/builtins/tool-search";
+import { createViewImageTool } from "@/core/tools/builtins/view-image";
 import { createUpdatePlanTool } from "@/core/tools/builtins/update-plan";
 import { createVoiceTools } from "@/core/tools/builtins/voice";
 import { createWebFetchTool } from "@/core/tools/builtins/web-fetch";
@@ -26,19 +33,23 @@ import { createWebSearchTool } from "@/core/tools/builtins/web-search";
 import { createWorkspaceTools } from "@/core/tools/builtins/workspace";
 import { combineToolRegistries, ToolRegistryBuilder } from "@/core/tools/registry";
 import { ToolRuntime } from "@/core/tools/runtime";
+import type { ChannelService } from "@/core/channels";
 import type { FileBackedMemoryService } from "@/core/memory";
 import type { TaskStateService } from "@/core/plans";
+import type { FileSessionStore } from "@/core/sessions";
 import { WorkspaceMutationEngine } from "@/core/workspace";
 
 export function createDefaultToolRegistry(
   options: {
     browserService?: BrowserAutomationService;
+    channelService?: ChannelService;
     commandRuntime?: CommandRuntime;
     externalAgentService?: ExternalAgentService;
     fetchImpl?: typeof fetch;
     imageService?: ImageService;
     mcpManager?: MCPManager;
     memoryService?: FileBackedMemoryService;
+    sessions?: FileSessionStore;
     stateRoot?: string;
     taskStateService?: TaskStateService;
     voiceService?: VoiceService;
@@ -65,8 +76,12 @@ export function createDefaultToolRegistry(
       : undefined);
 
   const builder = new ToolRegistryBuilder()
+    .register(createAskUserQuestionTool())
     .register(createAttemptCompleteTool())
+    .register(createPdfReadTool())
+    .register(createThinkTool())
     .register(createToolSearchTool())
+    .register(createViewImageTool())
     .register(
       createWebFetchTool({
         fetchImpl: options.fetchImpl
@@ -85,6 +100,7 @@ export function createDefaultToolRegistry(
     for (const tool of createWorkspaceTools({ workspaceEngine })) {
       builder.register(tool);
     }
+    builder.register(createNotebookEditTool({ workspaceEngine }));
   }
 
   if (commandRuntime) {
@@ -143,6 +159,14 @@ export function createDefaultToolRegistry(
     );
   }
 
+  if (options.sessions) {
+    builder.register(createSessionsSearchTool({ sessions: options.sessions }));
+  }
+
+  if (options.channelService) {
+    builder.register(createChannelSendTool({ channelService: options.channelService }));
+  }
+
   if (options.voiceService) {
     for (const tool of createVoiceTools({ voiceService: options.voiceService })) {
       builder.register(tool);
@@ -184,12 +208,14 @@ export function createDefaultToolRegistry(
 export function createDefaultToolRuntime(
   options: {
     browserService?: BrowserAutomationService;
+    channelService?: ChannelService;
     commandRuntime?: CommandRuntime;
     externalAgentService?: ExternalAgentService;
     fetchImpl?: typeof fetch;
     imageService?: ImageService;
     mcpManager?: MCPManager;
     memoryService?: FileBackedMemoryService;
+    sessions?: FileSessionStore;
     stateRoot?: string;
     taskStateService?: TaskStateService;
     voiceService?: VoiceService;

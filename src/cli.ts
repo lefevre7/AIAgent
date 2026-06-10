@@ -1,5 +1,8 @@
+import { realpathSync } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
+import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import {
@@ -14,8 +17,8 @@ import {
   type VoiceCaptureRecord,
   type VoiceService
 } from "@/core";
-import { createAIAgentSdkFromConfig } from "@/sdk";
-import type { GatewaySessionSnapshot, Message } from "@/core/contracts";
+import { createAIAgentSdkFromConfig, type AIAgentSdk, type AIAgentSessionHandle } from "@/sdk";
+import type { GatewayEvent, GatewaySessionSnapshot, Message } from "@/core/contracts";
 
 type CliStream = Pick<NodeJS.WriteStream, "write">;
 
@@ -23,6 +26,17 @@ type CliStreams = {
   stderr: CliStream;
   stdout: CliStream;
 };
+
+type CliDependencies = {
+  // Overrides how the SDK is created. Lets tests drive the loop without a full
+  // runtime; defaults to createAIAgentSdkFromConfig.
+  createSdk?: (options: { cwd: string }) => Promise<AIAgentSdk>;
+  // Overrides the interactive line source. When omitted, a readline interface
+  // over process.stdin is used (only when stdin is a TTY).
+  interactiveInput?: AsyncIterable<string>;
+};
+
+const CHAT_PROMPT = "› ";
 
 type VoiceCliContext = {
   sessions: FileSessionStore;
@@ -34,6 +48,8 @@ function formatHelp(): string {
     "AIAgent CLI",
     "",
     "Available commands:",
+    "  aia                  Start an interactive session (stays open until /exit or /quit)",
+    "  aia info             Print runtime surfaces and providers",
     "  aia --help",
     "  aia --prompt <text> [--cwd <path>] [--goal <text>] [--title <text>]",
     "  aia voice --help",
@@ -64,10 +80,16 @@ function formatVoiceHelp(): string {
 
 export async function runCli(
   argv: string[] = process.argv.slice(2),
-  streams: CliStreams = { stderr: process.stderr, stdout: process.stdout }
+  streams: CliStreams = { stderr: process.stderr, stdout: process.stdout },
+  deps: CliDependencies = {}
 ): Promise<number> {
   if (argv[0] === "voice") {
     return runVoiceCli(argv.slice(1), streams);
+  }
+
+  if (argv[0] === "info") {
+    writeLine(streams.stdout, formatBootstrapInfo());
+    return 0;
   }
 
   const { values } = parseArgs({
@@ -106,20 +128,231 @@ export async function runCli(
         prompt: values.prompt,
         title: values.title ?? "CLI Session"
       },
-      streams
+      streams,
+      deps
     );
   }
 
-  const info = createBootstrapInfo();
-  writeLine(
-    streams.stdout,
-    [
-      `${info.name} bootstrap is in place.`,
-      `Surfaces: ${info.surfaces.join(", ")}`,
-      `Providers: ${info.providers.join(", ")}`
-    ].join("\n")
+  // No one-shot prompt: always enter the interactive REPL. On a TTY this is a
+  // live session; when stdin is piped it reads lines until EOF. The loop ends on
+  // /exit, /quit, or end-of-input.
+  const lineSource = deps.interactiveInput ?? createStdinLineSource();
+  return runChatCli(
+    {
+      cwd: values.cwd ? path.resolve(values.cwd) : process.cwd(),
+      goal: values.goal ?? "Interactive CLI session",
+      title: values.title ?? "CLI Session"
+    },
+    streams,
+    lineSource,
+    deps
   );
-  return 0;
+}
+
+function formatBootstrapInfo(): string {
+  const info = createBootstrapInfo();
+  return [
+    `${info.name} bootstrap is in place.`,
+    `Surfaces: ${info.surfaces.join(", ")}`,
+    `Providers: ${info.providers.join(", ")}`
+  ].join("\n");
+}
+
+async function runChatCli(
+  input: {
+    cwd: string;
+    goal: string;
+    title: string;
+  },
+  streams: CliStreams,
+  lineSource: AsyncIterable<string>,
+  deps: CliDependencies
+): Promise<number> {
+  let sdk: AIAgentSdk;
+  try {
+    sdk = await resolveSdk(deps, input.cwd);
+  } catch (error) {
+    writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
+    return 1;
+  }
+
+  try {
+    // A REPL with no reachable chat model is useless, so gate on it up front
+    // and exit cleanly rather than opening a session that errors on every turn.
+    const model = await probeModelHealth(sdk);
+    if (model.status !== "healthy") {
+      writeLine(streams.stderr, formatModelUnavailable(model));
+      return 1;
+    }
+
+    const created = await sdk.sessions.create({
+      cwd: input.cwd,
+      goal: input.goal,
+      metadata: {
+        surface: "cli"
+      },
+      title: input.title
+    });
+
+    writeLine(streams.stdout, formatChatWelcome(created.session.id));
+
+    // Manual iteration so approval prompts can pull the next line on demand.
+    const iterator = lineSource[Symbol.asyncIterator]();
+    const nextLine = async (): Promise<string | null> => {
+      const result = await iterator.next();
+      return result.done ? null : result.value;
+    };
+
+    try {
+      for (;;) {
+        streams.stdout.write(CHAT_PROMPT);
+        const raw = await nextLine();
+        if (raw === null) {
+          return 0;
+        }
+        const line = raw.trim();
+        if (line.length === 0) {
+          continue;
+        }
+
+        const command = parseChatCommand(line);
+        if (command === "exit") {
+          writeLine(streams.stdout, "Goodbye.");
+          return 0;
+        }
+        if (command === "help") {
+          writeLine(streams.stdout, formatChatHelp());
+          continue;
+        }
+        if (command === "unknown") {
+          writeLine(streams.stderr, `Unknown command "${line}". Type /help for options, or /exit to leave.`);
+          continue;
+        }
+
+        await runChatTurn(created.handle, line, streams, nextLine);
+      }
+    } finally {
+      await iterator.return?.();
+    }
+  } catch (error) {
+    writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
+    return 1;
+  } finally {
+    await sdk.close().catch(() => undefined);
+  }
+}
+
+async function probeModelHealth(sdk: AIAgentSdk): Promise<{ details: Record<string, unknown>; providerId: string; status: string }> {
+  const health = await sdk.request("model.health", {});
+  return {
+    details: health.details,
+    providerId: health.providerId,
+    status: health.status
+  };
+}
+
+function formatModelUnavailable(model: { details: Record<string, unknown>; providerId: string; status: string }): string {
+  const detail = typeof model.details.error === "string" ? ` (${model.details.error})` : "";
+  return [
+    `Cannot start an interactive session: the chat model provider "${model.providerId}" is ${model.status}${detail}.`,
+    'Start the provider (for example launch LM Studio or Ollama), then run `aia` again. For a one-shot run use `aia --prompt "…"`.'
+  ].join("\n");
+}
+
+async function runChatTurn(
+  handle: AIAgentSessionHandle,
+  text: string,
+  streams: CliStreams,
+  nextLine: () => Promise<string | null>
+): Promise<void> {
+  const DIM = "[2m";
+  const RESET = "[0m";
+  let streamedText = false;
+  let reasoningOpen = false;
+  const closeReasoning = (): void => {
+    if (reasoningOpen) {
+      streams.stdout.write(`${RESET}\n`);
+      reasoningOpen = false;
+    }
+  };
+  const onEvent = (event: GatewayEvent): void => {
+    if (event.topic === "message.reasoning") {
+      // Stream the model's reasoning dimmed, above the answer.
+      if (!reasoningOpen) {
+        streams.stdout.write(DIM);
+        reasoningOpen = true;
+      }
+      streams.stdout.write(event.payload.delta);
+    } else if (event.topic === "message.delta") {
+      closeReasoning();
+      streamedText = true;
+      streams.stdout.write(event.payload.delta);
+    } else if (event.topic === "tool.updated") {
+      // Tool activity goes to stderr so it never corrupts streamed stdout text.
+      // Surface the failure reason so the operator can see why a tool failed.
+      closeReasoning();
+      const tool = event.payload;
+      if (tool.status === "failed" && tool.error) {
+        writeLine(streams.stderr, `· ${tool.toolName}: failed — ${tool.error.message}`);
+      } else {
+        writeLine(streams.stderr, `· ${tool.toolName}: ${tool.status}`);
+      }
+    }
+  };
+  const unsubscribe = handle.subscribe(onEvent, {
+    topics: ["message.delta", "message.reasoning", "tool.updated"]
+  });
+
+  try {
+    // Thinking line is terminated so streamed tokens / tool lines start cleanly.
+    writeLine(streams.stdout, "Thinking…");
+    const run = await handle.sendMessage({ text });
+    await run.wait();
+
+    closeReasoning();
+    if (streamedText) {
+      streams.stdout.write("\n");
+    }
+
+    await resolvePendingApprovals(handle, streams, nextLine);
+
+    const errorMessage = (await handle.snapshot()).snapshot.session.lastError?.message;
+    if (errorMessage) {
+      writeLine(streams.stderr, `Error: ${errorMessage}`);
+    }
+  } catch (error) {
+    writeLine(streams.stderr, renderCliError(error));
+  } finally {
+    unsubscribe();
+  }
+}
+
+async function resolvePendingApprovals(
+  handle: AIAgentSessionHandle,
+  streams: CliStreams,
+  nextLine: () => Promise<string | null>
+): Promise<void> {
+  for (let round = 0; round < 50; round += 1) {
+    const pending = await handle.listPendingApprovals();
+    if (pending.length === 0) {
+      return;
+    }
+
+    for (const approval of pending) {
+      const target = `${approval.request.target.label} → ${approval.request.target.value}`;
+      streams.stdout.write(`Approve ${target}? [y/N] `);
+      const answer = (await nextLine())?.trim().toLowerCase() ?? "";
+      const decision = answer === "y" || answer === "yes" ? "approved" : "denied";
+      await handle.resolveApproval({ decision, requestId: approval.request.id });
+      writeLine(
+        streams.stdout,
+        decision === "approved" ? `Approved ${approval.request.target.value}.` : `Denied ${approval.request.target.value}.`
+      );
+    }
+
+    const resumeRun = await handle.resume();
+    await resumeRun.wait();
+  }
 }
 
 async function runPromptCli(
@@ -129,11 +362,10 @@ async function runPromptCli(
     prompt: string;
     title: string;
   },
-  streams: CliStreams
+  streams: CliStreams,
+  deps: CliDependencies
 ): Promise<number> {
-  const sdk = await createAIAgentSdkFromConfig({
-    cwd: input.cwd
-  });
+  const sdk = await resolveSdk(deps, input.cwd);
 
   try {
     const created = await sdk.sessions.create({
@@ -177,9 +409,14 @@ async function runPromptCli(
 }
 
 async function mainCli(): Promise<void> {
-  const exitCode = await runCli();
-  if (exitCode !== 0) {
-    process.exitCode = exitCode;
+  try {
+    const exitCode = await runCli();
+    if (exitCode !== 0) {
+      process.exitCode = exitCode;
+    }
+  } catch (error) {
+    process.stderr.write(`${renderCliError(error)}\n`);
+    process.exitCode = 1;
   }
 }
 
@@ -526,6 +763,87 @@ async function appendVoiceUserMessage(params: {
   });
 }
 
+async function resolveSdk(deps: CliDependencies, cwd: string): Promise<AIAgentSdk> {
+  return deps.createSdk ? deps.createSdk({ cwd }) : createAIAgentSdkFromConfig({ cwd });
+}
+
+function parseChatCommand(line: string): "exit" | "help" | "message" | "unknown" {
+  if (!line.startsWith("/")) {
+    return "message";
+  }
+  const name = line.slice(1).trim().toLowerCase().split(/\s+/u)[0];
+  switch (name) {
+    case "exit":
+    case "quit":
+      return "exit";
+    case "help":
+      return "help";
+    default:
+      return "unknown";
+  }
+}
+
+function formatChatWelcome(sessionId: string): string {
+  return [
+    "AIAgent interactive session. Type a message and press Enter.",
+    `Session: ${sessionId}`,
+    "The session stays open until you type /exit or /quit. Type /help for commands."
+  ].join("\n");
+}
+
+function formatChatHelp(): string {
+  return [
+    "Interactive commands:",
+    "  /help          Show this help",
+    "  /exit, /quit   End the session and return to the shell",
+    "Anything else is sent to the agent as a message."
+  ].join("\n");
+}
+
+function createStdinLineSource(): AsyncIterable<string> {
+  // Buffer lines from the moment the reader is created so input that arrives
+  // while the runtime is still booting (notably piped/scripted input) is not
+  // lost before iteration starts.
+  const rl = readline.createInterface({ input: process.stdin });
+  const queue: string[] = [];
+  let closed = false;
+  let wake: (() => void) | null = null;
+  const notify = (): void => {
+    const resume = wake;
+    wake = null;
+    resume?.();
+  };
+  rl.on("line", (line) => {
+    queue.push(line);
+    notify();
+  });
+  rl.on("close", () => {
+    closed = true;
+    notify();
+  });
+
+  return {
+    async *[Symbol.asyncIterator](): AsyncIterator<string> {
+      try {
+        while (true) {
+          if (queue.length > 0) {
+            yield queue.shift() as string;
+            continue;
+          }
+          if (closed) {
+            return;
+          }
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+          });
+        }
+      } finally {
+        rl.close();
+      }
+    }
+  };
+}
+
 function renderCliError(error: unknown): string {
   if (isStructuredError(error)) {
     return `${error.code}: ${error.message}`;
@@ -655,4 +973,21 @@ function extractMessageText(message: Message): string {
     .trim();
 }
 
-void mainCli();
+// Only auto-run when invoked directly (so importing this module in tests does
+// not start the CLI). Resolve symlinks on both sides so the linked `aia` bin
+// — which the shell invokes through a symlink — still matches the real module.
+function isDirectlyInvoked(): boolean {
+  const entry = process.argv[1];
+  if (!entry) {
+    return false;
+  }
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(entry);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectlyInvoked()) {
+  void mainCli();
+}

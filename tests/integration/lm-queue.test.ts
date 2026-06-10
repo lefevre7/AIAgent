@@ -169,7 +169,7 @@ function buildRequest(id: string): LanguageModelRequest {
       }
     ],
     metadata: {},
-    modelId: "mistralai/devstral-small-2-2512",
+    modelId: "google/gemma-4-26b-a4b-qat",
     provider: "lm_studio",
     responseFormat: {
       kind: "text"

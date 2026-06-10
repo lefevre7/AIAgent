@@ -167,6 +167,12 @@ export const languageModelStreamEventSchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({
+      delta: z.string(),
+      kind: z.literal("response.reasoning")
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal("response.error"),
       error: structuredErrorSchema
     })

@@ -100,7 +100,7 @@ Notes:
 - LM provider layer must support LM Studio and Ollama from day one.
 - LM Studio default behavior should mirror `dev-assist-v2` closely:
   - base URL default: `http://localhost:1234/v1`
-  - default model: `mistralai/devstral-small-2-2512`
+  - default model: `google/gemma-4-26b-a4b-qat`
   - `chat/completions`-style interaction first
 - The provider layer must still be generic enough to add other local/cloud providers later.
 
@@ -778,9 +778,9 @@ Current implementation notes:
   - session-completion compaction
 - Compaction lineage now persists under `.aia/memory/compactions/<session-id>.jsonl`.
 - `src/core/memory/retrieval.ts` now provides the first shared retrieval engine:
-  - SQLite-backed chunk storage
-  - FTS5-backed lexical search when the local Node build includes FTS5
-  - automatic lexical fallback when FTS5 is unavailable in the runtime
+  - SQLite-backed chunk storage via the built-in `node:sqlite` module (statically imported; requires Node >= 22.14). If a database file cannot be opened, it falls back to a typed in-memory store that emits an `AIA_SQLITE_FALLBACK` process warning and disables persistence/search rather than failing silently.
+  - FTS5-backed lexical search when the local Node build includes FTS5. NOTE: stock Node `node:sqlite` (SQLite 3.47.2 as of Node 22.14) is compiled **without** FTS5, so on a default Node build the engine uses the substring lexical fallback below. FTS5 engages only on a Node/SQLite build that bundles it.
+  - automatic lexical fallback when FTS5 is unavailable in the runtime (currently a case-insensitive whole-query substring match over indexed chunks)
   - provider-agnostic embeddings with LM Studio and Ollama adapters
   - hybrid lexical + semantic ranking with MMR re-ranking
   - schema versioning, config fingerprinting, and reindex-on-change behavior

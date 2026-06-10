@@ -14,6 +14,7 @@ export const approvalTargetKindSchema = z.enum([
   "mcp_tool",
   "network",
   "path",
+  "question",
   "tool",
   "voice_action"
 ]);

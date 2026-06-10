@@ -3,6 +3,7 @@ import type {
   ApprovalPolicyRule,
   ApprovalRequest,
   ApprovalTargetKind,
+  JsonValue,
   ToolCallRecord,
   ToolDefinition
 } from "@/core/contracts";
@@ -108,8 +109,42 @@ export function createToolApprovalDecider(params: {
 
     return {
       mode: "request",
-      request: buildApprovalRequest(input, match)
+      request: isQuestionInteraction(input.definition)
+        ? buildQuestionApprovalRequest(input)
+        : buildApprovalRequest(input, match)
     };
+  };
+}
+
+function isQuestionInteraction(definition: ToolDefinition): boolean {
+  return definition.annotations.meta.interaction === "question";
+}
+
+function buildQuestionApprovalRequest(params: ToolApprovalDeciderParams): ApprovalRequest {
+  const question =
+    typeof params.call.arguments.question === "string" ? params.call.arguments.question : params.definition.displayName;
+  const options = Array.isArray(params.call.arguments.options) ? (params.call.arguments.options as JsonValue) : [];
+
+  return {
+    createdAt: new Date().toISOString(),
+    id: `approval.${params.call.id}.${params.turn.id}.question`,
+    justification: question,
+    metadata: {
+      approvalMode: params.definition.approvalMode,
+      interaction: "question",
+      options,
+      toolKind: params.definition.kind
+    },
+    riskSummary: "The agent is asking you a question before it continues. Resolve it with your answer as the comment.",
+    sessionId: params.session.id,
+    status: "pending",
+    target: {
+      kind: "question",
+      label: params.definition.displayName,
+      value: params.definition.invocationName
+    },
+    toolCallId: params.call.id,
+    turnId: params.turn.id
   };
 }
 

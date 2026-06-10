@@ -6,6 +6,7 @@ import type {
   LanguageModelRequest,
   LanguageModelProvider,
   LanguageModelResponse,
+  LanguageModelStreamEvent,
   Message,
   SessionRecord,
   SteeringInjection,
@@ -52,12 +53,16 @@ export type AgentLoopRunParams = {
   userMessages?: Message[];
 };
 
+type AgentLoopModelRequest = Omit<LanguageModelRequest, "modelId" | "provider"> & {
+  modelId?: string;
+  provider?: LanguageModelProvider;
+};
+
 export interface AgentLoopModel {
-  generate(
-    request: Omit<LanguageModelRequest, "modelId" | "provider"> & {
-      modelId?: string;
-      provider?: LanguageModelProvider;
-    }
+  generate(request: AgentLoopModelRequest): Promise<LanguageModelResponse>;
+  stream?(
+    request: AgentLoopModelRequest,
+    onEvent: (event: LanguageModelStreamEvent) => void
   ): Promise<LanguageModelResponse>;
 }
 
@@ -78,6 +83,8 @@ type AgentLoopOptions = {
     snapshot: Awaited<ReturnType<FileSessionStore["getSessionSnapshot"]>>;
   }) => Promise<AgentLoopCompletionDecision>;
   model: AgentLoopModel;
+  onAssistantDelta?: (params: { delta: string; sessionId: string; turnId: string }) => void;
+  onAssistantReasoning?: (params: { delta: string; sessionId: string; turnId: string }) => void;
   onStatus?: (params: { session: SessionRecord; summary: string }) => Promise<void> | void;
   sessions: FileSessionStore;
   memoryContextProvider?: MemoryContextProvider;
@@ -195,28 +202,42 @@ export class AgentLoop {
       const snapshot = await this.options.sessions.getSessionSnapshot(session.id);
       const visibleMessages = (snapshot?.messages ?? []).filter((message) => message.visibility !== "hidden");
 
+      const modelRequest = {
+        availableTools: params.availableTools,
+        id: `lm-request.${turn.id}`,
+        instructions: promptPack.systemPrompt,
+        messages: visibleMessages,
+        metadata: {},
+        ...(typeof session.metadata.activeModelId === "string" ? { modelId: session.metadata.activeModelId } : {}),
+        ...(typeof session.metadata.activeProvider === "string"
+          ? { provider: session.metadata.activeProvider as LanguageModelProvider }
+          : {}),
+        responseFormat: {
+          kind: "text" as const
+        },
+        sessionId: session.id,
+        settings: {
+          stopSequences: [],
+          toolChoice: "auto" as const
+        },
+        turnId: turn.id
+      };
+
       let response: LanguageModelResponse;
       try {
-        response = await this.options.model.generate({
-          availableTools: params.availableTools,
-          id: `lm-request.${turn.id}`,
-          instructions: promptPack.systemPrompt,
-          messages: visibleMessages,
-          metadata: {},
-          ...(typeof session.metadata.activeModelId === "string" ? { modelId: session.metadata.activeModelId } : {}),
-          ...(typeof session.metadata.activeProvider === "string"
-            ? { provider: session.metadata.activeProvider as LanguageModelProvider }
-            : {}),
-          responseFormat: {
-            kind: "text"
-          },
-          sessionId: session.id,
-          settings: {
-            stopSequences: [],
-            toolChoice: "auto"
-          },
-          turnId: turn.id
-        });
+        const onAssistantDelta = this.options.onAssistantDelta;
+        const onAssistantReasoning = this.options.onAssistantReasoning;
+        if (this.options.model.stream && (onAssistantDelta || onAssistantReasoning)) {
+          response = await this.options.model.stream(modelRequest, (event) => {
+            if (event.kind === "response.delta") {
+              onAssistantDelta?.({ delta: event.delta, sessionId: session.id, turnId: turn.id });
+            } else if (event.kind === "response.reasoning") {
+              onAssistantReasoning?.({ delta: event.delta, sessionId: session.id, turnId: turn.id });
+            }
+          });
+        } else {
+          response = await this.options.model.generate(modelRequest);
+        }
       } catch (error) {
         turn.status = "failed";
         turn.completedAt = new Date().toISOString();

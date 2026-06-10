@@ -32,7 +32,7 @@ describe("language model runtime", () => {
     const fetchImpl: typeof fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.endsWith("/v1/models")) {
-        return new Response(JSON.stringify({ data: [{ id: "mistralai/devstral-small-2-2512" }] }), {
+        return new Response(JSON.stringify({ data: [{ id: "google/gemma-4-26b-a4b-qat" }] }), {
           headers: {
             "content-type": "application/json"
           },
@@ -66,7 +66,7 @@ describe("language model runtime", () => {
               }
             ],
             id: "chatcmpl-123",
-            model: "mistralai/devstral-small-2-2512",
+            model: "google/gemma-4-26b-a4b-qat",
             usage: {
               completion_tokens: 7,
               prompt_tokens: 13,
@@ -90,7 +90,7 @@ describe("language model runtime", () => {
     config.providers.lmStudio.baseUrl = "http://localhost:1234/v1";
     config.providers.ollama.enabled = false;
     config.runtime.defaultProvider = "lm_studio";
-    config.runtime.defaultModel = "mistralai/devstral-small-2-2512";
+    config.runtime.defaultModel = "google/gemma-4-26b-a4b-qat";
 
     const runtime = new LanguageModelRuntime({ config, fetchImpl });
     const response = await runtime.generate({
@@ -116,7 +116,7 @@ describe("language model runtime", () => {
       turnId: "turn.runtime.1"
     });
 
-    expect(response.modelId).toBe("mistralai/devstral-small-2-2512");
+    expect(response.modelId).toBe("google/gemma-4-26b-a4b-qat");
     expect(response.provider).toBe("lm_studio");
     expect(response.stopReason).toBe("tool_calls");
     expect(response.toolCalls[0]?.toolName).toBe("read_file");
@@ -131,8 +131,8 @@ describe("language model runtime", () => {
     });
     expect(await runtime.listModels()).toEqual([
       {
-        displayName: "mistralai/devstral-small-2-2512",
-        modelId: "mistralai/devstral-small-2-2512",
+        displayName: "google/gemma-4-26b-a4b-qat",
+        modelId: "google/gemma-4-26b-a4b-qat",
         provider: "lm_studio",
         toolCalling: true
       }
@@ -140,7 +140,7 @@ describe("language model runtime", () => {
 
     expect(observedCalls).toHaveLength(1);
     expect(observedCalls[0]?.body).toMatchObject({
-      model: "mistralai/devstral-small-2-2512",
+      model: "google/gemma-4-26b-a4b-qat",
       response_format: {
         json_schema: {
           name: "agent_turn"
@@ -395,7 +395,7 @@ function buildRequest(overrides: Partial<LanguageModelRequest> = {}): LanguageMo
     instructions: "Use tools when needed and be concise.",
     messages: [buildUserMessage()],
     metadata: {},
-    modelId: "mistralai/devstral-small-2-2512",
+    modelId: "google/gemma-4-26b-a4b-qat",
     provider: "lm_studio",
     responseFormat: {
       kind: "text"

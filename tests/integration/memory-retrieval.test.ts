@@ -204,6 +204,42 @@ describe("memory retrieval", () => {
     expect(result.hits[0]?.entry.metadata.filePath).toBe("memory/architecture.md");
   });
 
+  test("degrades to lexical retrieval when the embedding provider is unavailable at startup", async () => {
+    const root = await createTempRoot();
+    const engine = new MemoryRetrievalEngine(
+      buildRetrievalOptions(path.join(root, ".aia", "memory.sqlite"), { embeddingsEnabled: true, hardFailOnStartup: false }),
+      new EmbeddingRuntime([createUnavailableEmbeddingAdapter()], { defaultProvider: "lm_studio" })
+    );
+
+    // Must not throw even though the embedding provider is unreachable.
+    await engine.initialize();
+
+    const status = await engine.status();
+    expect(status.embeddings.status).toBe("degraded");
+    expect(status.modes).toEqual(["lexical"]);
+
+    const result = await engine.search({
+      includeKinds: [],
+      limit: 5,
+      minConfidence: 0,
+      scopes: ["workspace"],
+      text: "TypeScript ESM"
+    });
+    expect(result.retrieval.activeMode).toBe("lexical");
+    expect(result.retrieval.semanticStatus).toBe("degraded");
+    expect(result.hits.length).toBeGreaterThan(0);
+  });
+
+  test("hard-fails startup when embeddings are required but the provider is unavailable", async () => {
+    const root = await createTempRoot();
+    const engine = new MemoryRetrievalEngine(
+      buildRetrievalOptions(path.join(root, ".aia", "memory.sqlite"), { embeddingsEnabled: true, hardFailOnStartup: true }),
+      new EmbeddingRuntime([createUnavailableEmbeddingAdapter()], { defaultProvider: "lm_studio" })
+    );
+
+    await expect(engine.initialize()).rejects.toThrow();
+  });
+
   test("returns empty content instead of throwing when a memory file is missing", async () => {
     const root = await createTempRoot();
     const { memory } = await createRetrievalFixture(root, {
@@ -241,6 +277,8 @@ describe("memory retrieval", () => {
     config.memory.stateRoot = stateRoot;
     config.memory.userGlobalRoot = path.join(userStateDirectory, "memory");
     config.memory.workspaceRoot = path.join(workspaceBase, "memory");
+    // This test specifically asserts the hard-fail path.
+    config.memory.hardFailOnStartup = true;
     config.providers.lmStudio.baseUrl = "http://localhost:1234/v1";
     config.providers.ollama.enabled = false;
 
@@ -248,7 +286,7 @@ describe("memory retrieval", () => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.endsWith("/models")) {
         return jsonResponse({
-          data: [{ id: "mistralai/devstral-small-2-2512" }, { id: "nomic-embed-text" }]
+          data: [{ id: "google/gemma-4-26b-a4b-qat" }, { id: "nomic-embed-text" }]
         });
       }
       if (url.endsWith("/embeddings")) {
@@ -273,7 +311,7 @@ describe("memory retrieval", () => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.endsWith("/models")) {
         return jsonResponse({
-          data: [{ id: "mistralai/devstral-small-2-2512" }]
+          data: [{ id: "google/gemma-4-26b-a4b-qat" }]
         });
       }
       throw new Error(`Unexpected URL: ${url}`);
@@ -446,6 +484,53 @@ function createKeywordEmbeddingAdapter(params: { failOnQuery?: boolean; provider
           providerId
         }
       ];
+    },
+    providerId
+  };
+}
+
+function buildRetrievalOptions(
+  sqlitePath: string,
+  overrides: { embeddingsEnabled?: boolean; hardFailOnStartup?: boolean } = {}
+) {
+  return {
+    candidateLimit: 12,
+    chunkOverlapChars: 64,
+    chunkTargetChars: 256,
+    embeddingProvider: "lm_studio",
+    embeddingsEnabled: overrides.embeddingsEnabled ?? true,
+    ftsEnabled: true,
+    hardFailOnStartup: overrides.hardFailOnStartup ?? false,
+    loadDocuments: async (): Promise<IndexedMemoryDocument[]> => [
+      {
+        content: "# Architecture\nThe workspace prefers TypeScript ESM and a Node 22 runtime.\n",
+        filePath: "memory/architecture.md",
+        mtimeMs: Date.now(),
+        scope: "workspace",
+        uri: "file:///memory/architecture.md"
+      }
+    ],
+    mmrLambda: 0.7,
+    retrievalLimit: 8,
+    sqlitePath
+  };
+}
+
+function createUnavailableEmbeddingAdapter(providerId = "lm_studio"): EmbeddingAdapter {
+  return {
+    async createEmbeddings(): Promise<EmbeddingResponse> {
+      throw new Error("embedding provider unreachable");
+    },
+    async health(): Promise<ProviderHealth> {
+      return {
+        checkedAt: new Date().toISOString(),
+        details: {},
+        providerId,
+        status: "unavailable"
+      };
+    },
+    async listModels() {
+      throw new Error("fetch failed");
     },
     providerId
   };

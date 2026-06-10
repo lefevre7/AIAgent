@@ -351,7 +351,7 @@ describe("core contracts", () => {
         instructions: "You are AIAgent. Use tools carefully and finish with attempt_complete.",
         messages: [message],
         metadata: {},
-        modelId: "mistralai/devstral-small-2-2512",
+        modelId: "google/gemma-4-26b-a4b-qat",
         provider: "lm_studio",
         responseFormat: {
           kind: "json_schema",
@@ -756,7 +756,7 @@ describe("core contracts", () => {
         languageModelResponseSchema.parse({
           id: "lm-response.typed.1",
           metadata: {},
-          modelId: "mistralai/devstral-small-2-2512",
+          modelId: "google/gemma-4-26b-a4b-qat",
           provider: "lm_studio",
           stopReason: "end_turn",
           toolCalls: [],
