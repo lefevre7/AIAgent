@@ -17,8 +17,13 @@ describe("config defaults and env overrides", () => {
     expect(config.providers.lmStudio.model).toBe("google/gemma-4-26b-a4b-qat");
     expect(config.browser.artifactRoot).toBe("./.aia/browser");
     expect(config.browser.headless).toBe(true);
-    expect(config.externalAgents.enabled).toBe(false);
+    expect(config.externalAgents.enabled).toBe(true);
     expect(config.externalAgents.agents.codex.command).toBe("codex");
+    expect(config.externalAgents.agents.codex.enabled).toBe(true);
+    const claudeAgent = config.externalAgents.agents.claude;
+    expect(claudeAgent.command).toBe("claude");
+    expect(claudeAgent.enabled).toBe(true);
+    expect(claudeAgent.kind === "claude" ? claudeAgent.printFlag : null).toBe("--print");
     expect(config.externalAgents.stateRoot).toBe("./.aia/external-agents");
     expect(config.image.artifactRoot).toBe("./.aia/images");
     expect(config.image.defaultProviderId).toBe("comfyui_local");

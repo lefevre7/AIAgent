@@ -8,6 +8,24 @@ export const mockExternalAgentFixturePath = path.resolve(
   "tests/fixtures/external-agents/mock-external-agent-cli.mjs"
 );
 
+export function createMockClaudeConfig(overrides: Partial<ExternalAgentConfig> = {}): ExternalAgentConfig {
+  return {
+    args: [mockExternalAgentFixturePath, "claude"],
+    command: process.execPath,
+    displayName: "Mock Claude CLI",
+    enabled: true,
+    env: {},
+    instructionMode: "arg",
+    kind: "claude",
+    outputFormatFlag: "--output-format",
+    outputFormatValue: "json",
+    passEnv: [],
+    printFlag: "--print",
+    resumeFlag: "--resume",
+    ...overrides
+  } as ExternalAgentConfig;
+}
+
 export function createMockCodexConfig(overrides: Partial<ExternalAgentConfig> = {}): ExternalAgentConfig {
   return {
     args: [mockExternalAgentFixturePath, "codex"],

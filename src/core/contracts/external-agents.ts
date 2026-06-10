@@ -10,7 +10,7 @@ import {
   structuredErrorSchema
 } from "@/core/contracts/common";
 
-export const externalAgentKindSchema = z.enum(["codex", "mistral_vibe"]);
+export const externalAgentKindSchema = z.enum(["claude", "codex", "mistral_vibe"]);
 export const externalAgentExecutionModeSchema = z.enum(["blocking", "detached"]);
 export const externalAgentJobStatusSchema = z.enum([
   "awaiting_resume",

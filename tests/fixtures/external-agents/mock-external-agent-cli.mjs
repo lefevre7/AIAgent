@@ -8,9 +8,67 @@ if (mode === "codex") {
   await runCodex(args);
 } else if (mode === "vibe") {
   await runVibe(args);
+} else if (mode === "claude") {
+  await runClaude(args);
 } else {
   console.error(`Unsupported mock external-agent mode: ${mode}`);
   process.exit(1);
+}
+
+async function runClaude(args) {
+  const resumeSessionId = readFlagValue(args, ["--resume"]);
+  const isResume = Boolean(resumeSessionId);
+  const prompt = readClaudePrompt(args);
+  const normalizedPrompt = stripControlTags(prompt);
+  const sleepMs = readSleepMs(prompt);
+  const shouldInterrupt = prompt.includes("[interrupt]") && !isResume;
+  const sessionId = resumeSessionId ?? buildSessionId("claude", normalizedPrompt);
+
+  if (sleepMs > 0) {
+    await sleep(sleepMs);
+  }
+
+  if (shouldInterrupt) {
+    process.exit(2);
+  }
+
+  const result = isResume ? `mock claude resumed: ${normalizedPrompt}` : `mock claude result: ${normalizedPrompt}`;
+  process.stdout.write(
+    `${JSON.stringify({
+      is_error: false,
+      result,
+      session_id: sessionId,
+      subtype: "success",
+      type: "result"
+    })}\n`
+  );
+}
+
+function readClaudePrompt(args) {
+  const positionals = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const entry = args[index];
+    if (!entry) {
+      continue;
+    }
+    if (entry === "--print" || entry === "-p") {
+      continue;
+    }
+    if (entry === "--output-format" || entry === "--resume") {
+      index += 1;
+      continue;
+    }
+    if (entry.startsWith("-")) {
+      if (index + 1 < args.length && !args[index + 1]?.startsWith("-")) {
+        index += 1;
+      }
+      continue;
+    }
+    positionals.push(entry);
+  }
+
+  return positionals.at(-1) ?? "";
 }
 
 async function runCodex(args) {

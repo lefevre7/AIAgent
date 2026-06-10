@@ -161,13 +161,13 @@ The overall implementation is only done when:
   Create a generic adapter for running configured external agent CLIs as explicit jobs with captured stdout/stderr, structured lifecycle state, resumability hooks, and approval-aware execution.
   Keep the abstraction generic so agent-specific presets can be layered in later without refactoring the runtime.
   Current implementation notes:
-  - `externalAgents` is now a first-class top-level config section with disabled-by-default Codex CLI and Mistral Vibe CLI presets.
+  - `externalAgents` is a first-class top-level config section. The Claude Code CLI (`claude -p "<prompt>" --output-format json`) and Codex CLI presets are enabled by default for one-shot task delegation; the Mistral Vibe CLI preset ships disabled. Each preset is a discriminated union member keyed by `kind` (`claude` | `codex` | `mistral_vibe`).
   - `src/core/external-agents/service.ts` persists explicit jobs under `.aia/external-agents/jobs/<job-id>/attempts/` with `job.json`, stdout/stderr logs, normalized final outputs, and summary artifacts.
   - The built-in `external_agent` tool now supports `run`, `get`, `list`, `cancel`, and `resume`.
   - Detached jobs append compact transcript status messages to the originating session while keeping full logs in artifacts on disk.
   - Read-only `get` and `list` actions bypass approvals, while `run`, `cancel`, and `resume` resolve approval targets for the external agent id, command, and cwd.
   - The gateway now handles `external_agent.*` request topics, and `external_agent.list` returns both configured definitions and persisted jobs.
-  - Deterministic fixture-backed integration coverage exists for blocking runs, detached recovery, resume, approval integration, gateway dispatch, and an opt-in live Codex path.
+  - Deterministic fixture-backed integration coverage exists for blocking runs, detached recovery, resume, approval integration, gateway dispatch, and an opt-in live Codex path. The Claude preset has coverage for blocking runs (harvesting `.result`/`.session_id` from `--output-format json`), native-session resume (`--resume <session_id>`), and structured-output rejection (it returns text, not JSON schema output).
 
 18. [x] Implement the voice subsystem.
   Build provider-agnostic STT/TTS/PTT interfaces with local/macOS-friendly live adapters for the first usable release, while keeping the interface portable to future cloud providers.

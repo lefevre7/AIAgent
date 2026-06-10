@@ -224,7 +224,7 @@ const runtimeConfigSchema = z
   .strict();
 
 const externalAgentInstructionModeSchema = z.enum(["arg", "stdin"]);
-export const externalAgentConfigKindSchema = z.enum(["codex", "mistral_vibe"]);
+export const externalAgentConfigKindSchema = z.enum(["claude", "codex", "mistral_vibe"]);
 
 const externalAgentBaseConfigSchema = z
   .object({
@@ -237,6 +237,16 @@ const externalAgentBaseConfigSchema = z
     instructionMode: externalAgentInstructionModeSchema,
     passEnv: z.array(envSecretIdSchema).max(128),
     timeoutMs: positiveTimeoutSchema.optional()
+  })
+  .strict();
+
+const externalAgentClaudeConfigSchema = externalAgentBaseConfigSchema
+  .extend({
+    kind: z.literal("claude"),
+    outputFormatFlag: z.string().min(1).max(64),
+    outputFormatValue: z.string().min(1).max(64),
+    printFlag: z.string().min(1).max(64),
+    resumeFlag: z.string().min(1).max(64)
   })
   .strict();
 
@@ -264,6 +274,7 @@ const externalAgentMistralVibeConfigSchema = externalAgentBaseConfigSchema
   .strict();
 
 const externalAgentConfigSchema = z.discriminatedUnion("kind", [
+  externalAgentClaudeConfigSchema,
   externalAgentCodexConfigSchema,
   externalAgentMistralVibeConfigSchema
 ]);
@@ -544,11 +555,25 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
     configVersion: APP_CONFIG_VERSION,
     externalAgents: {
       agents: {
+        claude: {
+          args: [],
+          command: "claude",
+          displayName: "Claude Code CLI",
+          enabled: true,
+          env: {},
+          instructionMode: "arg",
+          kind: "claude",
+          outputFormatFlag: "--output-format",
+          outputFormatValue: "json",
+          passEnv: ["ANTHROPIC_API_KEY"],
+          printFlag: "--print",
+          resumeFlag: "--resume"
+        },
         codex: {
           args: [],
           command: "codex",
           displayName: "Codex CLI",
-          enabled: false,
+          enabled: true,
           env: {},
           instructionMode: "arg",
           jsonFlag: "--json",
@@ -576,7 +601,7 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
           workdirFlag: "--workdir"
         }
       },
-      enabled: false,
+      enabled: true,
       pollIntervalMs: 500,
       stateRoot: "./.aia/external-agents"
     },

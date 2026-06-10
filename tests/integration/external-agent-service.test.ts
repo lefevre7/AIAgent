@@ -8,6 +8,7 @@ import { FileExternalAgentService, FileSessionStore } from "@/core";
 
 import {
   buildExternalAgentSession,
+  createMockClaudeConfig,
   createMockCodexConfig,
   createMockMistralVibeConfig
 } from "../helpers/external-agents";
@@ -148,6 +149,96 @@ describe("external-agent service", () => {
     expect(resumed.status).toBe("succeeded");
     expect(resumed.attempts).toBe(2);
     expect(resumed.summary).toContain("mock codex result: second pass");
+  });
+
+  test("runs blocking Claude jobs and harvests the result text and native session id", async () => {
+    const root = await createTempRoot();
+    const service = new FileExternalAgentService({
+      agents: {
+        claude: createMockClaudeConfig()
+      },
+      stateRoot: path.join(root, ".aia", "external-agents")
+    });
+
+    const job = await service.run({
+      agentId: "claude",
+      args: [],
+      cwd: root,
+      id: "external-job.service.claude.blocking",
+      instructions: "summarize the repository",
+      metadata: {},
+      mode: "blocking"
+    });
+
+    expect(job.status).toBe("succeeded");
+    expect(job.nativeSessionId).toMatch(/^mock-claude-session-/u);
+    expect(job.resultArtifact?.kind).toBe("text");
+    expect(job.summary).toContain("mock claude result: summarize the repository");
+    if (!job.logPaths.summary) {
+      throw new Error("Expected a persisted summary artifact.");
+    }
+    await expect(fs.readFile(job.logPaths.summary, "utf8")).resolves.toContain("mock claude result");
+  });
+
+  test("resumes Claude jobs using the captured native session id", async () => {
+    const root = await createTempRoot();
+    const service = new FileExternalAgentService({
+      agents: {
+        claude: createMockClaudeConfig()
+      },
+      stateRoot: path.join(root, ".aia", "external-agents")
+    });
+
+    const first = await service.run({
+      agentId: "claude",
+      args: [],
+      cwd: root,
+      id: "external-job.service.claude.resume",
+      instructions: "first pass",
+      metadata: {},
+      mode: "blocking"
+    });
+
+    expect(first.status).toBe("succeeded");
+    expect(first.nativeSessionId).toMatch(/^mock-claude-session-/u);
+
+    const resumed = await service.resume({
+      instructions: "second pass",
+      jobId: first.id,
+      mode: "blocking"
+    });
+
+    expect(resumed.status).toBe("succeeded");
+    expect(resumed.attempts).toBe(2);
+    expect(resumed.nativeSessionId).toBe(first.nativeSessionId);
+    expect(resumed.summary).toContain("mock claude resumed: second pass");
+  });
+
+  test("rejects structured output for the Claude preset", async () => {
+    const root = await createTempRoot();
+    const service = new FileExternalAgentService({
+      agents: {
+        claude: createMockClaudeConfig()
+      },
+      stateRoot: path.join(root, ".aia", "external-agents")
+    });
+
+    await expect(
+      service.run({
+        agentId: "claude",
+        args: [],
+        cwd: root,
+        id: "external-job.service.claude.structured",
+        instructions: "structured response",
+        metadata: {},
+        mode: "blocking",
+        resultSchema: {
+          type: "object"
+        }
+      })
+    ).rejects.toMatchObject({
+      code: "external_agent_structured_output_unsupported"
+    });
   });
 
   test("rejects structured output for the Mistral Vibe preset", async () => {

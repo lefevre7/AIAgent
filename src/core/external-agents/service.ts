@@ -39,7 +39,7 @@ import type { ToolApprovalDeciderParams } from "@/core/tools/runtime";
 
 const externalAgentRuntimeMetadataSchema = z
   .object({
-    adapterKind: z.enum(["codex", "mistral_vibe"]),
+    adapterKind: z.enum(["claude", "codex", "mistral_vibe"]),
     attempt: z.number().int().positive(),
     attemptRoot: z.string().min(1),
     cancelRequested: z.boolean().optional(),
@@ -1045,6 +1045,84 @@ export async function buildExternalAgentArtifacts(job: ExternalAgentJobRecord): 
 }
 
 const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
+  claude: {
+    async buildResume(params) {
+      const config = expectClaudeConfig(params.runtime.config);
+      if (config.instructionMode !== "arg") {
+        throw externalAgentError(
+          "external_agent_instruction_mode_unsupported",
+          `The Claude preset only supports instructionMode "arg"; received "${config.instructionMode}".`
+        );
+      }
+      const args = [...config.args, config.printFlag, ...params.request.args, config.outputFormatFlag, config.outputFormatValue];
+      args.push(config.resumeFlag, extractResumeSessionId(params));
+      appendInstructions(args, params.request.instructions, config.instructionMode);
+
+      return {
+        args,
+        command: config.command,
+        cwd: params.request.cwd,
+        env: buildProcessEnvironment(config),
+        resultPath: path.join(params.attemptRoot, "final-output.txt"),
+        stderrPath: path.join(params.attemptRoot, "stderr.log"),
+        stdinText: undefined,
+        stdoutPath: path.join(params.attemptRoot, "stdout.log"),
+        summaryPath: path.join(params.attemptRoot, "summary.txt")
+      };
+    },
+    async buildRun(params) {
+      const config = expectClaudeConfig(params.runtime.config);
+      if (config.instructionMode !== "arg") {
+        throw externalAgentError(
+          "external_agent_instruction_mode_unsupported",
+          `The Claude preset only supports instructionMode "arg"; received "${config.instructionMode}".`
+        );
+      }
+      const args = [...config.args, config.printFlag, ...params.request.args, config.outputFormatFlag, config.outputFormatValue];
+      appendInstructions(args, params.request.instructions, config.instructionMode);
+
+      return {
+        args,
+        command: config.command,
+        cwd: params.request.cwd,
+        env: buildProcessEnvironment(config),
+        resultPath: path.join(params.attemptRoot, "final-output.txt"),
+        stderrPath: path.join(params.attemptRoot, "stderr.log"),
+        stdinText: undefined,
+        stdoutPath: path.join(params.attemptRoot, "stdout.log"),
+        summaryPath: path.join(params.attemptRoot, "summary.txt")
+      };
+    },
+    async harvest(params) {
+      const stdoutText = params.job.logPaths.stdout ? await readFileIfExists(params.job.logPaths.stdout) : null;
+      const parsed = stdoutText ? parseClaudeStdout(stdoutText) : {};
+      const resultPath = params.job.logPaths.result ?? path.join(params.runtimeMetadata.attemptRoot, "final-output.txt");
+      let summary = parsed.result ?? (stdoutText ? stdoutText.trim() : undefined);
+      let resultArtifact: ArtifactReference | undefined;
+
+      if (summary && summary.length > 0) {
+        await writeTextFile(resultPath, summary);
+        resultArtifact = await createArtifactReference(resultPath, "text", {
+          mediaType: "text/plain",
+          name: path.basename(resultPath)
+        });
+      } else {
+        summary = undefined;
+      }
+
+      if (summary && params.job.logPaths.summary) {
+        await writeTextFile(params.job.logPaths.summary, clipSummary(summary));
+      }
+
+      return {
+        nativeSessionId: parsed.sessionId ?? params.job.nativeSessionId,
+        resultArtifact,
+        summary: summary ? clipSummary(summary) : undefined
+      };
+    },
+    resumeSupported: true,
+    structuredOutputSupported: false
+  },
   codex: {
     async buildResume(params) {
       const config = expectCodexConfig(params.runtime.config);
@@ -1525,6 +1603,47 @@ async function writeTextFile(filePath: string, value: string): Promise<void> {
   await fs.writeFile(filePath, `${value}\n`, "utf8");
 }
 
+function parseClaudeStdout(stdout: string): { result?: string; sessionId?: string } {
+  const trimmed = stdout.trim();
+  if (trimmed.length === 0) {
+    return {};
+  }
+  // `--output-format json` prints a single (possibly multi-line) JSON object.
+  const whole = tryParseClaudeRecord(trimmed);
+  if (whole.result !== undefined || whole.sessionId !== undefined) {
+    return whole;
+  }
+  // `--output-format stream-json` prints NDJSON; the trailing result line carries
+  // the final assistant text and session id.
+  let result: string | undefined;
+  let sessionId: string | undefined;
+  for (const line of trimmed
+    .split("\n")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)) {
+    const parsed = tryParseClaudeRecord(line);
+    if (parsed.sessionId !== undefined) {
+      sessionId = parsed.sessionId;
+    }
+    if (parsed.result !== undefined) {
+      result = parsed.result;
+    }
+  }
+  return { result, sessionId };
+}
+
+function tryParseClaudeRecord(text: string): { result?: string; sessionId?: string } {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    return {
+      result: typeof parsed.result === "string" ? parsed.result : undefined,
+      sessionId: typeof parsed.session_id === "string" && parsed.session_id.length > 0 ? parsed.session_id : undefined
+    };
+  } catch {
+    return {};
+  }
+}
+
 function parseCodexStdout(stdout: string): {
   lastAssistantText?: string;
   threadId?: string;
@@ -1719,6 +1838,13 @@ function readResumeSessionId(params: BuildExecutionParams): string | undefined {
     return params.job.nativeSessionId;
   }
   return undefined;
+}
+
+function expectClaudeConfig(config: ExternalAgentRuntimeConfig) {
+  if (config.kind !== "claude") {
+    throw new Error(`Expected a Claude external-agent config, received ${config.kind}.`);
+  }
+  return config;
 }
 
 function expectCodexConfig(config: ExternalAgentRuntimeConfig) {

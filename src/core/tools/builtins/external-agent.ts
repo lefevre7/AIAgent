@@ -256,7 +256,7 @@ export const externalAgentToolDefinition: ToolDefinition = {
     type: "object"
   },
   retryable: true,
-  searchTags: ["agent", "codex", "delegate", "external", "job", "mistral", "resume"],
+  searchTags: ["agent", "claude", "codex", "delegate", "external", "job", "mistral", "resume"],
   sideEffects: ["local_process", "workspace_write"],
   source: {
     displayName: "Built-in Tools",

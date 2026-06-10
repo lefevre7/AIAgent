@@ -630,7 +630,8 @@ Current implementation notes:
 Current implementation notes:
 
 - `src/core/external-agents/service.ts` is the canonical file-backed execution service for configured external agent CLIs.
-- The first concrete presets are Codex CLI and Mistral Vibe CLI, both exposed through one polymorphic built-in `external_agent` tool and one shared gateway surface.
+- The concrete presets are the Claude Code CLI, Codex CLI, and Mistral Vibe CLI, all exposed through one polymorphic built-in `external_agent` tool and one shared gateway surface. The Claude and Codex presets are enabled by default for one-shot task delegation; Mistral Vibe ships disabled.
+- The Claude preset shells out to `claude -p "<prompt>" --output-format json` (resume adds `--resume <session_id>`) and harvests the final assistant text from `.result` plus the native session id from `.session_id`. It delegates whole tasks one-shot rather than holding an interactive terminal, and reports text output (no structured JSON-schema output).
 - External-agent jobs support blocking and detached execution, captured stdout/stderr, normalized result artifacts, explicit cancellation, and resume via stored native session ids when the underlying CLI supports it.
 - Recovery is restart-safe at the job level: persisted PID and native-session metadata let a new service instance detect still-running detached jobs, monitor them to completion, or resume them through a fresh CLI process.
 - The gateway now supports `external_agent.run`, `external_agent.get`, `external_agent.list`, `external_agent.cancel`, and `external_agent.resume` request topics through the same core service used by the tool runtime.

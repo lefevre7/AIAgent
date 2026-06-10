@@ -67,7 +67,7 @@ built — see notes) · **Out** (out of scope — rationale given).
 | Tool discovery / search | codex, openai, mistral-vibe, vscode | `tool_search` | Have |
 | MCP tool use + resources | all | `mcp_*` + dynamic | Have |
 | Voice TTS / STT | openclaw | `voice_*` | Have |
-| Run external agent CLI | codex, mistral-vibe | `external_agent` | Have |
+| Run external agent CLI | claude, codex, mistral-vibe | `external_agent` | Have |
 | **Think / reasoning scratchpad** | OpenHands | `think` | **Added** |
 | **Edit notebook cells** | vscode, opendev | `notebook_edit` | **Added** |
 | **Ask the operator a question** | codex, Roo, opendev, mistral-vibe | `ask_user_question` | **Added** |
