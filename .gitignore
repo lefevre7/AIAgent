@@ -5,5 +5,7 @@ coverage/
 playwright-report/
 test-results/
 .aia/
+.aia-debug/
+chat-session-memory/
 npm-debug.log*
 
