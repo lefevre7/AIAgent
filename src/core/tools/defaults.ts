@@ -1,0 +1,211 @@
+import { createToolApprovalDecider } from "@/core/approvals";
+import { DEFAULT_APPROVAL_SETTINGS } from "@/core/config";
+import type { BrowserAutomationService, ExternalAgentService, ImageService, VoiceService } from "@/core/contracts";
+import { createExternalAgentApprovalTargetResolver } from "@/core/external-agents";
+import type { MCPManager } from "@/core/mcp";
+import { createMcpExecutableToolRegistry } from "@/core/mcp";
+import { createAttemptCompleteTool } from "@/core/tools/builtins/attempt-complete";
+import { createBrowserTools } from "@/core/tools/builtins/browser";
+import { CommandRuntime } from "@/core/tools/builtins/command-runtime";
+import { createCommandTools } from "@/core/tools/builtins/commands";
+import { createExternalAgentTool } from "@/core/tools/builtins/external-agent";
+import { createImageGenerateTool } from "@/core/tools/builtins/image";
+import { createMemoryGetTool } from "@/core/tools/builtins/memory-get";
+import { createMemoryIndexTool } from "@/core/tools/builtins/memory-index";
+import { createMemorySearchTool } from "@/core/tools/builtins/memory-search";
+import { createMemoryStatusTool } from "@/core/tools/builtins/memory-status";
+import { createMemoryWriteTool } from "@/core/tools/builtins/memory-write";
+import { createMcpReadResourceTool } from "@/core/tools/builtins/mcp-read-resource";
+import { createMcpReadResourceTemplateTool } from "@/core/tools/builtins/mcp-read-resource-template";
+import { createMcpSearchTool } from "@/core/tools/builtins/mcp-search";
+import { createToolSearchTool } from "@/core/tools/builtins/tool-search";
+import { createUpdatePlanTool } from "@/core/tools/builtins/update-plan";
+import { createVoiceTools } from "@/core/tools/builtins/voice";
+import { createWebFetchTool } from "@/core/tools/builtins/web-fetch";
+import { createWebSearchTool } from "@/core/tools/builtins/web-search";
+import { createWorkspaceTools } from "@/core/tools/builtins/workspace";
+import { combineToolRegistries, ToolRegistryBuilder } from "@/core/tools/registry";
+import { ToolRuntime } from "@/core/tools/runtime";
+import type { FileBackedMemoryService } from "@/core/memory";
+import type { TaskStateService } from "@/core/plans";
+import { WorkspaceMutationEngine } from "@/core/workspace";
+
+export function createDefaultToolRegistry(
+  options: {
+    browserService?: BrowserAutomationService;
+    commandRuntime?: CommandRuntime;
+    externalAgentService?: ExternalAgentService;
+    fetchImpl?: typeof fetch;
+    imageService?: ImageService;
+    mcpManager?: MCPManager;
+    memoryService?: FileBackedMemoryService;
+    stateRoot?: string;
+    taskStateService?: TaskStateService;
+    voiceService?: VoiceService;
+    workspaceEngine?: WorkspaceMutationEngine;
+    workspaceRoot?: string;
+  } = {}
+) {
+  const workspaceEngine =
+    options.workspaceEngine ??
+    (options.workspaceRoot
+      ? new WorkspaceMutationEngine({
+          allowArbitraryPaths: true,
+          stateRoot: options.stateRoot,
+          workspaceRoot: options.workspaceRoot
+        })
+      : undefined);
+  const commandRuntime =
+    options.commandRuntime ??
+    (options.workspaceRoot && options.stateRoot
+      ? new CommandRuntime({
+          baseDirectory: options.workspaceRoot,
+          stateRoot: options.stateRoot
+        })
+      : undefined);
+
+  const builder = new ToolRegistryBuilder()
+    .register(createAttemptCompleteTool())
+    .register(createToolSearchTool())
+    .register(
+      createWebFetchTool({
+        fetchImpl: options.fetchImpl
+      })
+    );
+
+  if (options.taskStateService) {
+    builder.register(
+      createUpdatePlanTool({
+        taskStateService: options.taskStateService
+      })
+    );
+  }
+
+  if (workspaceEngine) {
+    for (const tool of createWorkspaceTools({ workspaceEngine })) {
+      builder.register(tool);
+    }
+  }
+
+  if (commandRuntime) {
+    for (const tool of createCommandTools({ commandRuntime })) {
+      builder.register(tool);
+    }
+  }
+
+  if (options.browserService) {
+    for (const tool of createBrowserTools({ browserService: options.browserService })) {
+      builder.register(tool);
+    }
+  }
+
+  if (options.externalAgentService) {
+    builder.register(
+      createExternalAgentTool({
+        externalAgentService: options.externalAgentService
+      })
+    );
+  }
+
+  if (options.imageService) {
+    builder.register(
+      createImageGenerateTool({
+        imageService: options.imageService
+      })
+    );
+  }
+
+  if (options.memoryService) {
+    builder.register(
+      createMemoryGetTool({
+        memoryService: options.memoryService
+      })
+    );
+    builder.register(
+      createMemoryIndexTool({
+        memoryService: options.memoryService
+      })
+    );
+    builder.register(
+      createMemorySearchTool({
+        memoryService: options.memoryService
+      })
+    );
+    builder.register(
+      createMemoryStatusTool({
+        memoryService: options.memoryService
+      })
+    );
+    builder.register(
+      createMemoryWriteTool({
+        memoryService: options.memoryService
+      })
+    );
+  }
+
+  if (options.voiceService) {
+    for (const tool of createVoiceTools({ voiceService: options.voiceService })) {
+      builder.register(tool);
+    }
+  }
+
+  if (options.mcpManager) {
+    builder.register(
+      createWebSearchTool({
+        mcpManager: options.mcpManager
+      })
+    );
+    builder.register(
+      createMcpSearchTool({
+        mcpManager: options.mcpManager
+      })
+    );
+    builder.register(
+      createMcpReadResourceTool({
+        mcpManager: options.mcpManager
+      })
+    );
+    builder.register(
+      createMcpReadResourceTemplateTool({
+        mcpManager: options.mcpManager
+      })
+    );
+  }
+
+  const baseRegistry = builder.build();
+
+  if (!options.mcpManager) {
+    return baseRegistry;
+  }
+
+  return combineToolRegistries([baseRegistry, createMcpExecutableToolRegistry(options.mcpManager)]);
+}
+
+export function createDefaultToolRuntime(
+  options: {
+    browserService?: BrowserAutomationService;
+    commandRuntime?: CommandRuntime;
+    externalAgentService?: ExternalAgentService;
+    fetchImpl?: typeof fetch;
+    imageService?: ImageService;
+    mcpManager?: MCPManager;
+    memoryService?: FileBackedMemoryService;
+    stateRoot?: string;
+    taskStateService?: TaskStateService;
+    voiceService?: VoiceService;
+    workspaceEngine?: WorkspaceMutationEngine;
+    workspaceRoot?: string;
+  } = {}
+) {
+  return new ToolRuntime({
+    approvalDecider: createToolApprovalDecider({
+      resolveAdditionalTargets: options.externalAgentService
+        ? createExternalAgentApprovalTargetResolver({
+            service: options.externalAgentService
+          })
+        : undefined,
+      settings: DEFAULT_APPROVAL_SETTINGS
+    }),
+    registry: createDefaultToolRegistry(options)
+  });
+}

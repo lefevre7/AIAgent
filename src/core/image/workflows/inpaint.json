@@ -1,0 +1,246 @@
+{
+  "bindings": {
+    "count": [
+      {
+        "input": "amount",
+        "nodeId": "6"
+      },
+      {
+        "input": "amount",
+        "nodeId": "9"
+      }
+    ],
+    "guidanceScale": {
+      "input": "cfg",
+      "nodeId": "12"
+    },
+    "height": [
+      {
+        "input": "height",
+        "nodeId": "5"
+      },
+      {
+        "input": "height",
+        "nodeId": "8"
+      }
+    ],
+    "maskImage": {
+      "input": "image",
+      "nodeId": "7"
+    },
+    "model": {
+      "input": "ckpt_name",
+      "nodeId": "1"
+    },
+    "negativePrompt": {
+      "input": "text",
+      "nodeId": "3"
+    },
+    "outputPrefix": {
+      "input": "filename_prefix",
+      "nodeId": "14"
+    },
+    "positivePrompt": {
+      "input": "text",
+      "nodeId": "2"
+    },
+    "sampler": {
+      "input": "sampler_name",
+      "nodeId": "12"
+    },
+    "scheduler": {
+      "input": "scheduler",
+      "nodeId": "12"
+    },
+    "seed": {
+      "input": "seed",
+      "nodeId": "12"
+    },
+    "sourceImage": {
+      "input": "image",
+      "nodeId": "4"
+    },
+    "steps": {
+      "input": "steps",
+      "nodeId": "12"
+    },
+    "strength": {
+      "input": "denoise",
+      "nodeId": "12"
+    },
+    "width": [
+      {
+        "input": "width",
+        "nodeId": "5"
+      },
+      {
+        "input": "width",
+        "nodeId": "8"
+      }
+    ]
+  },
+  "prompt": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "placeholder.safetensors"
+      }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": "placeholder prompt"
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": ""
+      }
+    },
+    "4": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "placeholder.png"
+      }
+    },
+    "5": {
+      "class_type": "ImageScale",
+      "inputs": {
+        "crop": "disabled",
+        "height": 1024,
+        "image": [
+          "4",
+          0
+        ],
+        "upscale_method": "bicubic",
+        "width": 1024
+      }
+    },
+    "6": {
+      "class_type": "RepeatImageBatch",
+      "inputs": {
+        "amount": 1,
+        "image": [
+          "5",
+          0
+        ]
+      }
+    },
+    "7": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "placeholder-mask.png"
+      }
+    },
+    "8": {
+      "class_type": "ImageScale",
+      "inputs": {
+        "crop": "disabled",
+        "height": 1024,
+        "image": [
+          "7",
+          0
+        ],
+        "upscale_method": "nearest-exact",
+        "width": 1024
+      }
+    },
+    "9": {
+      "class_type": "RepeatImageBatch",
+      "inputs": {
+        "amount": 1,
+        "image": [
+          "8",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "ImageToMask",
+      "inputs": {
+        "channel": "red",
+        "image": [
+          "9",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "VAEEncodeForInpaint",
+      "inputs": {
+        "grow_mask_by": 0,
+        "mask": [
+          "10",
+          0
+        ],
+        "pixels": [
+          "6",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "12": {
+      "class_type": "KSampler",
+      "inputs": {
+        "cfg": 8,
+        "denoise": 0.75,
+        "latent_image": [
+          "11",
+          0
+        ],
+        "model": [
+          "1",
+          0
+        ],
+        "negative": [
+          "3",
+          0
+        ],
+        "positive": [
+          "2",
+          0
+        ],
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "seed": 1,
+        "steps": 20
+      }
+    },
+    "13": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "12",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "14": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "AIAgent",
+        "images": [
+          "13",
+          0
+        ]
+      }
+    }
+  }
+}

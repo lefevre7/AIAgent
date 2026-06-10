@@ -1,0 +1,102 @@
+{
+  // Workspace-local defaults for AIAgent.
+  // Omitted sections/fields fall back to the built-in defaults in src/core/config/schema.ts.
+  "configVersion": 1,
+
+  "runtime": {
+    "defaultProvider": "lm_studio",
+    "defaultModel": "mistralai/devstral-small-2-2512",
+    "logLevel": "info",
+    "statusUpdates": true,
+    "verboseEvents": true
+  },
+
+  "providers": {
+    "imageProviders": {
+      "comfyui_local": {
+        "enabled": false,
+        "kind": "comfyui_compatible",
+        "baseUrl": "http://localhost:8188",
+        "timeoutMs": 300000,
+        "headers": {}
+      }
+    },
+    "lmStudio": {
+      "enabled": true,
+      "baseUrl": "http://localhost:1234/v1",
+      "model": "mistralai/devstral-small-2-2512",
+      "timeoutMs": 300000,
+      "headers": {}
+    },
+    "ollama": {
+      "enabled": true,
+      "baseUrl": "http://localhost:11434",
+      "timeoutMs": 120000,
+      "headers": {}
+    },
+    "voiceProviders": {
+      "apple_native": {
+        "enabled": true,
+        "kind": "apple_native"
+      },
+      "local_system": {
+        "enabled": true,
+        "kind": "local_system"
+      }
+    }
+  },
+
+  "gateway": {
+    "hostname": "127.0.0.1",
+    "port": 3000,
+    "requestTimeoutMs": 120000,
+    "websocketPath": "/api/gateway/ws"
+  },
+
+  "tunnel": {
+    "enabled": false,
+    "provider": "none"
+  },
+
+  "memory": {
+    "workspaceRoot": "./memory",
+    "chatSessionRoot": "./chat-session-memory",
+    "stateRoot": "./.aia",
+    "sqlitePath": "./.aia/state.sqlite",
+    "userGlobalRoot": "~/.aia/memory",
+    "ftsEnabled": true,
+    "embeddingsEnabled": true,
+    "retrievalLimit": 8
+  },
+
+  "image": {
+    "artifactRoot": "./.aia/images",
+    "defaultProviderId": "comfyui_local",
+    "pollIntervalMs": 1000
+  },
+
+  "voice": {
+    "artifactRoot": "./.aia/voice",
+    "defaultProviderId": "apple_native",
+    "defaultSynthesisProviderId": "local_system",
+    "defaultTranscriptionProviderId": "apple_native",
+    "defaultLocale": "en-US",
+    "maxCaptureMs": 60000,
+    "silenceTimeoutMs": 1500,
+    "requireOnDeviceRecognition": true,
+    "retainAudio": true
+  },
+
+  "secrets": {
+    "defaults": {
+      "env": "env",
+      "file": "file",
+      "exec": "exec"
+    },
+    "providers": {
+      "env": {
+        "source": "env"
+      }
+    }
+  }
+}

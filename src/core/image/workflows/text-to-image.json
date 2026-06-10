@@ -1,0 +1,138 @@
+{
+  "bindings": {
+    "count": {
+      "input": "batch_size",
+      "nodeId": "4"
+    },
+    "guidanceScale": {
+      "input": "cfg",
+      "nodeId": "5"
+    },
+    "height": {
+      "input": "height",
+      "nodeId": "4"
+    },
+    "model": {
+      "input": "ckpt_name",
+      "nodeId": "1"
+    },
+    "negativePrompt": {
+      "input": "text",
+      "nodeId": "3"
+    },
+    "outputPrefix": {
+      "input": "filename_prefix",
+      "nodeId": "7"
+    },
+    "positivePrompt": {
+      "input": "text",
+      "nodeId": "2"
+    },
+    "sampler": {
+      "input": "sampler_name",
+      "nodeId": "5"
+    },
+    "scheduler": {
+      "input": "scheduler",
+      "nodeId": "5"
+    },
+    "seed": {
+      "input": "seed",
+      "nodeId": "5"
+    },
+    "steps": {
+      "input": "steps",
+      "nodeId": "5"
+    },
+    "width": {
+      "input": "width",
+      "nodeId": "4"
+    }
+  },
+  "prompt": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "placeholder.safetensors"
+      }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": "placeholder prompt"
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": ""
+      }
+    },
+    "4": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "batch_size": 1,
+        "height": 1024,
+        "width": 1024
+      }
+    },
+    "5": {
+      "class_type": "KSampler",
+      "inputs": {
+        "cfg": 8,
+        "denoise": 1,
+        "latent_image": [
+          "4",
+          0
+        ],
+        "model": [
+          "1",
+          0
+        ],
+        "negative": [
+          "3",
+          0
+        ],
+        "positive": [
+          "2",
+          0
+        ],
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "seed": 1,
+        "steps": 20
+      }
+    },
+    "6": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "5",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "7": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "AIAgent",
+        "images": [
+          "6",
+          0
+        ]
+      }
+    }
+  }
+}

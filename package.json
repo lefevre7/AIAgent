@@ -1,0 +1,102 @@
+{
+  "name": "aiagent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "bin": {
+    "aia": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./gateway": {
+      "types": "./dist/gateway/index.d.ts",
+      "default": "./dist/gateway/index.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "default": "./dist/sdk/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
+    }
+  },
+  "scripts": {
+    "cli": "node --import tsx src/cli.ts",
+    "dev": "node --import tsx src/server/start.ts --dev",
+    "example:coding": "node --import tsx examples/coding-task.ts",
+    "example:memory-mcp": "node --import tsx examples/memory-skills-mcp-task.ts",
+    "example:research": "node --import tsx examples/research-web-task.ts",
+    "build": "npm run build:node && npm run build:web",
+    "build:node": "tsup",
+    "build:web": "next build",
+    "start": "node dist/server/start.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write .",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:deterministic": "npm run test && npm run test:e2e",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "test:live:browser": "vitest run --config vitest.live.config.ts tests/live/browser-service.live.test.ts",
+    "test:live:external-agents": "vitest run --config vitest.live.config.ts tests/live/external-agent-codex.live.test.ts",
+    "test:live:image": "vitest run --config vitest.live.config.ts tests/live/image-service.live.test.ts",
+    "test:live:lm-studio": "vitest run --config vitest.live.config.ts tests/live/lm-studio.live.test.ts",
+    "test:live:memory": "vitest run --config vitest.live.config.ts tests/live/memory-embeddings.live.test.ts",
+    "test:live:mcp": "vitest run --config vitest.live.config.ts tests/live/mcp-manager.live.test.ts",
+    "test:live:ollama": "vitest run --config vitest.live.config.ts tests/live/ollama.live.test.ts",
+    "test:live:whatsapp": "vitest run --config vitest.live.config.ts tests/live/whatsapp-channel.live.test.ts",
+    "test:live:voice": "vitest run --config vitest.live.config.ts tests/live/voice-service.live.test.ts",
+    "test:e2e": "playwright test",
+    "validate:penultimate": "npm run typecheck && npm run lint && npm run test:deterministic && npm run test:live"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "express": "^5.1.0",
+    "jsonc-parser": "^3.3.1",
+    "next": "^15.0.0",
+    "node-pty": "^1.1.0",
+    "playwright": "^1.58.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sqlite": "^5.1.1",
+    "ws": "^8.20.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "@next/eslint-plugin-next": "^15.0.0",
+    "@playwright/test": "^1.58.2",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.2.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@types/supertest": "^6.0.3",
+    "eslint": "^9.20.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "globals": "^15.15.0",
+    "jsdom": "^26.0.0",
+    "node-mocks-http": "^1.17.2",
+    "prettier": "^3.5.1",
+    "supertest": "^7.0.0",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.23.0",
+    "vitest": "^3.0.5"
+  }
+}

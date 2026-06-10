@@ -1,0 +1,6 @@
+{
+  // Keep rules omitted here to inherit the built-in default approval rules.
+  // Add or override rules later as item 10 lands.
+  "configVersion": 1,
+  "defaultMode": "ask"
+}
