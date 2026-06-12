@@ -282,6 +282,7 @@ function createExampleLoadedConfig(params: {
     paths: {
       globalApprovalsPath: path.join(params.userStateDirectory, "approvals.global.jsonc"),
       globalConfigPath: path.join(params.userStateDirectory, "config.global.jsonc"),
+      globalConfigPaths: [path.join(params.userStateDirectory, "config.global.jsonc")],
       userStateDirectory: params.userStateDirectory,
       workspaceApprovalsPath: path.join(params.workspaceRoot, "aia.approvals.jsonc"),
       workspaceConfigPath: path.join(params.workspaceRoot, "aia.config.jsonc"),
@@ -296,7 +297,7 @@ function createExampleLoadedConfig(params: {
       },
       config: {
         env: false,
-        global: null,
+        global: [],
         workspace: null
       }
     }

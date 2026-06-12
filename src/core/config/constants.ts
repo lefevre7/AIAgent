@@ -7,6 +7,10 @@ export const APP_CONFIG_VERSION = 1;
 export const APPROVALS_CONFIG_VERSION = 1;
 export const APP_CONFIG_FILE_NAME = "aia.config.jsonc";
 export const APPROVALS_CONFIG_FILE_NAME = "aia.approvals.jsonc";
+// User-global config filenames discovered inside `~/.aia`, ordered base -> override.
+// `config.jsonc` is the base layer; the legacy `aia.config.jsonc` overrides it and
+// remains the canonical write/install target. Both are merged when present.
+export const GLOBAL_CONFIG_FILE_NAMES = ["config.jsonc", APP_CONFIG_FILE_NAME] as const;
 export const USER_STATE_DIRECTORY_NAME = ".aia";
 export const DEFAULT_USER_STATE_DIRECTORY = path.join(os.homedir(), USER_STATE_DIRECTORY_NAME);
 export const DEFAULT_GLOBAL_CONFIG_PATH = path.join(DEFAULT_USER_STATE_DIRECTORY, APP_CONFIG_FILE_NAME);

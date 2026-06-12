@@ -242,6 +242,157 @@ describe("config loader", () => {
       })
     ).rejects.toThrow(path.join(workspace, "aia.config.jsonc"));
   });
+
+  test("discovers ~/.aia/config.jsonc as a user-global layer when aia.config.jsonc is absent", async () => {
+    const root = await createTempRoot();
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+
+    await fs.writeFile(
+      path.join(home, ".aia", "config.jsonc"),
+      `{
+        "runtime": { "defaultProvider": "ollama" },
+        "mcp": {
+          "servers": {
+            "global_only": {
+              "type": "auto",
+              "url": "https://example.com/mcp",
+              "headers": {},
+              "enabled": true,
+              "required": false,
+              "tags": ["global"]
+            }
+          }
+        }
+      }`,
+      "utf8"
+    );
+
+    const loaded = await loadAIAgentConfig({ cwd: workspace, env: {}, userHomeDirectory: home });
+
+    expect(loaded.config.runtime.defaultProvider).toBe("ollama");
+    expect(loaded.config.mcp.servers.global_only).toMatchObject({ type: "auto", url: "https://example.com/mcp" });
+    expect(loaded.sources.config.global).toEqual([path.join(home, ".aia", "config.jsonc")]);
+  });
+
+  test("merges both global files with config.jsonc as base and aia.config.jsonc overriding", async () => {
+    const root = await createTempRoot();
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+
+    await fs.writeFile(
+      path.join(home, ".aia", "config.jsonc"),
+      `{
+        "runtime": { "defaultProvider": "ollama" },
+        "gateway": { "port": 4100 },
+        "mcp": {
+          "servers": {
+            "from_config": {
+              "type": "auto",
+              "url": "https://config.example.com/mcp",
+              "headers": {},
+              "enabled": true,
+              "required": false,
+              "tags": []
+            }
+          }
+        }
+      }`,
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(home, ".aia", "aia.config.jsonc"),
+      `{
+        "gateway": { "port": 4242 },
+        "mcp": {
+          "servers": {
+            "from_aia_config": {
+              "type": "auto",
+              "url": "https://aia.example.com/mcp",
+              "headers": {},
+              "enabled": true,
+              "required": false,
+              "tags": []
+            }
+          }
+        }
+      }`,
+      "utf8"
+    );
+
+    const loaded = await loadAIAgentConfig({ cwd: workspace, env: {}, userHomeDirectory: home });
+
+    // aia.config.jsonc overrides config.jsonc within the global tier.
+    expect(loaded.config.gateway.port).toBe(4242);
+    // Values only present in config.jsonc still survive.
+    expect(loaded.config.runtime.defaultProvider).toBe("ollama");
+    // Servers from both global files merge by name.
+    expect(Object.keys(loaded.config.mcp.servers).sort()).toEqual(["from_aia_config", "from_config"]);
+    expect(loaded.sources.config.global).toEqual([
+      path.join(home, ".aia", "config.jsonc"),
+      path.join(home, ".aia", "aia.config.jsonc")
+    ]);
+  });
+
+  test("merges global MCP servers into the workspace config", async () => {
+    const root = await createTempRoot();
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+
+    await fs.writeFile(
+      path.join(home, ".aia", "config.jsonc"),
+      `{
+        "mcp": {
+          "servers": {
+            "global_http": {
+              "type": "streamable-http",
+              "url": "https://example.com/mcp",
+              "headers": {},
+              "enabled": true,
+              "required": false,
+              "tags": []
+            }
+          }
+        }
+      }`,
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(workspace, "aia.config.jsonc"),
+      `{
+        "mcp": {
+          "servers": {
+            "workspace_stdio": {
+              "type": "stdio",
+              "command": "node",
+              "args": [],
+              "env": {},
+              "stderr": "pipe",
+              "enabled": true,
+              "required": false,
+              "tags": []
+            }
+          }
+        }
+      }`,
+      "utf8"
+    );
+
+    const loaded = await loadAIAgentConfig({ cwd: workspace, env: {}, userHomeDirectory: home });
+
+    expect(Object.keys(loaded.config.mcp.servers).sort()).toEqual(["global_http", "workspace_stdio"]);
+    expect(loaded.config.mcp.servers.global_http.type).toBe("streamable-http");
+    expect(loaded.config.mcp.servers.workspace_stdio.type).toBe("stdio");
+  });
 });
 
 async function createTempRoot(): Promise<string> {

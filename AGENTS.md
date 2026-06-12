@@ -57,8 +57,9 @@ For every checklist item below:
   - `MEMORY.md`
   - `memory/`
   - `chat-session-memory/`
-- Primary config files:
-  - `aia.config.jsonc`
+- Primary config files (see `docs/CONFIG.md` for layering and precedence):
+  - `aia.config.jsonc` (workspace)
+  - `~/.aia/config.jsonc` and `~/.aia/aia.config.jsonc` (user-global; merged ahead of the workspace config)
   - `aia.approvals.jsonc`
 - Primary entry points:
   - `src/index.ts`

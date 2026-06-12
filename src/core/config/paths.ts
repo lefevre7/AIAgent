@@ -2,11 +2,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { APPROVALS_CONFIG_FILE_NAME, APP_CONFIG_FILE_NAME, DEFAULT_GLOBAL_APPROVALS_PATH, DEFAULT_GLOBAL_CONFIG_PATH, USER_STATE_DIRECTORY_NAME } from "@/core/config/constants";
+import { APPROVALS_CONFIG_FILE_NAME, APP_CONFIG_FILE_NAME, DEFAULT_GLOBAL_APPROVALS_PATH, GLOBAL_CONFIG_FILE_NAMES, USER_STATE_DIRECTORY_NAME } from "@/core/config/constants";
 
 export type ResolvedConfigPaths = {
   globalApprovalsPath: string;
+  // Canonical write/install target for the user-global config (highest-precedence file).
   globalConfigPath: string;
+  // Ordered list of user-global config files to read and merge (base -> override).
+  globalConfigPaths: string[];
   userStateDirectory: string;
   workspaceApprovalsPath: string;
   workspaceConfigPath: string;
@@ -36,13 +39,19 @@ export async function resolveConfigPaths(params: {
     discoveredWorkspaceConfig ?? discoveredWorkspaceApprovals ?? path.resolve(params.cwd)
   );
 
+  // An explicit AIA_USER_CONFIG_PATH fully replaces global discovery with that single file.
+  // Otherwise we read every known global filename in `~/.aia` (base -> override) and write
+  // installs back to the highest-precedence file (the legacy `aia.config.jsonc`).
+  const explicitGlobalConfig = env.AIA_USER_CONFIG_PATH ? resolveAbsolutePath(env.AIA_USER_CONFIG_PATH, params.cwd) : null;
+  const defaultGlobalConfigPaths = GLOBAL_CONFIG_FILE_NAMES.map((name) => path.join(userStateDirectory, name));
+  const defaultGlobalConfigWriteTarget = path.join(userStateDirectory, APP_CONFIG_FILE_NAME);
+
   return {
     globalApprovalsPath: env.AIA_USER_APPROVALS_PATH
       ? resolveAbsolutePath(env.AIA_USER_APPROVALS_PATH, params.cwd)
       : DEFAULT_GLOBAL_APPROVALS_PATH.replace(os.homedir(), userHomeDirectory),
-    globalConfigPath: env.AIA_USER_CONFIG_PATH
-      ? resolveAbsolutePath(env.AIA_USER_CONFIG_PATH, params.cwd)
-      : DEFAULT_GLOBAL_CONFIG_PATH.replace(os.homedir(), userHomeDirectory),
+    globalConfigPath: explicitGlobalConfig ?? defaultGlobalConfigWriteTarget,
+    globalConfigPaths: explicitGlobalConfig ? [explicitGlobalConfig] : defaultGlobalConfigPaths,
     userStateDirectory,
     workspaceApprovalsPath: discoveredWorkspaceApprovals ?? path.join(workspaceRoot, APPROVALS_CONFIG_FILE_NAME),
     workspaceConfigPath: discoveredWorkspaceConfig ?? path.join(workspaceRoot, APP_CONFIG_FILE_NAME),

@@ -549,7 +549,11 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
 
   private async syncWatchers(): Promise<void> {
     const watchTargets = new Map<string, string>();
-    for (const filePath of [this.configPaths?.globalConfigPath, this.configPaths?.workspaceConfigPath, ...this.importedFiles]) {
+    for (const filePath of [
+      ...(this.configPaths?.globalConfigPaths ?? []),
+      this.configPaths?.workspaceConfigPath,
+      ...this.importedFiles
+    ]) {
       if (typeof filePath !== "string" || filePath.trim().length === 0) {
         continue;
       }

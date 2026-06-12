@@ -455,6 +455,45 @@ describe("MCP manager", () => {
     const health = await manager.getHealth();
     expect(health.servers.length).toBeGreaterThanOrEqual(1);
   });
+
+  test("connects to a server defined in the user-global ~/.aia/config.jsonc", async () => {
+    const root = await createTempRoot();
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(home, ".aia", "config.jsonc"),
+      JSON.stringify({
+        mcp: {
+          servers: {
+            global_docs: {
+              args: [STDIO_FIXTURE_PATH],
+              command: process.execPath,
+              enabled: true,
+              env: {},
+              required: true,
+              stderr: "pipe",
+              tags: ["global", "docs"],
+              type: "stdio"
+            }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const loaded = await loadAIAgentConfig({ cwd: workspace, env: {}, userHomeDirectory: home });
+    const manager = createMcpManagerFromLoadedConfig({ cwd: workspace, env: {}, loaded, userHomeDirectory: home, watch: false });
+    cleanups.push(() => manager.close());
+
+    await manager.initialize();
+
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "global_docs");
+    expect(status?.state).toBe("connected");
+    expect(status?.transport).toBe("stdio");
+  });
 });
 
 async function startStreamableServer(serverName: string): Promise<{ close: () => Promise<void>; url: string }> {

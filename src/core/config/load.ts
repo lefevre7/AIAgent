@@ -40,7 +40,7 @@ export type LoadedAIAgentConfig = {
     };
     config: {
       env: boolean;
-      global: string | null;
+      global: string[];
       workspace: string | null;
     };
   };
@@ -59,7 +59,13 @@ export async function loadAIAgentConfig(params: {
     userHomeDirectory: params.userHomeDirectory
   });
 
-  const globalConfigFragment = await loadFragment(paths.globalConfigPath, "global config", appConfigFragmentSchema);
+  const globalConfigLayers: { fragment: AppConfigFragment; path: string }[] = [];
+  for (const globalConfigPath of paths.globalConfigPaths) {
+    const fragment = await loadFragment(globalConfigPath, "global config", appConfigFragmentSchema);
+    if (fragment) {
+      globalConfigLayers.push({ fragment, path: globalConfigPath });
+    }
+  }
   const workspaceConfigFragment = await loadFragment(paths.workspaceConfigPath, "workspace config", appConfigFragmentSchema);
   const globalApprovalsFragment = await loadFragment(
     paths.globalApprovalsPath,
@@ -75,7 +81,7 @@ export async function loadAIAgentConfig(params: {
 
   const mergedConfig = deepMerge(
     normalizeConfigFragmentPaths(createDefaultAppConfig({ userStateDirectory: paths.userStateDirectory }), paths.workspaceRoot) as unknown,
-    normalizeConfigLayer(globalConfigFragment, paths.globalConfigPath) as unknown,
+    ...globalConfigLayers.map((layer) => normalizeConfigLayer(layer.fragment, layer.path) as unknown),
     normalizeConfigLayer(workspaceConfigFragment, paths.workspaceConfigPath) as unknown,
     normalizeConfigFragmentPaths(environmentOverrides.config, paths.workspaceRoot) as unknown
   ) as unknown;
@@ -104,7 +110,7 @@ export async function loadAIAgentConfig(params: {
       },
       config: {
         env: Object.keys(environmentOverrides.config).length > 0,
-        global: globalConfigFragment ? paths.globalConfigPath : null,
+        global: globalConfigLayers.map((layer) => layer.path),
         workspace: workspaceConfigFragment ? paths.workspaceConfigPath : null
       }
     }

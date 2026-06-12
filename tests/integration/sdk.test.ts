@@ -202,6 +202,7 @@ describe("node sdk", () => {
       paths: {
         globalApprovalsPath: path.join(root, "approvals.global.json"),
         globalConfigPath: path.join(root, "config.global.json"),
+        globalConfigPaths: [path.join(root, "config.global.json")],
         userStateDirectory,
         workspaceApprovalsPath: path.join(workspaceRoot, "approvals.json"),
         workspaceConfigPath: path.join(workspaceRoot, "aiagent.config.json"),
@@ -216,7 +217,7 @@ describe("node sdk", () => {
         },
         config: {
           env: false,
-          global: null,
+          global: [],
           workspace: null
         }
       }
