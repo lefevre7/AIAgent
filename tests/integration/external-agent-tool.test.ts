@@ -175,3 +175,60 @@ function createCall(id: string, sessionId: string, turnId: string, argumentsValu
     turnId
   });
 }
+
+describe("external-agent tool execution", () => {
+  function autoRuntime(service: FileExternalAgentService) {
+    return new ToolRuntime({
+      approvalDecider: async () => ({ mode: "execute" }),
+      registry: createDefaultToolRegistry({ externalAgentService: service })
+    });
+  }
+
+  test("runs, resumes, gets, and cancels jobs and reports unknown jobs", async () => {
+    const root = await createTempRoot();
+    const service = new FileExternalAgentService({
+      agents: { codex: createMockCodexConfig() },
+      stateRoot: path.join(root, ".aia", "external-agents")
+    });
+    const runtime = autoRuntime(service);
+    const session = buildExternalAgentSession({ cwd: root, id: "session.external-agent.tool.exec" });
+    const turn = buildTurn(session.id);
+    const jobId = "external-agent.codex.tool.exec";
+
+    const runResult = await runtime.execute(
+      createCall("tool-call.ea.run", session.id, turn.id, {
+        action: "run",
+        agentId: "codex",
+        instructions: "[interrupt] first pass",
+        jobId
+      }),
+      { session, turn }
+    );
+    expect(runResult.toolCall.status).toBe("succeeded");
+    expect(runResult.toolCall.result).toMatchObject({ action: "run", job: { id: jobId, status: "awaiting_resume" } });
+
+    const resumeResult = await runtime.execute(
+      createCall("tool-call.ea.resume", session.id, turn.id, { action: "resume", instructions: "second pass", jobId }),
+      { session, turn }
+    );
+    expect(resumeResult.toolCall.result).toMatchObject({ action: "resume", job: { id: jobId, status: "succeeded" } });
+
+    const getResult = await runtime.execute(
+      createCall("tool-call.ea.get", session.id, turn.id, { action: "get", jobId }),
+      { session, turn }
+    );
+    expect(getResult.toolCall.result).toMatchObject({ action: "get", job: { id: jobId } });
+
+    const cancelResult = await runtime.execute(
+      createCall("tool-call.ea.cancel", session.id, turn.id, { action: "cancel", jobId }),
+      { session, turn }
+    );
+    expect(cancelResult.toolCall.status).toBe("succeeded");
+
+    const missing = await runtime.execute(
+      createCall("tool-call.ea.missing", session.id, turn.id, { action: "get", jobId: "external-agent.codex.nope" }),
+      { session, turn }
+    );
+    expect(missing.toolCall.status).toBe("failed");
+  });
+});

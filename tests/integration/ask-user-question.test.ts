@@ -122,6 +122,70 @@ describe("ask_user_question end-to-end through the gateway runtime", () => {
   });
 });
 
+describe("denied approval resume through the gateway runtime", () => {
+  test("materializes a declined tool call and lets the model recover", async () => {
+    const adapter = new ScriptedLanguageModelAdapter({
+      modelId: "example-deny-1",
+      providerId: "example_lm",
+      responses: [
+        (request) =>
+          buildScriptedResponse({
+            request,
+            text: "Let me confirm the deployment target before continuing.",
+            toolCalls: [
+              buildToolCall("ask_user_question", {
+                options: [{ label: "Staging" }, { label: "Production" }],
+                question: "Which environment should I deploy to?"
+              })
+            ]
+          }),
+        (request) =>
+          buildScriptedResponse({
+            request,
+            text: "Understood — I will not deploy without an answer; stopping here.",
+            toolCalls: [buildToolCall("attempt_complete", { summary: "Halted because the operator declined to choose a target." })]
+          })
+      ]
+    });
+
+    await withExampleSdk({
+      name: "deny-approval-resume",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "example-deny-1", enabled: true }] },
+      run: async ({ sdk, workspaceRoot }) => {
+        const created = await sdk.sessions.create({
+          cwd: workspaceRoot,
+          goal: "Deploy only after confirming the target.",
+          initialMessage: { text: "Deploy the service." },
+          metadata: { surface: "example" },
+          title: "Deny Example"
+        });
+
+        await created.run?.wait();
+        const approvals = await created.handle.listPendingApprovals();
+        expect(approvals).toHaveLength(1);
+
+        await created.handle.resolveApproval({
+          comment: "Not now.",
+          decision: "denied",
+          requestId: approvals[0]!.request.id
+        });
+
+        const resumeRun = await created.handle.resume();
+        await resumeRun.wait();
+
+        const finished = await created.handle.snapshot();
+        expect(finished.snapshot.session.status).toBe("completed");
+
+        const declined = finished.snapshot.toolCalls.find(
+          (toolCall) => toolCall.toolName === "ask_user_question" && toolCall.status === "failed"
+        );
+        expect(declined).toBeDefined();
+        expect(declined?.error?.message ?? "").toContain("denied");
+      }
+    });
+  });
+});
+
 describe("model.health gateway topic", () => {
   test("reports the configured chat model provider health", async () => {
     const adapter = new ScriptedLanguageModelAdapter({

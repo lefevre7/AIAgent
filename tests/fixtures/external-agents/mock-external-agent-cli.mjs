@@ -142,7 +142,12 @@ async function runVibe(args) {
   ];
 
   await fs.writeFile(path.join(sessionRoot, "messages.jsonl"), `${JSON.stringify(transcript[0])}\n`, "utf8");
-  process.stdout.write(`${JSON.stringify(transcript)}\n`);
+
+  // "[logsonly]" simulates a run that writes its transcript to the session log
+  // but emits nothing on stdout, exercising the log-based summary fallback.
+  if (!prompt.includes("[logsonly]")) {
+    process.stdout.write(`${JSON.stringify(transcript)}\n`);
+  }
 }
 
 function readCodexPrompt(args, params) {
@@ -194,7 +199,7 @@ function readSleepMs(value) {
 }
 
 function stripControlTags(value) {
-  return value.replace(/\[(?:interrupt|sleep:\d+)\]\s*/gu, "").trim() || "ok";
+  return value.replace(/\[(?:interrupt|logsonly|sleep:\d+)\]\s*/gu, "").trim() || "ok";
 }
 
 function buildSessionId(prefix, seed) {

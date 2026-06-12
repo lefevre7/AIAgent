@@ -281,6 +281,15 @@ export class AppleNativeVoiceAdapter implements VoiceAdapter {
     state.promise = new Promise((resolve) => {
       let stdout = "";
       let stderr = "";
+      let settled = false;
+      const finish = (record: VoiceCaptureRecord) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        state.record = record;
+        resolve(record);
+      };
 
       child.stdout?.setEncoding("utf8");
       child.stdout?.on("data", (chunk: string) => {
@@ -293,19 +302,21 @@ export class AppleNativeVoiceAdapter implements VoiceAdapter {
       });
 
       child.once("error", (error) => {
-        const failedRecord = voiceCaptureRecordSchema.parse({
-          ...initialRecord,
-          completedAt: new Date().toISOString(),
-          error: createVoiceError("voice_capture_spawn_failed", error.message),
-          status: "failed",
-          stopReason: "error",
-          transcriptionId: stableArtifactId("voice.transcription", request.id)
-        });
-        state.record = failedRecord;
-        resolve(failedRecord);
+        finish(
+          voiceCaptureRecordSchema.parse({
+            ...initialRecord,
+            completedAt: new Date().toISOString(),
+            error: createVoiceError("voice_capture_spawn_failed", error.message),
+            status: "failed",
+            stopReason: "error",
+            transcriptionId: stableArtifactId("voice.transcription", request.id)
+          })
+        );
       });
 
-      child.once("exit", (exitCode, signal) => {
+      // Finalize on "close" (not "exit") so all stdout has been read before we
+      // parse the helper's final JSON payload.
+      child.once("close", (exitCode, signal) => {
         void (async () => {
           const finalRecord = await this.buildFinalCaptureRecord({
             exitCode: exitCode ?? 1,
@@ -315,22 +326,21 @@ export class AppleNativeVoiceAdapter implements VoiceAdapter {
             stderr,
             stdout
           });
-          state.record = finalRecord;
-          resolve(finalRecord);
+          finish(finalRecord);
         })().catch((error) => {
-          const failedRecord = voiceCaptureRecordSchema.parse({
-            ...initialRecord,
-            completedAt: new Date().toISOString(),
-            error: createVoiceError(
-              "voice_capture_finalize_failed",
-              error instanceof Error ? error.message : String(error)
-            ),
-            status: "failed",
-            stopReason: "error",
-            transcriptionId: stableArtifactId("voice.transcription", request.id)
-          });
-          state.record = failedRecord;
-          resolve(failedRecord);
+          finish(
+            voiceCaptureRecordSchema.parse({
+              ...initialRecord,
+              completedAt: new Date().toISOString(),
+              error: createVoiceError(
+                "voice_capture_finalize_failed",
+                error instanceof Error ? error.message : String(error)
+              ),
+              status: "failed",
+              stopReason: "error",
+              transcriptionId: stableArtifactId("voice.transcription", request.id)
+            })
+          );
         });
       });
     });

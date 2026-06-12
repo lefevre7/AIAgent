@@ -25,25 +25,31 @@ two named projects and aggregates V8 coverage across both. Per the project
 decision, **only `src/core/config/**` (plus `*.d.ts`) is excluded** from the
 denominator; everything else counts.
 
-Current measured coverage is ~75% lines / ~74% branches / ~80% functions, enforced
+Current measured coverage is ~77% lines / ~76% branches / ~83% functions, enforced
 by a threshold floor in the coverage config. The floor is set just under the
 measured numbers so regressions fail the gate; ratchet it upward as more
 deterministic tests land.
 
-Some areas are intentionally lower because they cannot be covered deterministically
-by the unit/integration suites and are exercised elsewhere (or not at all in CI):
+**Target: 100% of `src/` (config excepted).** Nothing else is excluded from the
+denominator. Code that touches a non-deterministic boundary is covered by faking
+that boundary rather than by exclusion:
 
-- **macOS-native voice** (`src/core/voice/apple-native.ts`, `local-system.ts`) — spawns
-  platform binaries; exercised by opt-in live voice tests.
-- **Server entrypoints** (`src/server/start.ts`, `index.ts`) — boot the HTTP/Next server.
-- **Web + gateway HTTP/WebSocket** (`src/web/home-page.tsx`, parts of `src/gateway`,
-  `src/server/control-plane/router.ts`) — exercised by the Playwright e2e suite, which
-  is not part of the V8-instrumented run.
-- **Network adapters** (`src/core/lm/http.ts`, `src/core/memory/embeddings.ts`) — exercised
-  by opt-in live provider suites.
+- **Network adapters** (`src/core/lm/*`, `src/core/memory/embeddings.ts`,
+  `src/core/image/comfyui.ts`) — every adapter takes an injectable `fetchImpl`; tests
+  pass a fake `fetch` that returns canned `Response`s (see `tests/unit/embeddings.test.ts`).
+- **Child-process layers** (`src/core/voice/utils.ts`, external-agent presets) — drive a
+  real short-lived `node -e` / mock-CLI process, or inject the command, to exercise the
+  spawn/stdout/timeout/error paths deterministically.
+- **macOS-native voice** (`src/core/voice/apple-native.ts`, `local-system.ts`) and the
+  **Playwright browser driver** (`src/core/browser/service.ts`) — mock `node:child_process`
+  / the `playwright` module so the orchestration logic is covered without the native runtime.
+- **Server entrypoints & app-router SSR** (`src/server/start.ts`, `src/app/**`) — import the
+  module with the network/bootstrap mocked, or render the component with `renderToString`.
 
-The coverage gate is intentionally separate from `validate:penultimate` so the main
-gate stays fast; run `npm run test:coverage` when changing core runtime code.
+Opt-in live suites still exist (see below) to prove the real adapters end-to-end, but they
+are no longer the *only* coverage for these areas. The coverage gate is intentionally
+separate from `validate:penultimate` so the main gate stays fast; run
+`npm run test:coverage` when changing core runtime code.
 
 Deterministic coverage now includes:
 

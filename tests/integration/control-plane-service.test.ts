@@ -18,7 +18,7 @@ afterEach(async () => {
   );
   await Promise.all(
     tempRoots.splice(0).map(async (root) => {
-      await fs.rm(root, { force: true, recursive: true });
+      await fs.rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 50 });
     })
   );
 });
@@ -107,6 +107,20 @@ describe("control-plane service over a real runtime context", () => {
 
     expect(steering.sessionId).toBe(created.session.id);
     expect(steering.message).toContain("smallest change");
+  });
+
+  test("queues a session message and rejects resolving an unknown approval", async () => {
+    const { service, context } = await createService();
+    const created = await service.createSession({
+      cwd: context.cwd,
+      goal: "Message handling",
+      title: "Messaging"
+    });
+
+    const sent = await service.sendSessionMessage({ sessionId: created.session.id, text: "hello there" });
+    expect(sent).toBeTruthy();
+
+    await expect(service.resolveApproval({ decision: "approved", requestId: "approval.does-not-exist" })).rejects.toBeTruthy();
   });
 });
 

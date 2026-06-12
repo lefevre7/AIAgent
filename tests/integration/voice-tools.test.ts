@@ -1,4 +1,9 @@
-import { describe, expect, test } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { afterEach, describe, expect, test } from "vitest";
 
 import {
   ToolRuntime,
@@ -9,6 +14,12 @@ import {
   type ProviderHealth,
   type VoiceService
 } from "@/core";
+
+const voiceTempRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(voiceTempRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
+});
 
 describe("voice tools", () => {
   test("registers the built-in voice tools when a voice service is present", () => {
@@ -200,3 +211,39 @@ function fakeVoiceService(): VoiceService {
     }
   };
 }
+
+describe("voice tool execution", () => {
+  function autoRuntime() {
+    return new ToolRuntime({
+      approvalDecider: async () => ({ mode: "execute" }),
+      registry: createDefaultToolRegistry({ voiceService: fakeVoiceService() })
+    });
+  }
+
+  test("lists voices as markdown through the runtime", async () => {
+    const result = await autoRuntime().execute(
+      createCall({ arguments: { locale: "en-US" }, id: "tool-call.voice.list", toolName: "voice_list_voices" }),
+      { session: buildSession(), turn: buildTurn() }
+    );
+    expect(result.toolCall.status).toBe("succeeded");
+    expect(JSON.stringify(result.toolCall.result)).toContain("Allison");
+  });
+
+  test("transcribes an audio artifact from a file uri", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-voice-tool-"));
+    voiceTempRoots.push(root);
+    const clip = path.join(root, "clip.wav");
+    await fs.writeFile(clip, Buffer.from("RIFF-fake-wav"));
+
+    const result = await autoRuntime().execute(
+      createCall({
+        arguments: { locale: "en-US", uri: pathToFileURL(clip).href },
+        id: "tool-call.voice.transcribe",
+        toolName: "voice_transcribe_audio"
+      }),
+      { session: buildSession(), turn: buildTurn() }
+    );
+    expect(result.toolCall.status).toBe("succeeded");
+    expect(JSON.stringify(result.toolCall.result)).toContain("transcribed");
+  });
+});

@@ -151,6 +151,7 @@ export class GatewayRuntime
 {
   private readonly activeRunsById = new Map<string, ActiveGatewayRun>();
   private readonly activeRunsBySession = new Map<string, ActiveGatewayRun>();
+  private readonly inFlightRuns = new Set<Promise<void>>();
   private readonly eventLog: GatewayEventLog;
   private readonly approvalCoordinator: ApprovalCoordinator;
   private readonly agentLoop: AgentLoop;
@@ -217,6 +218,11 @@ export class GatewayRuntime
   }
 
   async close(): Promise<void> {
+    // Drain fire-and-forget runs (and any follow-up runs they queue) before
+    // tearing down dependencies, so no event write lands after shutdown.
+    while (this.inFlightRuns.size > 0) {
+      await Promise.allSettled([...this.inFlightRuns]);
+    }
     this.removeAllListeners();
     await this.options.modelRuntime.close().catch(() => undefined);
     await this.options.browserService?.dispose().catch(() => undefined);
@@ -355,7 +361,7 @@ export class GatewayRuntime
       requestId,
       sessionId: session.id
     });
-    void this.executeSessionRun(run.id, session, {
+    this.launchSessionRun(run.id, session, {
       requestId,
       userMessages: [this.createChannelUserMessage(normalized)]
     });
@@ -659,7 +665,7 @@ export class GatewayRuntime
       requestId,
       sessionId: session.id
     });
-    void this.executeSessionRun(run.id, session, {
+    this.launchSessionRun(run.id, session, {
       requestId,
       userMessages: [this.createUserMessage(session.id, input.initialMessage)]
     });
@@ -680,7 +686,7 @@ export class GatewayRuntime
       requestId,
       sessionId: session.id
     });
-    void this.executeSessionRun(run.id, session, {
+    this.launchSessionRun(run.id, session, {
       requestId,
       userMessages: [this.createUserMessage(session.id, input)]
     });
@@ -700,7 +706,7 @@ export class GatewayRuntime
       requestId,
       sessionId: session.id
     });
-    void this.executeSessionRun(run.id, session, {
+    this.launchSessionRun(run.id, session, {
       requestId
     });
     return {
@@ -719,7 +725,7 @@ export class GatewayRuntime
       requestId,
       sessionId: session.id
     });
-    void this.executeToolRun(run.id, session, input);
+    this.launchToolRun(run.id, session, input);
     return {
       run,
       sessionId: session.id
@@ -777,6 +783,35 @@ export class GatewayRuntime
     await this.requireSession(steering.sessionId);
     await this.options.sessions.appendSteeringInjections([steering]);
     return steering;
+  }
+
+  private launchSessionRun(
+    runId: string,
+    session: SessionRecord,
+    params: {
+      requestId: string;
+      userMessages?: Message[];
+    }
+  ): void {
+    this.trackRun(this.executeSessionRun(runId, session, params));
+  }
+
+  private launchToolRun(runId: string, session: SessionRecord, input: z.infer<typeof gatewayRequestPayloadSchemas["tool.execute"]>): void {
+    this.trackRun(this.executeToolRun(runId, session, input));
+  }
+
+  // Keeps a handle on every fire-and-forget run so close() can drain them.
+  // Without this, an event persisted as a run finalizes can race teardown and
+  // attempt to write under a state root that has already been removed.
+  private trackRun(promise: Promise<void>): void {
+    const tracked = promise.then(
+      () => undefined,
+      () => undefined
+    );
+    this.inFlightRuns.add(tracked);
+    void tracked.finally(() => {
+      this.inFlightRuns.delete(tracked);
+    });
   }
 
   private async executeSessionRun(
@@ -1312,7 +1347,7 @@ export class GatewayRuntime
       requestId,
       sessionId: session.id
     });
-    void this.executeSessionRun(run.id, session, {
+    this.launchSessionRun(run.id, session, {
       requestId
     });
     return run;

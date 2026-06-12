@@ -164,6 +164,10 @@ describe("file-backed memory service", () => {
     expect(compactionHistory).toContain('"phase":"startup_phase_2"');
     expect(compactionHistory).toContain('"phase":"session_completion"');
     expect(promptContext?.sessionSummary).toContain("Session Summary");
+
+    const status = await memory.getMemoryStatus();
+    expect(status.lastCompaction?.sessionId).toBe(session.id);
+    expect(status.lastCompaction?.phase).toBeTruthy();
   });
 
   test("executes memory_write through the default runtime when the memory service is configured", async () => {
@@ -228,6 +232,95 @@ describe("file-backed memory service", () => {
     }>;
     expect(result.toolCall.status).toBe("succeeded");
     expect(workspaceIndex[0]?.summary).toBe("Workspace memory enabled");
+  });
+
+  test("removes entries, reads memory files, and reports status", async () => {
+    const root = await createTempRoot();
+    const workspaceRoot = path.join(root, "workspace", "memory");
+    const userGlobalRoot = path.join(root, "home", ".aia", "memory");
+    const chatSessionRoot = path.join(root, "workspace", "chat-session-memory");
+    const stateRoot = path.join(root, "workspace", ".aia");
+    const sessions = new FileSessionStore(stateRoot);
+    await sessions.saveSession(buildSession());
+
+    const memory = new FileBackedMemoryService({
+      chatSessionRoot,
+      sessions,
+      stateRoot,
+      userGlobalRoot,
+      workspaceRoot
+    });
+
+    await memory.upsert({
+      confidence: 0.9,
+      content: "Workspace uses durable memory.",
+      createdAt: "2026-03-27T17:00:00.000Z",
+      id: "memory.workspace.keep",
+      kind: "fact",
+      metadata: {},
+      provenance: { messageIds: [], sourceLabel: "src", toolCallIds: [] },
+      recencyScore: 0.9,
+      scope: "workspace",
+      summary: "Durable memory baseline",
+      tags: ["runtime"],
+      updatedAt: "2026-03-27T17:00:00.000Z"
+    });
+    await memory.upsert({
+      confidence: 0.7,
+      content: "Temporary note to be removed.",
+      createdAt: "2026-03-27T17:00:01.000Z",
+      id: "memory.workspace.drop",
+      kind: "decision",
+      metadata: {},
+      provenance: { messageIds: [], sourceLabel: "src", toolCallIds: [] },
+      recencyScore: 0.5,
+      scope: "workspace",
+      summary: "Disposable note",
+      tags: [],
+      updatedAt: "2026-03-27T17:00:01.000Z"
+    });
+
+    // queryDetailed reports the lexical retrieval mode.
+    const detailed = await memory.queryDetailed({
+      includeKinds: [],
+      limit: 5,
+      minConfidence: 0,
+      scopes: ["workspace"],
+      text: "durable"
+    });
+    expect(detailed.retrieval.activeMode).toBe("lexical");
+    expect(detailed.hits.some((hit) => hit.entry.id === "memory.workspace.keep")).toBe(true);
+
+    await memory.remove("memory.workspace.drop");
+    const afterRemoval = await memory.query({
+      includeKinds: [],
+      limit: 5,
+      minConfidence: 0,
+      scopes: ["workspace"],
+      text: "disposable"
+    });
+    expect(afterRemoval.some((hit) => hit.entry.id === "memory.workspace.drop")).toBe(false);
+
+    // getMemoryFile resolves the workspace summary and supports line windows.
+    const summaryFile = await memory.getMemoryFile({ path: "MEMORY.md" });
+    expect(summaryFile.missing).toBe(false);
+    expect(summaryFile.content).toContain("Durable memory baseline");
+
+    const firstLine = await memory.getMemoryFile({ lineCount: 1, path: "MEMORY.md", startLine: 1 });
+    expect(firstLine.endLine).toBe(1);
+
+    const missingFile = await memory.getMemoryFile({ path: "user-memory/does-not-exist.md" });
+    expect(missingFile.missing).toBe(true);
+
+    await expect(memory.getMemoryFile({ path: "etc/passwd" })).rejects.toThrow(/allowed memory roots/u);
+
+    // status + reindex report the file-backed index without a retrieval engine.
+    const status = await memory.getMemoryStatus();
+    expect(status.embeddings.enabled).toBe(false);
+    expect(status.index.sqlitePath).toContain("memory.sqlite");
+
+    const reindexed = await memory.reindexMemory();
+    expect(reindexed.index.sqlitePath).toContain("memory.sqlite");
   });
 });
 

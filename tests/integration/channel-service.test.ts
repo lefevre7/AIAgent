@@ -25,7 +25,7 @@ describe("ChannelService", () => {
     const config = createDefaultAppConfig({
       userStateDirectory: tempRoot
     });
-    const sessions = new FileSessionStore(config.memory.stateRoot);
+    const sessions = new FileSessionStore(path.join(tempRoot, ".aia"));
     const session = sessionRecordSchema.parse({
       createdAt: "2026-03-31T12:00:00.000Z",
       cwd: "/workspace",
@@ -88,7 +88,7 @@ describe("ChannelService", () => {
         }
       },
       sessions,
-      stateRoot: config.memory.stateRoot,
+      stateRoot: path.join(tempRoot, ".aia"),
       tunnelService
     });
 
@@ -137,5 +137,103 @@ describe("ChannelService", () => {
       ])
     );
     expect(savedSession?.channelThreadId).toBe("teams:tenant-1:room-42");
+  });
+
+  async function buildService(options: {
+    adapters: ChannelAdapter[];
+    channelsConfig?: (base: ReturnType<typeof createDefaultAppConfig>["channels"]) => ReturnType<typeof createDefaultAppConfig>["channels"];
+  }) {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aia-channels-err-"));
+    tempRoots.push(tempRoot);
+    const config = createDefaultAppConfig({ userStateDirectory: tempRoot });
+    const sessions = new FileSessionStore(path.join(tempRoot, ".aia"));
+    return new ChannelService({
+      adapters: options.adapters,
+      channelsConfig: options.channelsConfig ? options.channelsConfig(config.channels) : config.channels,
+      sessions,
+      stateRoot: path.join(tempRoot, ".aia")
+    });
+  }
+
+  function adapterFor(channel: "discord" | "teams", capabilities: ChannelAdapter["capabilities"], send?: ChannelAdapter["send"]): ChannelAdapter {
+    return {
+      capabilities,
+      channel,
+      handleWebhook: async () => [],
+      health: async () => ({ ok: true }),
+      normalizeInboundMessage: async (message) => message,
+      send: send ?? (async () => undefined)
+    };
+  }
+
+  function enableTeams(base: ReturnType<typeof createDefaultAppConfig>["channels"]) {
+    return {
+      ...base,
+      teams: {
+        appId: "id",
+        appPassword: "pw",
+        enabled: true,
+        publicBaseUrl: "https://x.example.com",
+        tenantId: "tenant-1"
+      }
+    };
+  }
+
+  const teamsIdentity = { accountId: "tenant-1", channel: "teams" as const, roomId: "r1", userId: "u1" };
+
+  test("rejects sends on a disabled channel", async () => {
+    const service = await buildService({ adapters: [adapterFor("discord", ["outbound_messages"])] });
+    await expect(
+      service.send({
+        attachments: [],
+        identity: { accountId: "guild-1", channel: "discord", userId: "u1" },
+        metadata: {},
+        parts: [{ kind: "text", text: "hi" }]
+      })
+    ).rejects.toMatchObject({ code: "channel_disabled" });
+  });
+
+  test("rejects sends when the adapter lacks outbound capability", async () => {
+    const service = await buildService({ adapters: [adapterFor("teams", ["webhooks"])], channelsConfig: enableTeams });
+    await expect(
+      service.send({ attachments: [], identity: teamsIdentity, metadata: {}, parts: [{ kind: "text", text: "hi" }] })
+    ).rejects.toMatchObject({ code: "channel_capability_missing" });
+  });
+
+  test("normalizes adapter send failures and records a failed delivery", async () => {
+    const service = await buildService({
+      adapters: [
+        adapterFor("teams", ["outbound_messages"], async () => {
+          throw new Error("provider exploded");
+        })
+      ],
+      channelsConfig: enableTeams
+    });
+
+    await expect(
+      service.send({ attachments: [], identity: teamsIdentity, metadata: {}, parts: [{ kind: "text", text: "hi" }] })
+    ).rejects.toMatchObject({ message: expect.stringContaining("provider exploded") });
+
+    const deliveries = await service.listDeliveries({});
+    expect(deliveries.some((delivery) => delivery.status === "failed")).toBe(true);
+  });
+
+  test("rejects webhooks for channels without a webhook adapter", async () => {
+    const service = await buildService({ adapters: [] });
+    await expect(service.handleWebhook("discord", {}, {})).rejects.toMatchObject({ code: "not_implemented" });
+  });
+
+  test("reports runtime statuses for disabled, unconfigured, and adapterless channels", async () => {
+    const unconfigured = await buildService({
+      adapters: [],
+      channelsConfig: (base) => ({ ...base, teams: { ...base.teams, enabled: true } })
+    });
+    const statuses = await unconfigured.listRuntimeStatuses();
+    expect(statuses.find((status) => status.channel === "teams")?.status).toBe("not_configured");
+    expect(statuses.some((status) => status.status === "disabled")).toBe(true);
+
+    const adapterless = await buildService({ adapters: [], channelsConfig: enableTeams });
+    const adapterlessStatuses = await adapterless.listRuntimeStatuses();
+    expect(adapterlessStatuses.find((status) => status.channel === "teams")?.status).toBe("not_implemented");
   });
 });

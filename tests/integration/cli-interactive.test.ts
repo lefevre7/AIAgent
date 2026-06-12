@@ -1,8 +1,13 @@
-import { describe, expect, test } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, test } from "vitest";
 
 import { runCli } from "@/cli";
 import type { AIAgentSdk } from "@/sdk";
-import type { GatewaySessionSnapshot } from "@/core/contracts";
+import type { ArtifactReference, GatewaySessionSnapshot, SessionRecord, VoiceService } from "@/core/contracts";
+import type { FileSessionStore } from "@/core";
 
 type CaptureStreams = {
   stderr: { write: (value: string) => boolean };
@@ -397,5 +402,245 @@ describe("interactive CLI loop", () => {
     expect(exitCode).toBe(0);
     expect(capture.getStderr()).toContain("Error: model exploded");
     expect(capture.getStdout()).toContain("Goodbye.");
+  });
+});
+
+function createPromptSdk(options: { assistant?: string; lastError?: string; status?: string; throwOnCreate?: boolean } = {}): {
+  sdk: AIAgentSdk;
+  wasClosed: () => boolean;
+} {
+  let closed = false;
+  const snapshot = {
+    snapshot: {
+      messages: options.assistant ? [{ parts: [{ kind: "text", text: options.assistant }], role: "assistant" }] : [],
+      session: {
+        goal: "do the thing",
+        id: "session.prompt.1",
+        lastError: options.lastError ? { message: options.lastError } : undefined,
+        status: options.status ?? "completed"
+      }
+    },
+    taskState: null
+  } as unknown as GatewaySessionSnapshot;
+
+  const sdk = {
+    close: async () => {
+      closed = true;
+    },
+    sessions: {
+      create: async () => {
+        if (options.throwOnCreate) {
+          throw new Error("session create exploded");
+        }
+        return {
+          handle: { snapshot: async () => snapshot },
+          run: { wait: async () => ({ id: "run.prompt.1" }) },
+          session: { goal: "do the thing", id: "session.prompt.1" }
+        };
+      }
+    }
+  } as unknown as AIAgentSdk;
+
+  return { sdk, wasClosed: () => closed };
+}
+
+describe("CLI help, voice help, and one-shot prompt", () => {
+  test("prints top-level help", async () => {
+    const capture = createCaptureStreams();
+    const exitCode = await runCli(["--help"], capture.streams, {});
+    expect(exitCode).toBe(0);
+    expect(capture.getStdout()).toContain("Available commands:");
+  });
+
+  test("prints voice help for --help and a bare voice command", async () => {
+    const help = createCaptureStreams();
+    expect(await runCli(["voice", "--help"], help.streams, {})).toBe(0);
+    expect(help.getStdout().toLowerCase()).toContain("voice");
+
+    const bare = createCaptureStreams();
+    expect(await runCli(["voice"], bare.streams, {})).toBe(0);
+    expect(bare.getStdout().toLowerCase()).toContain("voice");
+  });
+
+  test("reports an unknown voice subcommand", async () => {
+    const capture = createCaptureStreams();
+    const exitCode = await runCli(["voice", "teleport"], capture.streams, {});
+    expect(exitCode).toBe(1);
+    expect(capture.getStderr()).toContain("Unknown voice subcommand: teleport");
+  });
+
+  test("runs a one-shot --prompt session and prints the assistant summary", async () => {
+    const fake = createPromptSdk({ assistant: "All done." });
+    const capture = createCaptureStreams();
+    const exitCode = await runCli(["--prompt", "do the thing"], capture.streams, { createSdk: async () => fake.sdk });
+    expect(exitCode).toBe(0);
+    expect(capture.getStdout()).toContain("Assistant: All done.");
+    expect(capture.getStdout()).toContain("Status: completed");
+    expect(capture.getStdout()).toContain("Run: run.prompt.1");
+    expect(fake.wasClosed()).toBe(true);
+  });
+
+  test("returns a non-zero exit and surfaces session errors for an unfinished prompt run", async () => {
+    const fake = createPromptSdk({ lastError: "ran out of fuel", status: "failed" });
+    const capture = createCaptureStreams();
+    const exitCode = await runCli(["--prompt", "do the thing"], capture.streams, { createSdk: async () => fake.sdk });
+    expect(exitCode).toBe(1);
+    expect(capture.getStdout()).toContain("Error: ran out of fuel");
+  });
+
+  test("surfaces a failure when the prompt session cannot be created", async () => {
+    const fake = createPromptSdk({ throwOnCreate: true });
+    const capture = createCaptureStreams();
+    const exitCode = await runCli(["--prompt", "do the thing"], capture.streams, { createSdk: async () => fake.sdk });
+    expect(exitCode).toBe(1);
+    expect(capture.getStderr()).toContain("exploded");
+    expect(fake.wasClosed()).toBe(true);
+  });
+});
+
+const voiceTempRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(voiceTempRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
+});
+
+function audioArtifact(uri = "file:///tmp/out.aiff"): ArtifactReference {
+  return {
+    byteLength: 8,
+    id: "artifact.voice.cli",
+    kind: "audio",
+    mediaType: "audio/aiff",
+    metadata: { durationMs: 1000 },
+    name: "out.aiff",
+    sha256: "a".repeat(64),
+    uri
+  };
+}
+
+function fakeSessions(): FileSessionStore {
+  const session = {
+    createdAt: "2026-06-11T00:00:00.000Z",
+    cwd: "/workspace",
+    goal: "voice",
+    id: "session.voice.cli",
+    lastActiveAt: "2026-06-11T00:00:00.000Z",
+    metadata: {},
+    status: "idle",
+    tags: [],
+    title: "Voice",
+    updatedAt: "2026-06-11T00:00:00.000Z"
+  } as unknown as SessionRecord;
+  return {
+    appendMessages: async () => undefined,
+    getSession: async () => session,
+    saveSession: async () => undefined
+  } as unknown as FileSessionStore;
+}
+
+function fakeVoiceService(overrides: Partial<VoiceService> = {}): VoiceService {
+  return {
+    dispose: async () => undefined,
+    getCapture: async () => null,
+    listDevices: async () => [{ default: true, id: "spk", kind: "output", metadata: {}, name: "Speaker", providerId: "local_system" }],
+    listProviderHealth: async () => [],
+    listVoices: async () => [{ default: true, displayName: "Alex", id: "Alex", locale: "en-US", metadata: {}, providerId: "local_system" }],
+    playback: async () => ({ id: "playback.1", metadata: {}, providerId: "local_system", startedAt: "x", status: "completed" }),
+    startCapture: async () => ({ id: "capture.1", metadata: {}, providerId: "apple_native", startedAt: "x", status: "recording" }),
+    stopCapture: async () => ({ id: "capture.1", metadata: {}, providerId: "apple_native", startedAt: "x", status: "completed" }),
+    synthesize: async () => ({ audio: audioArtifact("file:///tmp/synth.aiff"), completedAt: "x", id: "synthesis.1", metadata: {}, providerId: "local_system" }),
+    transcribe: async () => ({ completedAt: "x", id: "transcription.1", locale: "en-US", metadata: {}, providerId: "apple_native", text: "transcribed words" }),
+    waitForCapture: async () => ({
+      audio: audioArtifact(),
+      id: "capture.1",
+      metadata: {},
+      providerId: "apple_native",
+      startedAt: "x",
+      status: "completed",
+      text: "captured words",
+      transcriptionId: "transcription.cap"
+    }),
+    ...overrides
+  } as unknown as VoiceService;
+}
+
+function voiceDeps(voiceService: VoiceService) {
+  return { createVoiceContext: async () => ({ sessions: fakeSessions(), voiceService }) };
+}
+
+async function tempAudioFile(): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-cli-voice-"));
+  voiceTempRoots.push(root);
+  const filePath = path.join(root, "clip.wav");
+  await fs.writeFile(filePath, Buffer.from("RIFF-fake-wav"));
+  return filePath;
+}
+
+describe("CLI voice subcommands", () => {
+  test("lists devices and voices, with empty fallbacks", async () => {
+    const cap = createCaptureStreams();
+    expect(await runCli(["voice", "list-devices", "--kind", "output"], cap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(cap.getStdout()).toContain("Speaker");
+
+    const voicesCap = createCaptureStreams();
+    expect(await runCli(["voice", "list-voices", "--locale", "en"], voicesCap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(voicesCap.getStdout()).toContain("Alex");
+
+    const emptyCap = createCaptureStreams();
+    await runCli(["voice", "list-devices"], emptyCap.streams, voiceDeps(fakeVoiceService({ listDevices: async () => [] })));
+    expect(emptyCap.getStdout()).toContain("No matching voice devices");
+  });
+
+  test("transcribes a file and records it on a session", async () => {
+    const filePath = await tempAudioFile();
+    const cap = createCaptureStreams();
+    const exitCode = await runCli(
+      ["voice", "transcribe-file", "--file", filePath, "--session", "session.voice.cli"],
+      cap.streams,
+      voiceDeps(fakeVoiceService())
+    );
+    expect(exitCode).toBe(0);
+    expect(cap.getStdout()).toContain("transcribed words");
+  });
+
+  test("requires a file for transcribe-file", async () => {
+    const cap = createCaptureStreams();
+    expect(await runCli(["voice", "transcribe-file"], cap.streams, voiceDeps(fakeVoiceService()))).toBe(1);
+    expect(cap.getStdout()).toContain("Usage: aia voice transcribe-file");
+  });
+
+  test("captures audio and reports failures", async () => {
+    const okCap = createCaptureStreams();
+    expect(await runCli(["voice", "capture", "--max-duration-ms", "5000"], okCap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(okCap.getStdout()).toContain("captured words");
+
+    const failCap = createCaptureStreams();
+    const failing = fakeVoiceService({
+      waitForCapture: async () => ({ id: "capture.1", metadata: {}, providerId: "apple_native", startedAt: "x", status: "failed" }) as never
+    });
+    expect(await runCli(["voice", "capture"], failCap.streams, voiceDeps(failing))).toBe(1);
+  });
+
+  test("synthesizes and speaks text", async () => {
+    const synthCap = createCaptureStreams();
+    expect(await runCli(["voice", "synthesize", "--text", "hello"], synthCap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(synthCap.getStdout()).toContain("file:///tmp/synth.aiff");
+
+    const speakCap = createCaptureStreams();
+    expect(await runCli(["voice", "speak", "--text", "hello"], speakCap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(speakCap.getStdout()).toContain("Speech playback completed.");
+
+    const noTextCap = createCaptureStreams();
+    expect(await runCli(["voice", "synthesize"], noTextCap.streams, voiceDeps(fakeVoiceService()))).toBe(1);
+  });
+
+  test("surfaces an error for an invalid numeric option", async () => {
+    const cap = createCaptureStreams();
+    const exitCode = await runCli(
+      ["voice", "capture", "--max-duration-ms", "not-a-number"],
+      cap.streams,
+      voiceDeps(fakeVoiceService())
+    );
+    expect(exitCode).toBe(1);
+    expect(cap.getStderr().length).toBeGreaterThan(0);
   });
 });

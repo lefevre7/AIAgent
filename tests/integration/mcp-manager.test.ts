@@ -118,6 +118,90 @@ describe("MCP manager", () => {
     expect(searchMatches.map((match) => match.capability.kind)).toEqual(
       expect.arrayContaining(["tool", "resource", "resource_template"])
     );
+
+    // listing + health surfaces
+    const docsPrompts = await manager.listPrompts("docs");
+    expect((docsPrompts as Array<{ name: string }>).some((prompt) => prompt.name === "summarize_doc")).toBe(true);
+    const allPrompts = (await manager.listPrompts()) as Array<{ serverName: string }>;
+    expect(allPrompts.some((entry) => entry.serverName === "docs")).toBe(true);
+    expect(Object.keys(manager.listTemplates()).length).toBeGreaterThan(0);
+    expect(manager.getCatalog().list().length).toBeGreaterThan(0);
+    const health = await manager.getHealth();
+    expect(health.servers.some((server) => server.serverName === "docs")).toBe(true);
+  });
+
+  test("records an error status when a server fails to connect", async () => {
+    const config = createDefaultAppConfig({
+      userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
+    });
+    config.mcp.servers.broken = {
+      args: ["/nonexistent/script.mjs"],
+      command: "/nonexistent/aiagent-mcp-binary",
+      description: "Intentionally broken stdio server",
+      enabled: true,
+      env: {},
+      required: false,
+      stderr: "pipe",
+      tags: ["broken"],
+      type: "stdio"
+    };
+
+    const manager = new MCPManager({ config, watch: false });
+    cleanups.push(() => manager.close());
+    await manager.initialize();
+
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "broken");
+    expect(status?.state).toBe("failed");
+    expect(status?.error).toBeTruthy();
+  });
+
+  test("records a disabled status for servers that are turned off", async () => {
+    const config = createDefaultAppConfig({
+      userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
+    });
+    config.mcp.servers.dormant = {
+      args: [STDIO_FIXTURE_PATH],
+      command: process.execPath,
+      description: "Disabled stdio server",
+      enabled: false,
+      env: {},
+      required: false,
+      stderr: "pipe",
+      tags: ["dormant"],
+      type: "stdio"
+    };
+
+    const manager = new MCPManager({ config, watch: false });
+    cleanups.push(() => manager.close());
+    await manager.initialize();
+
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "dormant");
+    expect(status?.state).toBe("disabled");
+    expect(status?.capabilities.tools).toBe(0);
+  });
+
+  test("throws when a required server cannot connect", async () => {
+    const config = createDefaultAppConfig({
+      userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
+    });
+    config.mcp.servers.mandatory = {
+      args: ["/nonexistent/script.mjs"],
+      command: "/nonexistent/aiagent-mcp-binary",
+      description: "Required but broken",
+      enabled: true,
+      env: {},
+      required: true,
+      stderr: "pipe",
+      tags: ["required"],
+      type: "stdio"
+    };
+
+    const manager = new MCPManager({ config, watch: false });
+    cleanups.push(() => manager.close());
+    await expect(manager.initialize()).rejects.toThrow(/Required MCP servers failed/u);
+
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "mandatory");
+    expect(status?.state).toBe("failed");
   });
 
   httpTransportTest("supports streamable HTTP and auto-fallback to SSE", async () => {
@@ -288,6 +372,15 @@ describe("MCP manager", () => {
       serverName: "installed_docs",
       templateId: "custom-stdio"
     });
+
+    // Installing without an explicit serverName derives a default name.
+    const defaultInstall = await manager.installTemplate({
+      destination: "workspace",
+      overrides: { args: [STDIO_FIXTURE_PATH], command: process.execPath, type: "stdio" },
+      templateId: "custom-stdio"
+    });
+    expect(defaultInstall.installedServerName.length).toBeGreaterThan(0);
+
     await manager.refresh();
 
     const toolSearchAfterRefresh = runtime.searchDefinitions({
@@ -324,6 +417,43 @@ describe("MCP manager", () => {
         })
       ])
     });
+  });
+
+  test("attaches config watchers when watch mode is enabled", async () => {
+    const root = await createTempRoot();
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "aia.config.jsonc"),
+      `{
+        "mcp": {
+          "servers": {
+            "docs": {
+              "type": "stdio",
+              "command": "${escapeJsonString(process.execPath)}",
+              "args": ["${escapeJsonString(STDIO_FIXTURE_PATH)}"],
+              "enabled": true,
+              "required": true,
+              "stderr": "pipe",
+              "env": {},
+              "tags": ["docs"]
+            }
+          }
+        }
+      }`,
+      "utf8"
+    );
+
+    const loaded = await loadAIAgentConfig({ cwd: workspace, env: {}, userHomeDirectory: home });
+    const manager = createMcpManagerFromLoadedConfig({ cwd: workspace, env: {}, loaded, userHomeDirectory: home, watch: true });
+    cleanups.push(() => manager.close());
+
+    await manager.initialize();
+    expect(manager.getServerStatuses().find((status) => status.serverName === "docs")?.state).toBe("connected");
+    const health = await manager.getHealth();
+    expect(health.servers.length).toBeGreaterThanOrEqual(1);
   });
 });
 

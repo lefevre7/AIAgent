@@ -431,14 +431,9 @@ export class FileExternalAgentService implements ExternalAgentService {
     this.runningJobs.set(job.id, monitor);
     this.configureTimeout(job, monitor);
 
-    const pid = child.pid;
-    const running = externalAgentJobRecordSchema.parse({
-      ...job,
-      pid: typeof pid === "number" ? pid : undefined,
-      updatedAt: new Date().toISOString()
-    });
-    await this.writeJob(running);
-
+    // Attach lifecycle listeners synchronously, before any await, so an async
+    // spawn failure (e.g. ENOENT for a missing command) always has a handler
+    // and never escapes as an uncaught 'error' event.
     child.stdout?.on("data", (chunk) => {
       stdoutStream.write(chunk);
     });
@@ -461,6 +456,14 @@ export class FileExternalAgentService implements ExternalAgentService {
     } else {
       child.stdin?.end();
     }
+
+    const pid = child.pid;
+    const running = externalAgentJobRecordSchema.parse({
+      ...job,
+      pid: typeof pid === "number" ? pid : undefined,
+      updatedAt: new Date().toISOString()
+    });
+    await this.writeJob(running);
 
     return running;
   }
@@ -491,6 +494,15 @@ export class FileExternalAgentService implements ExternalAgentService {
       this.runningJobs.set(job.id, monitor);
       this.configureTimeout(job, monitor);
 
+      // Attach listeners synchronously, before any await, so an async spawn
+      // failure always has a handler instead of escaping as an uncaught event.
+      child.once("error", (error) => {
+        void this.handleChildError(job.id, error);
+      });
+      child.once("exit", (code, signal) => {
+        void this.handleChildExit(job.id, code, signal);
+      });
+
       const running = externalAgentJobRecordSchema.parse({
         ...job,
         pid: typeof child.pid === "number" ? child.pid : undefined,
@@ -498,12 +510,6 @@ export class FileExternalAgentService implements ExternalAgentService {
       });
       await this.writeJob(running);
 
-      child.once("error", (error) => {
-        void this.handleChildError(job.id, error);
-      });
-      child.once("exit", (code, signal) => {
-        void this.handleChildExit(job.id, code, signal);
-      });
       child.unref();
       return running;
     } catch (error) {

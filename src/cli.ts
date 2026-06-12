@@ -31,6 +31,10 @@ type CliDependencies = {
   // Overrides how the SDK is created. Lets tests drive the loop without a full
   // runtime; defaults to createAIAgentSdkFromConfig.
   createSdk?: (options: { cwd: string }) => Promise<AIAgentSdk>;
+  // Overrides how the voice context (voice service + session store) is built for
+  // `aia voice` subcommands. Lets tests drive them without native voice adapters;
+  // defaults to building from the loaded config.
+  createVoiceContext?: () => Promise<VoiceCliContext>;
   // Overrides the interactive line source. When omitted, a readline interface
   // over process.stdin is used (only when stdin is a TTY).
   interactiveInput?: AsyncIterable<string>;
@@ -84,7 +88,7 @@ export async function runCli(
   deps: CliDependencies = {}
 ): Promise<number> {
   if (argv[0] === "voice") {
-    return runVoiceCli(argv.slice(1), streams);
+    return runVoiceCli(argv.slice(1), streams, deps);
   }
 
   if (argv[0] === "info") {
@@ -420,7 +424,7 @@ async function mainCli(): Promise<void> {
   }
 }
 
-async function runVoiceCli(args: string[], streams: CliStreams): Promise<number> {
+async function runVoiceCli(args: string[], streams: CliStreams, deps: CliDependencies = {}): Promise<number> {
   const subcommand = args[0];
   if (!subcommand || subcommand === "--help" || subcommand === "-h") {
     writeLine(streams.stdout, formatVoiceHelp());
@@ -430,7 +434,7 @@ async function runVoiceCli(args: string[], streams: CliStreams): Promise<number>
   try {
     switch (subcommand) {
       case "list-devices":
-        return withVoiceContext(async (context) => {
+        return await withVoiceContext(deps, async (context) => {
           const { values } = parseArgs({
             args: args.slice(1),
             allowPositionals: false,
@@ -466,7 +470,7 @@ async function runVoiceCli(args: string[], streams: CliStreams): Promise<number>
           return 0;
         });
       case "list-voices":
-        return withVoiceContext(async (context) => {
+        return await withVoiceContext(deps, async (context) => {
           const { values } = parseArgs({
             args: args.slice(1),
             allowPositionals: false,
@@ -502,7 +506,7 @@ async function runVoiceCli(args: string[], streams: CliStreams): Promise<number>
           return 0;
         });
       case "transcribe-file":
-        return withVoiceContext(async (context) => {
+        return await withVoiceContext(deps, async (context) => {
           const { values } = parseArgs({
             args: args.slice(1),
             allowPositionals: false,
@@ -553,7 +557,7 @@ async function runVoiceCli(args: string[], streams: CliStreams): Promise<number>
           return 0;
         });
       case "capture":
-        return withVoiceContext(async (context) => {
+        return await withVoiceContext(deps, async (context) => {
           const { values } = parseArgs({
             args: args.slice(1),
             allowPositionals: false,
@@ -633,7 +637,7 @@ async function runVoiceCli(args: string[], streams: CliStreams): Promise<number>
           }
         });
       case "speak":
-        return withVoiceContext(async (context) => {
+        return await withVoiceContext(deps, async (context) => {
           const { values } = parseArgs({
             args: args.slice(1),
             allowPositionals: false,
@@ -665,7 +669,7 @@ async function runVoiceCli(args: string[], streams: CliStreams): Promise<number>
           return 0;
         });
       case "synthesize":
-        return withVoiceContext(async (context) => {
+        return await withVoiceContext(deps, async (context) => {
           const { values } = parseArgs({
             args: args.slice(1),
             allowPositionals: false,
@@ -918,7 +922,24 @@ async function requireSession(store: FileSessionStore, sessionId: string): Promi
   return session;
 }
 
-async function withVoiceContext(run: (context: VoiceCliContext) => Promise<number>): Promise<number> {
+async function withVoiceContext(
+  deps: CliDependencies,
+  run: (context: VoiceCliContext) => Promise<number>
+): Promise<number> {
+  const context = await buildVoiceContext(deps);
+
+  try {
+    return await run(context);
+  } finally {
+    await context.voiceService.dispose();
+  }
+}
+
+async function buildVoiceContext(deps: CliDependencies): Promise<VoiceCliContext> {
+  if (deps.createVoiceContext) {
+    return deps.createVoiceContext();
+  }
+
   const loaded = await loadAIAgentConfig({
     cwd: process.cwd()
   });
@@ -926,15 +947,10 @@ async function withVoiceContext(run: (context: VoiceCliContext) => Promise<numbe
   const voiceService = createVoiceServiceFromConfig(loaded.resolvedConfig, {
     sessions
   });
-
-  try {
-    return await run({
-      sessions,
-      voiceService
-    });
-  } finally {
-    await voiceService.dispose();
-  }
+  return {
+    sessions,
+    voiceService
+  };
 }
 
 function writeLine(stream: CliStream, value: string): void {

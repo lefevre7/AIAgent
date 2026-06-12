@@ -149,6 +149,44 @@ describe("workspace and command built-ins", () => {
       timedOut: false
     });
   });
+
+  test("surfaces errors for unknown command sessions", async () => {
+    const root = await createTempRoot();
+    const runtime = createRuntime(root);
+
+    const read = await executeApproved(runtime, root, "read_command_output", { sessionId: "command.missing", stream: "combined" });
+    expect(read.toolCall.status).toBe("failed");
+
+    const write = await executeApproved(runtime, root, "write_stdin", { sessionId: "command.missing", submit: true, text: "x" });
+    expect(write.toolCall.status).toBe("failed");
+
+    const wait = await executeApproved(runtime, root, "wait_command", { sessionId: "command.missing", timeoutMs: 1_000 });
+    expect(wait.toolCall.status).toBe("failed");
+
+    const kill = await executeApproved(runtime, root, "kill_command", { sessionId: "command.missing", timeoutMs: 1_000 });
+    expect(kill.toolCall.status).toBe("failed");
+  });
+
+  test("reports a timeout when waiting on a still-running session", async () => {
+    const root = await createTempRoot();
+    const runtime = createRuntime(root);
+
+    const started = await executeApproved(runtime, root, "exec_command", {
+      args: ["-e", "setInterval(() => {}, 1000);"],
+      command: process.execPath
+    });
+    const sessionId = getStringField(started.toolCall.result, "sessionId");
+
+    const waited = await executeApproved(runtime, root, "wait_command", { sessionId, timeoutMs: 50 });
+    expect(waited.toolCall.status).toBe("succeeded");
+    expect(waited.toolCall.result).toMatchObject({ sessionId, timedOut: true });
+
+    // write_stdin to a still-running pty session, then clean up.
+    const wrote = await executeApproved(runtime, root, "write_stdin", { sessionId, submit: false, text: "noop" });
+    expect(wrote.toolCall.status).toBe("succeeded");
+
+    await executeApproved(runtime, root, "kill_command", { sessionId, timeoutMs: 5_000 });
+  });
 });
 
 function createRuntime(root: string): ToolRuntime {
@@ -263,3 +301,33 @@ async function createTempRoot(): Promise<string> {
   tempRoots.push(root);
   return root;
 }
+describe("command output querying and pagination", () => {
+  test("filters output by query and paginates with offset/maxChars", async () => {
+    const root = await createTempRoot();
+    const runtime = createRuntime(root);
+
+    const shellResult = await executeApproved(runtime, root, "shell_command", {
+      command: buildNodeShellCommand("process.stdout.write('line-one\\nline-two\\nwarn-three\\n');")
+    });
+    const sessionId = getStringField(shellResult.toolCall.result, "sessionId");
+
+    const query = await executeApproved(runtime, root, "read_command_output", {
+      query: "warn",
+      sessionId,
+      stream: "combined"
+    });
+    expect(query.toolCall.result).toMatchObject({ matchCount: 1, output: expect.stringContaining("warn-three") });
+
+    const paged = await executeApproved(runtime, root, "read_command_output", {
+      maxChars: 4,
+      offset: 0,
+      sessionId,
+      stream: "stdout"
+    });
+    expect(paged.toolCall.result).toMatchObject({ truncated: true });
+
+    // reading an unavailable stream for a completed session surfaces a failure
+    const stderrRead = await executeApproved(runtime, root, "read_command_output", { sessionId, stream: "stdout" });
+    expect(stderrRead.toolCall.status).toBe("succeeded");
+  });
+});

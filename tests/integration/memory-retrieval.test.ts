@@ -35,8 +35,11 @@ afterEach(async () => {
 describe("memory retrieval", () => {
   test("supports hybrid retrieval and exposes the full memory tool family", async () => {
     const root = await createTempRoot();
+    const extraFile = path.join(root, "workspace", "extra-notes.md");
+    const extraDir = path.join(root, "external-notes");
     const { chatSessionRoot, memory, session, stateRoot, workspaceBase } = await createRetrievalFixture(root, {
-      adapter: createKeywordEmbeddingAdapter()
+      adapter: createKeywordEmbeddingAdapter(),
+      extraPaths: [extraFile, extraDir]
     });
 
     await fs.writeFile(
@@ -50,6 +53,11 @@ describe("memory retrieval", () => {
       "# Architecture\nThe workspace prefers TypeScript ESM and Node 22.\n",
       "utf8"
     );
+    // An extra markdown file (inside the workspace) and an extra directory
+    // (outside the workspace) exercise both extra-source display-path branches.
+    await fs.writeFile(extraFile, "# Extra Notes\nInline extra note about deployment cadence.\n", "utf8");
+    await fs.mkdir(extraDir, { recursive: true });
+    await fs.writeFile(path.join(extraDir, "ops.md"), "# Ops Runbook\nExternal operational runbook details.\n", "utf8");
 
     await memory.initializeRetrieval();
 
@@ -64,6 +72,17 @@ describe("memory retrieval", () => {
     expect(detailed.retrieval.activeMode).toBe("hybrid");
     expect(detailed.retrieval.semanticAvailable).toBe(true);
     expect(detailed.hits[0]?.entry.metadata.filePath).toBe("MEMORY.md");
+
+    // A query with FTS5-reserved syntax forces the lexical engine to fall back
+    // to a plain substring scan instead of throwing.
+    const reservedSyntax = await memory.queryDetailed({
+      includeKinds: [],
+      limit: 3,
+      minConfidence: 0,
+      scopes: ["workspace", "session", "user_global"],
+      text: 'progress" OR ((unbalanced'
+    });
+    expect(Array.isArray(reservedSyntax.hits)).toBe(true);
 
     const runtime = createDefaultToolRuntime({
       memoryService: memory
@@ -109,6 +128,14 @@ describe("memory retrieval", () => {
     const status = await memory.getMemoryStatus();
     expect(status.index.sqlitePath).toBe(path.join(stateRoot, "memory.sqlite"));
     expect(status.sources.chatSessionRoot).toBe(chatSessionRoot);
+    expect(status.index.documentCount).toBeGreaterThanOrEqual(2);
+
+    const file = await memory.getMemoryFile({ path: "MEMORY.md" });
+    expect(file.missing).toBe(false);
+    expect(file.content).toContain("concise execution updates");
+
+    const reindexed = await memory.reindexMemory();
+    expect(reindexed.index.documentCount).toBeGreaterThanOrEqual(2);
   });
 
   test("falls back to lexical retrieval when semantic lookup degrades after startup", async () => {
@@ -369,6 +396,7 @@ async function createRetrievalFixture(
   root: string,
   params: {
     adapter: EmbeddingAdapter;
+    extraPaths?: string[];
   }
 ): Promise<{
   chatSessionRoot: string;
@@ -391,6 +419,7 @@ async function createRetrievalFixture(
     embeddingRuntime: new EmbeddingRuntime([params.adapter], {
       defaultProvider: "lm_studio"
     }),
+    extraPaths: params.extraPaths,
     retrieval: {
       candidateLimit: 12,
       chunkOverlapChars: 64,

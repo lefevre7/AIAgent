@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+
 import { z } from "zod";
 
 import type {
@@ -247,6 +250,8 @@ export class LocalSystemVoiceAdapter implements VoiceAdapter {
       text: request.text,
       voice: voiceName
     });
+    // `say -o` does not create parent directories; ensure the artifact path exists.
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
 
     const result = await runProcess(this.sayPath, args);
     if (result.exitCode !== 0) {

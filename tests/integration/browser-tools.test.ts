@@ -50,6 +50,41 @@ describe("browser tools", () => {
     expect(result.approvalRequest?.target.kind).toBe("browser_action");
   });
 
+  test("executes every browser tool against the automation service", async () => {
+    const runtime = new ToolRuntime({
+      approvalDecider: async () => ({ mode: "execute" }),
+      registry: createDefaultToolRegistry({ browserService: fakeBrowserService() })
+    });
+
+    const invocations: Array<{ args: Record<string, unknown>; toolName: string }> = [
+      { args: { url: "https://example.com" }, toolName: "browser_open" },
+      { args: {}, toolName: "browser_list_pages" },
+      { args: { url: "https://example.com/next" }, toolName: "browser_navigate" },
+      { args: { pageId: "browser.page.1" }, toolName: "browser_snapshot" },
+      { args: { fullPage: true }, toolName: "browser_screenshot" },
+      { args: { selector: "#btn" }, toolName: "browser_click" },
+      { args: { selector: "#field", text: "hello" }, toolName: "browser_fill" },
+      { args: { selector: "#field", text: "typed" }, toolName: "browser_type" },
+      { args: { selector: "#select", values: ["one"] }, toolName: "browser_select_option" },
+      { args: { key: "Enter" }, toolName: "browser_press_key" },
+      { args: { paths: ["/tmp/upload.txt"], selector: "#file" }, toolName: "browser_upload_file" },
+      { args: { timeMs: 5 }, toolName: "browser_wait" },
+      { args: { pageId: "browser.page.1" }, toolName: "browser_list_downloads" },
+      { args: { pageId: "browser.page.1" }, toolName: "browser_close_page" }
+    ];
+
+    for (const [index, invocation] of invocations.entries()) {
+      const result = await runtime.execute(
+        createCall({
+          arguments: invocation.args,
+          id: `tool-call.browser.exec.${index}`,
+          toolName: invocation.toolName
+        }),
+        { session: buildSession(), turn: buildTurn() }
+      );
+      expect(result.toolCall.status, `${invocation.toolName} should succeed`).toBe("succeeded");
+    }
+  });
 });
 
 function fakeBrowserService(): BrowserAutomationService {

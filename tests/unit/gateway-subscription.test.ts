@@ -42,4 +42,31 @@ describe("gateway event subscription matching", () => {
     expect(eventMatchesGatewaySubscription(event, { sessionId: "session.abc", topics: ["message.reasoning"] })).toBe(true);
     expect(eventMatchesGatewaySubscription(event, { sessionId: "session.other", topics: ["message.reasoning"] })).toBe(false);
   });
+
+  test("derives the session id from the payload or metadata for every event topic", () => {
+    type Derivable = Parameters<typeof deriveGatewayEventSessionId>[0];
+    const event = (topic: string, payload: unknown, metadata: unknown = {}): Derivable =>
+      ({ createdAt: "2026-06-10T12:00:00.000Z", id: `${topic}.evt`, metadata, payload, topic }) as unknown as Derivable;
+
+    const cases: Array<{ expected: string | undefined; event: Derivable }> = [
+      { event: event("approval.requested", { sessionId: "s.approval-req" }), expected: "s.approval-req" },
+      { event: event("approval.resolved", {}, { sessionId: "s.approval-res" }), expected: "s.approval-res" },
+      { event: event("approval.resolved", {}, {}), expected: undefined },
+      { event: event("channel.message", { sessionId: "s.channel" }), expected: "s.channel" },
+      { event: event("channel.message", { sessionId: null }), expected: undefined },
+      { event: event("external_agent.updated", { request: { sessionId: "s.ext" } }), expected: "s.ext" },
+      { event: event("gateway.status", {}, { sessionId: "s.status" }), expected: "s.status" },
+      { event: event("log.emitted", {}, { sessionId: "s.log" }), expected: "s.log" },
+      { event: event("memory.updated", {}, { sessionId: "s.mem" }), expected: "s.mem" },
+      { event: event("message.created", { sessionId: "s.msg" }), expected: "s.msg" },
+      { event: event("run.updated", { sessionId: "s.run" }), expected: "s.run" },
+      { event: event("session.updated", { id: "s.session" }), expected: "s.session" },
+      { event: event("tool.updated", { sessionId: "s.tool" }), expected: "s.tool" },
+      { event: event("turn.updated", { sessionId: "s.turn" }), expected: "s.turn" }
+    ];
+
+    for (const testCase of cases) {
+      expect(deriveGatewayEventSessionId(testCase.event)).toBe(testCase.expected);
+    }
+  });
 });

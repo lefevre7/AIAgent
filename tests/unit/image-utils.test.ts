@@ -134,4 +134,98 @@ describe("image probing", () => {
     await expect(fs.stat(copiedPath)).resolves.toBeTruthy();
     expect(copiedPath).toContain(path.join("artifacts", "inputs", "sess-1", "req-1"));
   });
+
+  async function writeImage(name: string, data: Buffer): Promise<string> {
+    const root = await tempRoot();
+    const filePath = path.join(root, name);
+    await fs.writeFile(filePath, data);
+    return filePath;
+  }
+
+  function webpHeader(chunkType: string): Buffer {
+    const buffer = Buffer.alloc(64);
+    buffer.write("RIFF", 0, "ascii");
+    buffer.writeUInt32LE(buffer.length - 8, 4);
+    buffer.write("WEBP", 8, "ascii");
+    buffer.write(chunkType, 12, "ascii");
+    return buffer;
+  }
+
+  test("probes JPEG dimensions by scanning to the SOF marker", async () => {
+    // SOI, an APP0 segment that is skipped, a stray fill byte, then SOF0
+    // (declared length 17, so the buffer must extend past offset 9 + 2 + 17).
+    const buffer = Buffer.alloc(32);
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x01, 0x02, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08]).copy(buffer, 0);
+    buffer.writeUInt16BE(100, 14); // height
+    buffer.writeUInt16BE(200, 16); // width
+    const filePath = await writeImage("dims.jpg", buffer);
+    await expect(probeImageFile(filePath)).resolves.toEqual({
+      format: "jpeg",
+      height: 100,
+      mediaType: "image/jpeg",
+      width: 200
+    });
+  });
+
+  test("throws when a JPEG carries no size marker", async () => {
+    const filePath = await writeImage("eoi.jpg", Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    await expect(probeImageFile(filePath)).rejects.toMatchObject({ code: "image_probe_invalid_jpeg" });
+  });
+
+  test("breaks out of the JPEG scan on an implausible segment length", async () => {
+    const filePath = await writeImage("bad.jpg", Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0xff, 0xff]));
+    await expect(probeImageFile(filePath)).rejects.toMatchObject({ code: "image_probe_invalid_jpeg" });
+  });
+
+  test("probes WebP VP8X dimensions", async () => {
+    const buffer = webpHeader("VP8X");
+    buffer.writeUIntLE(640 - 1, 24, 3);
+    buffer.writeUIntLE(480 - 1, 27, 3);
+    await expect(probeImageFile(await writeImage("x.webp", buffer))).resolves.toMatchObject({
+      format: "webp",
+      height: 480,
+      width: 640
+    });
+  });
+
+  test("probes WebP lossless VP8L dimensions", async () => {
+    const buffer = webpHeader("VP8L");
+    buffer[20] = 0x2f;
+    buffer.writeUInt32LE((100 - 1) | ((50 - 1) << 14), 21);
+    await expect(probeImageFile(await writeImage("l.webp", buffer))).resolves.toMatchObject({
+      format: "webp",
+      height: 50,
+      width: 100
+    });
+  });
+
+  test("probes WebP lossy VP8 dimensions", async () => {
+    const buffer = webpHeader("VP8 ");
+    buffer[23] = 0x9d;
+    buffer[24] = 0x01;
+    buffer[25] = 0x2a;
+    buffer.writeUInt16LE(100, 26);
+    buffer.writeUInt16LE(50, 28);
+    await expect(probeImageFile(await writeImage("v.webp", buffer))).resolves.toMatchObject({
+      format: "webp",
+      height: 50,
+      width: 100
+    });
+  });
+
+  test("rejects malformed VP8L, VP8, and unknown WebP chunks", async () => {
+    const vp8l = webpHeader("VP8L");
+    vp8l[20] = 0x00;
+    await expect(probeImageFile(await writeImage("bad-l.webp", vp8l))).rejects.toMatchObject({
+      code: "image_probe_invalid_webp"
+    });
+
+    await expect(probeImageFile(await writeImage("bad-v.webp", webpHeader("VP8 ")))).rejects.toMatchObject({
+      code: "image_probe_invalid_webp"
+    });
+
+    await expect(probeImageFile(await writeImage("bad-c.webp", webpHeader("ABCD")))).rejects.toMatchObject({
+      code: "image_probe_invalid_webp"
+    });
+  });
 });

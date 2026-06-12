@@ -145,3 +145,62 @@ async function createTempRoot(): Promise<string> {
   tempRoots.push(root);
   return root;
 }
+
+describe("workspace engine — binary, preview, grep options, and undo edges", () => {
+  test("writes and appends binary files and reads them back", async () => {
+    const root = await createTempRoot();
+    const engine = new WorkspaceMutationEngine({ workspaceRoot: root });
+
+    await engine.writeFileBytes("blob.bin", Buffer.from([1, 2, 3]));
+    await engine.appendFileBytes("blob.bin", Buffer.from([4, 5]));
+    const buffer = await engine.readFileBuffer("blob.bin");
+    expect([...buffer]).toEqual([1, 2, 3, 4, 5]);
+
+    // append to a brand-new binary file
+    await engine.appendFileBytes("fresh.bin", Buffer.from([9]));
+    expect([...(await engine.readFileBuffer("fresh.bin"))]).toEqual([9]);
+  });
+
+  test("greps with regex and case sensitivity and limits search paths", async () => {
+    const root = await createTempRoot();
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, "src", "a.ts"), "const TODO = 1;\nconst todo = 2;\n", "utf8");
+    const engine = new WorkspaceMutationEngine({ workspaceRoot: root });
+
+    const insensitive = await engine.grep("todo", { caseSensitive: false });
+    expect(insensitive.length).toBe(2);
+    const sensitive = await engine.grep("TODO", { caseSensitive: true });
+    expect(sensitive.length).toBe(1);
+    const regex = await engine.grep("t[od]+o", { regex: true });
+    expect(regex.length).toBeGreaterThanOrEqual(1);
+
+    const limited = await engine.searchPaths("a", { maxResults: 1 });
+    expect(limited.length).toBeLessThanOrEqual(1);
+    expect(await engine.searchPaths("")).toEqual([]);
+  });
+
+  test("previews and validates undo entries", async () => {
+    const root = await createTempRoot();
+    await fs.writeFile(path.join(root, "notes.txt"), "alpha\n", "utf8");
+    const engine = new WorkspaceMutationEngine({ workspaceRoot: root });
+
+    const edit = await engine.editFile("notes.txt", [{ newText: "ALPHA", oldText: "alpha" }]);
+    const entryId = edit.undoEntry?.id;
+    expect(entryId).toBeTruthy();
+
+    const preview = await engine.previewUndo(entryId as string);
+    expect(preview.length).toBeGreaterThan(0);
+
+    await expect(engine.previewUndo("workspace-undo.missing")).rejects.toThrow();
+
+    const previewWrite = await engine.previewWrite("notes.txt", "completely new\n");
+    expect(previewWrite.length).toBeGreaterThan(0);
+  });
+
+  test("rejects undo when there are no entries", async () => {
+    const root = await createTempRoot();
+    const engine = new WorkspaceMutationEngine({ workspaceRoot: root });
+    await expect(engine.undoLastEdit()).rejects.toThrow(/no undo entries/iu);
+    await expect(engine.undoFileEdit("missing.txt")).rejects.toThrow(/no undo entries/iu);
+  });
+});

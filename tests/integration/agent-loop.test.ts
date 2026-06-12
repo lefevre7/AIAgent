@@ -83,6 +83,55 @@ describe("agent loop", () => {
     expect(result.turns[1]?.trigger).toBe("system_nudge");
   });
 
+  test("rejects a turn that mixes attempt_complete with other tool calls", async () => {
+    const { loop, store } = await createLoop([
+      buildModelResponse({
+        messageText: "Finishing up while also thinking.",
+        sessionId: "session.loop.1",
+        toolCalls: [
+          { arguments: {}, callId: "tool.think.mix", toolName: "think" },
+          { arguments: {}, callId: "tool.complete.mix", toolName: "attempt_complete" }
+        ]
+      }),
+      buildModelResponse({
+        messageText: "Now completing on its own.",
+        sessionId: "session.loop.1",
+        toolCalls: [{ arguments: {}, callId: "tool.complete.mixdone", toolName: "attempt_complete" }]
+      })
+    ]);
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      maxTurns: 4,
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+    expect(result.turns.some((turn) => turn.summary === "The runtime rejected a mixed completion/tool turn.")).toBe(true);
+    expect(result.turns.some((turn) => turn.trigger === "system_nudge")).toBe(true);
+    const snapshot = await store.getSessionSnapshot(result.session.id);
+    expect(snapshot?.messages.some((message) => message.source === "system" && message.visibility === "hidden")).toBe(true);
+  });
+
+  test("stops with completion_blocked when the turn limit is reached without completion", async () => {
+    const { loop } = await createLoop([
+      buildModelResponse({ messageText: "Still working (1).", sessionId: "session.loop.1", toolCalls: [] }),
+      buildModelResponse({ messageText: "Still working (2).", sessionId: "session.loop.1", toolCalls: [] })
+    ]);
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      maxTurns: 2,
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completion_blocked");
+    expect(result.session.status).toBe("completion_blocked");
+    expect(result.turns).toHaveLength(2);
+  });
+
   test("rejects completion once, returns structured reasons, then accepts on retry", async () => {
     let attempts = 0;
     const { loop, store } = await createLoop(
@@ -313,6 +362,45 @@ describe("agent loop", () => {
     expect(result.stopReason).toBe("completed");
     expect(initializeCalls).toEqual(["session.loop.1"]);
     expect(compactCalls).toEqual(["session.loop.1:completion"]);
+  });
+
+  test("falls back to a failing default tool executor when none is configured", async () => {
+    const { loop } = await createLoop([
+      buildModelResponse({
+        messageText: "Reading the file.",
+        sessionId: "session.loop.1",
+        toolCalls: [{ arguments: { path: "AGENTS.md" }, callId: "tool.read.default", toolName: "read_file" }]
+      }),
+      buildModelResponse({
+        messageText: "Giving up after the tool failed.",
+        sessionId: "session.loop.1",
+        toolCalls: [{ arguments: {}, callId: "tool.complete.default", toolName: "attempt_complete" }]
+      })
+    ]);
+
+    const result = await loop.run({
+      availableTools: [buildReadFileTool(), buildAttemptCompleteTool()],
+      maxTurns: 4,
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.toolCalls[0]?.status).toBe("failed");
+    expect(result.toolCalls[0]?.error?.code).toBe("tool_runtime_unavailable");
+  });
+
+  test("persists a failed session when the model throws an unexpected error", async () => {
+    const { loop, store } = await createLoop([]);
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).not.toBe("completed");
+    const snapshot = await store.getSessionSnapshot("session.loop.1");
+    expect(snapshot?.session.status).toBe("failed");
   });
 });
 

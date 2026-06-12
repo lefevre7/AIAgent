@@ -35,7 +35,9 @@ afterEach(async () => {
   await Promise.all(closeCallbacks.splice(0).map(async (callback) => callback()));
   await Promise.all(
     tempRoots.splice(0).map(async (root) => {
-      await fs.rm(root, { force: true, recursive: true });
+      // Background gateway writers can briefly race teardown; retry the removal
+      // instead of failing the run on a transient ENOTEMPTY.
+      await fs.rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 50 });
     })
   );
 });
@@ -247,6 +249,64 @@ describe("WhatsApp channel integration", () => {
     const outboundTexts = (await readOutboundEntries(harness.sessionDirectory)).map((entry) => entry.text ?? "");
     expect(outboundTexts.some((text) => text.includes('Queued steering for "WhatsApp Steering Session".'))).toBe(true);
     expect(outboundTexts.some((text) => text.includes("Steering applied."))).toBe(true);
+  });
+
+  test("answers /help and reports when there are no pending approvals", async () => {
+    const harness = await createWhatsAppHarness(async (request) =>
+      buildAssistantResponse({
+        sessionId: requireSessionId(request.sessionId),
+        text: "unused for command turns",
+        toolCalls: [buildAttemptCompleteCall("tool.complete.whatsapp.help")]
+      })
+    );
+
+    const session = sessionRecordSchema.parse({
+      createdAt: "2026-03-31T13:00:00.000Z",
+      cwd: "/workspace",
+      goal: "Handle channel commands",
+      id: "session.whatsapp.help.1",
+      lastActiveAt: "2026-03-31T13:00:00.000Z",
+      metadata: {},
+      status: "idle",
+      tags: ["channel:whatsapp"],
+      title: "WhatsApp Help Session",
+      updatedAt: "2026-03-31T13:00:00.000Z"
+    });
+    await harness.sessions.saveSession(session);
+    await harness.channelService.ensureRoute({
+      identity: { accountId: "whatsapp-account", channel: "whatsapp", displayName: "Bo", userId: "user-help" },
+      sessionId: session.id
+    });
+
+    await writeInboundEntry(harness.sessionDirectory, {
+      accountId: "whatsapp-account",
+      createdAt: "2026-03-31T13:00:01.000Z",
+      displayName: "Bo",
+      id: "channel-message.whatsapp.help.1",
+      media: [],
+      metadata: {},
+      text: "/help",
+      userId: "user-help"
+    });
+    await waitFor(async () => {
+      const entries = await readOutboundEntries(harness.sessionDirectory);
+      return entries.some((entry) => entry.text?.includes("Channel commands:"));
+    });
+
+    await writeInboundEntry(harness.sessionDirectory, {
+      accountId: "whatsapp-account",
+      createdAt: "2026-03-31T13:00:02.000Z",
+      displayName: "Bo",
+      id: "channel-message.whatsapp.help.2",
+      media: [],
+      metadata: {},
+      text: "/approve",
+      userId: "user-help"
+    });
+    await waitFor(async () => {
+      const entries = await readOutboundEntries(harness.sessionDirectory);
+      return entries.some((entry) => entry.text?.includes("no pending approvals"));
+    });
   });
 });
 

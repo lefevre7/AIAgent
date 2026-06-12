@@ -222,3 +222,118 @@ async function waitFor<T>(read: () => Promise<T>, predicate: (value: T) => boole
 
   throw new Error("Timed out waiting for the expected queue condition.");
 }
+
+describe("file language-model queue streaming and failures", () => {
+  test("surfaces a structured error when the adapter fails", async () => {
+    const root = await createTempRoot();
+    const queue = new FileLanguageModelQueue({
+      resolveAdapter: () => ({
+        generate: async () => {
+          throw new Error("provider exploded");
+        },
+        health: async () => ({ checkedAt: new Date().toISOString(), details: {}, providerId: "lm_studio", status: "healthy" }),
+        listModels: async () => [],
+        provider: "lm_studio",
+        providerId: "lm_studio"
+      }),
+      stateRoot: path.join(root, ".aia")
+    });
+
+    await expect(queue.execute(buildRequest("queue.fail.1"))).rejects.toThrow(/provider exploded/u);
+  });
+
+  test("breaks through a stale queue lock left behind by a crashed process", async () => {
+    const root = await createTempRoot();
+    const stateRoot = path.join(root, ".aia");
+    const queueRoot = path.join(stateRoot, "queues", "lm");
+    await fs.mkdir(queueRoot, { recursive: true });
+    const lockPath = path.join(queueRoot, "queue.lock");
+    await fs.writeFile(lockPath, JSON.stringify({ pid: 999_999, timestamp: "2020-01-01T00:00:00.000Z" }));
+    // Backdate the lock so it counts as stale while the queue's own fresh locks do not.
+    const past = new Date(Date.now() - 3_600_000);
+    await fs.utimes(lockPath, past, past);
+
+    const queue = new FileLanguageModelQueue({
+      lockStaleMs: 60_000,
+      resolveAdapter: () => ({
+        generate: async (request) => buildResponse(request, `after-stale ${request.id}`),
+        health: async () => ({ checkedAt: new Date().toISOString(), details: {}, providerId: "lm_studio", status: "healthy" }),
+        listModels: async () => [],
+        provider: "lm_studio",
+        providerId: "lm_studio"
+      }),
+      stateRoot
+    });
+
+    const response = await queue.execute(buildRequest("queue.stale.1"));
+    expect(response.message?.parts[0]).toMatchObject({ text: "after-stale queue.stale.1" });
+    await queue.close();
+  });
+
+  test("fails the job when a stream errors or ends without a completed response", async () => {
+    const health = async () => ({ checkedAt: new Date().toISOString(), details: {}, providerId: "lm_studio" as const, status: "healthy" as const });
+
+    const root = await createTempRoot();
+    const erroring: LanguageModelAdapter = {
+      generate: async (request) => buildResponse(request, "unused"),
+      health,
+      listModels: async () => [],
+      provider: "lm_studio",
+      providerId: "lm_studio",
+      async *stream() {
+        yield { delta: "partial", kind: "response.delta" };
+        yield { error: { code: "lm_stream_failed", details: {}, message: "stream blew up", retriable: false }, kind: "response.error" };
+      }
+    };
+    const queue = new FileLanguageModelQueue({ resolveAdapter: () => erroring, stateRoot: path.join(root, ".aia") });
+    await expect(queue.stream(buildRequest("queue.streamerr.1"), () => undefined)).rejects.toThrow(/stream blew up/u);
+
+    const root2 = await createTempRoot();
+    const noCompletion: LanguageModelAdapter = {
+      generate: async (request) => buildResponse(request, "unused"),
+      health,
+      listModels: async () => [],
+      provider: "lm_studio",
+      providerId: "lm_studio",
+      async *stream() {
+        yield { delta: "only a delta", kind: "response.delta" };
+      }
+    };
+    const queue2 = new FileLanguageModelQueue({ resolveAdapter: () => noCompletion, stateRoot: path.join(root2, ".aia") });
+    await expect(queue2.stream(buildRequest("queue.streamerr.2"), () => undefined)).rejects.toThrow(/without a completed response/u);
+  });
+
+  test("streams events through the queue and falls back to generate without a stream", async () => {
+    const root = await createTempRoot();
+    const streamingAdapter: LanguageModelAdapter = {
+      generate: async (request) => buildResponse(request, "fallback"),
+      health: async () => ({ checkedAt: new Date().toISOString(), details: {}, providerId: "lm_studio", status: "healthy" }),
+      listModels: async () => [],
+      provider: "lm_studio",
+      providerId: "lm_studio",
+      async *stream(request) {
+        yield { delta: "strea", kind: "response.delta" };
+        yield { delta: "med", kind: "response.delta" };
+        yield { kind: "response.completed", response: buildResponse(request, "streamed") };
+      }
+    };
+    const queue = new FileLanguageModelQueue({ resolveAdapter: () => streamingAdapter, stateRoot: path.join(root, ".aia") });
+
+    const deltas: string[] = [];
+    const response = await queue.stream(buildRequest("queue.stream.1"), (event) => {
+      if (event.kind === "response.delta") {
+        deltas.push(event.delta);
+      }
+    });
+    expect(deltas.join("")).toBe("streamed");
+    expect(response.message?.parts[0]).toMatchObject({ text: "streamed" });
+
+    // adapter without stream() falls back to generate
+    const root2 = await createTempRoot();
+    const noStream: LanguageModelAdapter = { ...streamingAdapter };
+    delete (noStream as { stream?: unknown }).stream;
+    const queue2 = new FileLanguageModelQueue({ resolveAdapter: () => noStream, stateRoot: path.join(root2, ".aia") });
+    const fallback = await queue2.stream(buildRequest("queue.stream.2"), () => undefined);
+    expect(fallback.message?.parts[0]).toMatchObject({ text: "fallback" });
+  });
+});

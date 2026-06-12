@@ -12,7 +12,10 @@ export default defineConfig({
   test: {
     coverage: {
       // Per project decision: exclude only the config directory from the
-      // denominator. Type-only declarations carry no executable lines.
+      // denominator (operator-authored defaults). Type-only declarations carry
+      // no executable lines. Everything else in src/ — including the browser
+      // driver, native voice adapters, the server entrypoint, and the app-router
+      // pages — is covered deterministically via mocks/injection.
       exclude: ["src/**/*.d.ts", "src/core/config/**"],
       include: ["src/**/*.{ts,tsx}"],
       provider: "v8",
@@ -24,10 +27,10 @@ export default defineConfig({
       // for the categories that are intentionally lower (native/macOS voice,
       // server entrypoints, e2e-only web/gateway-HTTP, network adapters).
       thresholds: {
-        branches: 73,
-        functions: 79,
-        lines: 74,
-        statements: 74
+        branches: 78,
+        functions: 97,
+        lines: 92.1,
+        statements: 92.1
       }
     },
     projects: ["vitest.unit.config.ts", "vitest.integration.config.ts"]
