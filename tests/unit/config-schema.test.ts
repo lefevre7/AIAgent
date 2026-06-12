@@ -31,6 +31,14 @@ describe("config defaults and env overrides", () => {
     expect(config.memory.hardFailOnStartup).toBe(false);
     expect(config.memory.sqlitePath).toBe("./.aia/memory.sqlite");
     expect(config.providers.imageProviders.comfyui_local?.enabled).toBe(false);
+    expect(config.runtime.maxTurnsPerRun).toBe("unlimited");
+    expect(config.runtime.maxConsecutiveNudges).toBe(3);
+    expect(config.runtime.modelSettings).toEqual({});
+    expect(config.runtime.promptBudgets).toEqual({ instructionDocChars: 12_000, memorySummaryChars: 4_000 });
+    expect(config.tools.profile).toBe("lean");
+    expect(config.tools.include).toEqual([]);
+    expect(config.tools.exclude).toEqual([]);
+    expect(config.providers.ollama.contextLength).toBeUndefined();
     expect(DEFAULT_APPROVAL_SETTINGS.defaultMode).toBe("ask");
   });
 

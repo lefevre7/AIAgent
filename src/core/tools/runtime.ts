@@ -100,7 +100,7 @@ export class ToolRuntime implements AgentLoopToolExecutor {
         details: {
           toolName: call.toolName
         },
-        message: `No tool named "${call.toolName}" is registered.`,
+        message: `No tool named "${call.toolName}" is registered. Use the exact invocation name of an available tool, or call tool_search to discover the right tool.`,
         retriable: false
       });
 
@@ -211,7 +211,9 @@ export function createToolResultMessage(
   return {
     createdAt: new Date().toISOString(),
     id: `message.tool.${toolCall.id}`,
-    metadata: {},
+    metadata: {
+      toolCallId: toolCall.id
+    },
     parts,
     role: "tool",
     sessionId,
@@ -386,10 +388,9 @@ function buildToolResultMessageParts(toolCall: ToolCallRecord, result?: RuntimeT
     {
       kind: "json",
       value: {
-        error: toolCall.error ?? null,
-        result: toolCall.result ?? null,
+        ...(toolCall.error ? { error: toolCall.error } : {}),
+        ...(toolCall.result !== undefined && toolCall.result !== null ? { result: toolCall.result } : {}),
         status: toolCall.status,
-        toolId: toolCall.toolId ?? null,
         toolName: toolCall.toolName
       }
     }

@@ -106,7 +106,6 @@ describe("tool runtime", () => {
       {
         kind: "json",
         value: {
-          error: null,
           result: {
             matches: [
               expect.objectContaining({
@@ -116,7 +115,6 @@ describe("tool runtime", () => {
             ]
           },
           status: "succeeded",
-          toolId: "tool.builtin.tool_search",
           toolName: "tool_search"
         }
       }

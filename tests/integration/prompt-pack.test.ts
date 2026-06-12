@@ -179,6 +179,78 @@ Package-local workflow.`,
     expect(pack.nudges.taskContinuation).toContain("attempt_complete");
   });
 
+  test("truncates oversized instruction documents and memory summaries with a read_file pointer", async () => {
+    const root = await createTempRoot();
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
+    await fs.writeFile(path.join(workspace, "AGENTS.md"), `Start marker. ${"x".repeat(5_000)} End marker.`, "utf8");
+
+    const pack = await buildPromptPack({
+      availableTools: [],
+      cwd: workspace,
+      instructionDocCharBudget: 500,
+      memoryContext: {
+        sessionSummary: `Summary head. ${"y".repeat(2_000)}`
+      },
+      memorySummaryCharBudget: 100,
+      userHomeDirectory: root
+    });
+
+    expect(pack.systemPrompt).toContain("Start marker.");
+    expect(pack.systemPrompt).not.toContain("End marker.");
+    expect(pack.systemPrompt).toContain("Truncated to 500 of");
+    expect(pack.systemPrompt).toContain("read_file");
+    expect(pack.systemPrompt).toContain("Summary head.");
+    expect(pack.systemPrompt).toContain("Truncated to 100 of");
+  });
+
+  test("does not render a per-tool catalog in the system prompt and explains tool_search when available", async () => {
+    const root = await createTempRoot();
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
+
+    const toolSearchTool: ToolDefinition = {
+      aliases: [],
+      annotations: { meta: {}, readOnlyHint: true, title: "Tool Search" },
+      approvalMode: "never",
+      descriptor: {
+        examples: [],
+        purpose: "Search the tool catalog.",
+        whenNotToUse: [],
+        whenToUse: ["Use when unsure which tool to call."]
+      },
+      description: "Search the tool catalog.",
+      displayName: "Tool Search",
+      execution: { inputMode: "json", resumable: false, taskSupport: "forbidden" },
+      idempotent: true,
+      inputSchema: { type: "object" },
+      invocationName: "tool_search",
+      kind: "built_in",
+      metadata: {},
+      name: "tool_search",
+      outputKind: "json",
+      retryable: true,
+      searchTags: ["catalog"],
+      sideEffects: ["none"],
+      source: { displayName: "Built-in Tools", kind: "built_in" },
+      streamingMode: "none",
+      toolId: "tool.builtin.tool_search",
+      usageGuidance: "This guidance text must not be duplicated into the system prompt.",
+      version: "1.0.0"
+    };
+
+    const pack = await buildPromptPack({
+      availableTools: [toolSearchTool],
+      cwd: workspace,
+      userHomeDirectory: root
+    });
+
+    expect(pack.systemPrompt).not.toContain("Available Tools");
+    expect(pack.systemPrompt).not.toContain("This guidance text must not be duplicated into the system prompt.");
+    expect(pack.systemPrompt).toContain("Working With Tools");
+    expect(pack.systemPrompt).toContain("`tool_search`");
+  });
+
   test("renders task-state context when a plan and working memory are available", async () => {
     const root = await createTempRoot();
     const workspace = path.join(root, "workspace");

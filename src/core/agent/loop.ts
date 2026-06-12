@@ -46,7 +46,8 @@ export type AgentLoopRunParams = {
     sessionId: string;
   }>;
   availableTools: ToolDefinition[];
-  maxTurns?: number;
+  maxConsecutiveNudges?: number;
+  maxTurns?: number | "unlimited";
   session: SessionRecord;
   steeringInjections?: SteeringInjection[];
   taskSummary?: string;
@@ -77,23 +78,43 @@ export interface AgentLoopToolExecutor {
 }
 
 type AgentLoopOptions = {
+  autoCompactThresholdTokens?: number;
   completionGate?: (params: {
     latestResponse: LanguageModelResponse;
     session: SessionRecord;
     snapshot: Awaited<ReturnType<FileSessionStore["getSessionSnapshot"]>>;
   }) => Promise<AgentLoopCompletionDecision>;
+  contextWindowTokens?: number;
   model: AgentLoopModel;
+  modelSettings?: {
+    maxOutputTokens?: number;
+    temperature?: number;
+    topP?: number;
+  };
   onAssistantDelta?: (params: { delta: string; sessionId: string; turnId: string }) => void;
   onAssistantReasoning?: (params: { delta: string; sessionId: string; turnId: string }) => void;
   onStatus?: (params: { session: SessionRecord; summary: string }) => Promise<void> | void;
+  promptBudgets?: {
+    instructionDocChars?: number;
+    memorySummaryChars?: number;
+  };
   sessions: FileSessionStore;
   memoryContextProvider?: MemoryContextProvider;
   memoryLifecycle?: SessionMemoryLifecycle;
   taskStateProvider?: TaskStateProvider;
+  toolCatalog?: {
+    getDefinition(toolName: string): ToolDefinition | null;
+  };
   toolExecutor?: AgentLoopToolExecutor;
   surface?: "channel" | "cli" | "gateway" | "sdk" | "web";
   userHomeDirectory?: string;
 };
+
+const DEFAULT_AUTO_COMPACT_THRESHOLD_TOKENS = 100_000;
+const AUTO_COMPACT_CONTEXT_WINDOW_FRACTION = 0.8;
+const DEFAULT_MAX_CONSECUTIVE_NUDGES = 3;
+const ACTIVATED_TOOLS_METADATA_KEY = "activatedToolNames";
+const COMPACTION_WATERMARK_METADATA_KEY = "compactedThroughMessageId";
 
 export class AgentLoop {
   constructor(private readonly options: AgentLoopOptions) {}
@@ -103,18 +124,24 @@ export class AgentLoop {
     const taskState: TaskStateSnapshot | null = this.options.taskStateProvider
       ? await this.options.taskStateProvider.getTaskState(params.session.id)
       : null;
-    const memoryContext = this.options.memoryContextProvider
-      ? await this.options.memoryContextProvider.getPromptContext(params.session.id)
-      : null;
-    const maxTurns = params.maxTurns ?? 6;
-    const promptPack = await buildPromptPack({
-      availableTools: params.availableTools,
-      cwd: params.session.cwd,
-      memoryContext,
-      taskSummary: params.taskSummary ?? params.session.goal,
-      taskState,
-      userHomeDirectory: this.options.userHomeDirectory
-    });
+    const maxTurns = params.maxTurns ?? "unlimited";
+    const maxConsecutiveNudges = params.maxConsecutiveNudges ?? DEFAULT_MAX_CONSECUTIVE_NUDGES;
+    // Rebuilt after threshold compaction so the refreshed session summary
+    // reaches the Durable Memory section of the system prompt.
+    const buildPack = async (forSession: SessionRecord) =>
+      buildPromptPack({
+        availableTools: this.resolveEffectiveTools(params.availableTools, forSession),
+        cwd: forSession.cwd,
+        instructionDocCharBudget: this.options.promptBudgets?.instructionDocChars,
+        memoryContext: this.options.memoryContextProvider
+          ? await this.options.memoryContextProvider.getPromptContext(forSession.id)
+          : null,
+        memorySummaryCharBudget: this.options.promptBudgets?.memorySummaryChars,
+        taskSummary: params.taskSummary ?? forSession.goal,
+        taskState,
+        userHomeDirectory: this.options.userHomeDirectory
+      });
+    let promptPack = await buildPack(params.session);
 
     let session = await this.persistSession(params.session, params.session.status, {
       activeTurnId: params.session.activeTurnId
@@ -176,7 +203,8 @@ export class AgentLoop {
     let nextTrigger: TurnRecord["trigger"] =
       appliedSteering.length > 0 ? "steering" : pendingInputMessages.length > 0 ? "user" : "resume";
 
-    for (let sequence = 0; sequence < maxTurns; sequence += 1) {
+    let consecutiveNudges = 0;
+    for (let sequence = 0; maxTurns === "unlimited" || sequence < maxTurns; sequence += 1) {
       const turnId = `turn.${session.id}.${sequence + 1}.${crypto.randomUUID()}`;
       const startedAt = new Date().toISOString();
       const statusMessage = createStatusMessage(session, turnId, sequence + 1);
@@ -200,10 +228,11 @@ export class AgentLoop {
       await this.emitStatus(session, `Running model turn ${sequence + 1}.`);
 
       const snapshot = await this.options.sessions.getSessionSnapshot(session.id);
-      const visibleMessages = (snapshot?.messages ?? []).filter((message) => message.visibility !== "hidden");
+      const visibleMessages = filterModelVisibleMessages(snapshot?.messages ?? [], session);
+      const effectiveTools = this.resolveEffectiveTools(params.availableTools, session);
 
       const modelRequest = {
-        availableTools: params.availableTools,
+        availableTools: effectiveTools,
         id: `lm-request.${turn.id}`,
         instructions: promptPack.systemPrompt,
         messages: visibleMessages,
@@ -217,8 +246,15 @@ export class AgentLoop {
         },
         sessionId: session.id,
         settings: {
+          ...(this.options.modelSettings?.maxOutputTokens !== undefined
+            ? { maxOutputTokens: this.options.modelSettings.maxOutputTokens }
+            : {}),
           stopSequences: [],
-          toolChoice: "auto" as const
+          ...(this.options.modelSettings?.temperature !== undefined
+            ? { temperature: this.options.modelSettings.temperature }
+            : {}),
+          toolChoice: "auto" as const,
+          ...(this.options.modelSettings?.topP !== undefined ? { topP: this.options.modelSettings.topP } : {})
         },
         turnId: turn.id
       };
@@ -255,19 +291,57 @@ export class AgentLoop {
         };
       }
 
-      if (response.message) {
-        await this.options.sessions.appendMessages([response.message]);
-        appendedMessages.push(response.message);
-        turn.outputMessageIds.push(response.message.id);
+      const assistantMessage = buildAssistantTurnMessage(session.id, turn.id, response);
+      if (assistantMessage) {
+        await this.options.sessions.appendMessages([assistantMessage]);
+        appendedMessages.push(assistantMessage);
+        turn.outputMessageIds.push(assistantMessage.id);
       }
 
+      // Turns that make no tool progress (no-tool replies and mixed/rejected
+      // completion attempts) count toward the nudge guard; with unlimited
+      // turns this is what stops a model that loops without progressing. The
+      // guard fires only after the unproductive outcome is known, so a valid
+      // completion attempt is always evaluated first.
+      const failNoProgressGuard = async (summary: string, statusSummary: string): Promise<AgentLoopRunResult> => {
+        turn.completedAt = new Date().toISOString();
+        turn.status = "completed";
+        turn.summary = summary;
+        await this.options.sessions.appendTurn(turn);
+        appendedTurns.push(turn);
+        session = await this.persistSession(session, "completion_blocked", {
+          statusSummary
+        });
+        return {
+          approvalRequests: appendedApprovalRequests,
+          messages: appendedMessages,
+          session,
+          stopReason: "completion_blocked",
+          toolCalls: appendedToolCalls,
+          turns: appendedTurns
+        };
+      };
+
       if (response.toolCalls.length === 0) {
+        consecutiveNudges += 1;
+        if (consecutiveNudges > maxConsecutiveNudges) {
+          return failNoProgressGuard(
+            "The runtime stopped after repeated turns without tool use or completion.",
+            `The model produced ${consecutiveNudges} consecutive turns without tool use or an accepted completion.`
+          );
+        }
+
+        const rejectedToolCalls = describeRejectedToolCalls(response);
         const continuationMessage = createSystemMessage(
           session.id,
           turn.id,
-          promptPack.nudges.taskContinuation,
+          rejectedToolCalls.length > 0
+            ? `${promptPack.nudges.taskContinuation}\n\nYour previous tool call(s) could not be parsed and were ignored:\n${rejectedToolCalls
+                .map((reason) => `- ${reason}`)
+                .join("\n")}\nRe-issue each tool call with the exact tool name and valid JSON arguments.`
+            : promptPack.nudges.taskContinuation,
           "system",
-          "hidden"
+          "compact"
         );
         await this.options.sessions.appendMessages([continuationMessage]);
         appendedMessages.push(continuationMessage);
@@ -292,12 +366,19 @@ export class AgentLoop {
 
       if (completionCalls.length > 0) {
         if (nonCompletionCalls.length > 0 || completionCalls.length > 1) {
+          consecutiveNudges += 1;
+          if (consecutiveNudges > maxConsecutiveNudges) {
+            return failNoProgressGuard(
+              "The runtime stopped after repeated turns without progress.",
+              `The model produced ${consecutiveNudges} consecutive unproductive turns.`
+            );
+          }
           const invalidCompletionMessage = createSystemMessage(
             session.id,
             turn.id,
             "Do not mix `attempt_complete` with other tool calls. Finish the remaining work, then call `attempt_complete` by itself.",
             "system",
-            "hidden"
+            "compact"
           );
           await this.options.sessions.appendMessages([invalidCompletionMessage]);
           appendedMessages.push(invalidCompletionMessage);
@@ -344,6 +425,14 @@ export class AgentLoop {
           };
         }
 
+        consecutiveNudges += 1;
+        if (consecutiveNudges > maxConsecutiveNudges) {
+          return failNoProgressGuard(
+            "The runtime stopped after repeated rejected completion attempts.",
+            `The model produced ${consecutiveNudges} consecutive unproductive turns.`
+          );
+        }
+
         const rejectionMessage = createSystemMessage(
           session.id,
           turn.id,
@@ -351,7 +440,7 @@ export class AgentLoop {
             .map((reason) => `- ${reason}`)
             .join("\n")}`,
           "system",
-          "hidden"
+          "compact"
         );
         await this.options.sessions.appendMessages([rejectionMessage]);
         appendedMessages.push(rejectionMessage);
@@ -369,6 +458,7 @@ export class AgentLoop {
         continue;
       }
 
+      consecutiveNudges = 0;
       session = await this.persistSession(session, "awaiting_tool_execution", {
         activeTurnId: turn.id,
         statusSummary: `Executing ${nonCompletionCalls.length} tool call(s).`
@@ -429,6 +519,22 @@ export class AgentLoop {
         };
       }
 
+      session = this.mergeActivatedTools(session, toolOutcomes);
+
+      const compacted = await this.compactIfOverThreshold({
+        response,
+        session,
+        watermarkMessageId: statusMessage.id
+      });
+      if (compacted) {
+        session = compacted;
+        session = await this.persistSession(session, "awaiting_tool_execution", {
+          activeTurnId: turn.id,
+          statusSummary: "Compacted session context after crossing the token threshold."
+        });
+        promptPack = await buildPack(session);
+      }
+
       turn.completedAt = new Date().toISOString();
       turn.status = "completed";
       turn.summary = `Executed ${toolOutcomes.length} tool call(s).`;
@@ -448,6 +554,116 @@ export class AgentLoop {
       stopReason: "completion_blocked",
       toolCalls: appendedToolCalls,
       turns: appendedTurns
+    };
+  }
+
+  private resolveEffectiveTools(baseTools: ToolDefinition[], session: SessionRecord): ToolDefinition[] {
+    const catalog = this.options.toolCatalog;
+    if (!catalog) {
+      return baseTools;
+    }
+
+    const activatedNames = readActivatedToolNames(session);
+    if (activatedNames.length === 0) {
+      return baseTools;
+    }
+
+    const known = new Set(baseTools.map((tool) => tool.invocationName));
+    const effective = [...baseTools];
+    for (const name of activatedNames) {
+      if (known.has(name)) {
+        continue;
+      }
+      const definition = catalog.getDefinition(name);
+      if (definition) {
+        known.add(definition.invocationName);
+        effective.push(definition);
+      }
+    }
+    return effective;
+  }
+
+  private mergeActivatedTools(session: SessionRecord, outcomes: AgentLoopToolExecutionResult[]): SessionRecord {
+    if (!this.options.toolCatalog) {
+      return session;
+    }
+
+    const discovered: string[] = [];
+    for (const outcome of outcomes) {
+      if (outcome.toolCall.status !== "succeeded") {
+        continue;
+      }
+      const definition = this.options.toolCatalog.getDefinition(outcome.toolCall.toolName);
+      if (!definition || definition.name !== "tool_search") {
+        continue;
+      }
+      const result = outcome.toolCall.result;
+      if (typeof result !== "object" || result === null || Array.isArray(result)) {
+        continue;
+      }
+      const matches = (result as { matches?: unknown }).matches;
+      if (!Array.isArray(matches)) {
+        continue;
+      }
+      for (const match of matches) {
+        if (typeof match === "object" && match !== null && !Array.isArray(match)) {
+          const invocationName = (match as { invocationName?: unknown }).invocationName;
+          if (typeof invocationName === "string" && invocationName.length > 0) {
+            discovered.push(invocationName);
+          }
+        }
+      }
+    }
+
+    if (discovered.length === 0) {
+      return session;
+    }
+
+    const merged = Array.from(new Set([...readActivatedToolNames(session), ...discovered])).slice(0, 64);
+    return {
+      ...session,
+      metadata: {
+        ...session.metadata,
+        [ACTIVATED_TOOLS_METADATA_KEY]: merged
+      }
+    };
+  }
+
+  private async compactIfOverThreshold(params: {
+    response: LanguageModelResponse;
+    session: SessionRecord;
+    watermarkMessageId: string;
+  }): Promise<SessionRecord | null> {
+    if (!this.options.memoryLifecycle) {
+      return null;
+    }
+
+    const threshold =
+      this.options.autoCompactThresholdTokens ??
+      (this.options.contextWindowTokens
+        ? Math.floor(this.options.contextWindowTokens * AUTO_COMPACT_CONTEXT_WINDOW_FRACTION)
+        : DEFAULT_AUTO_COMPACT_THRESHOLD_TOKENS);
+    if (threshold <= 0) {
+      return null;
+    }
+
+    const usedTokens = params.response.usage.inputTokens;
+    if (usedTokens < threshold) {
+      return null;
+    }
+
+    await this.options.memoryLifecycle.compactSession({
+      sessionId: params.session.id,
+      sourceTokenCount: usedTokens,
+      trigger: "threshold"
+    });
+
+    return {
+      ...params.session,
+      metadata: {
+        ...params.session.metadata,
+        [COMPACTION_WATERMARK_METADATA_KEY]: params.watermarkMessageId
+      }
     };
   }
 
@@ -544,6 +760,74 @@ export class AgentLoop {
       accepted: true
     };
   }
+}
+
+function readActivatedToolNames(session: SessionRecord): string[] {
+  const raw = session.metadata[ACTIVATED_TOOLS_METADATA_KEY];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+}
+
+export function filterModelVisibleMessages(messages: Message[], session: SessionRecord): Message[] {
+  const watermarkId = session.metadata[COMPACTION_WATERMARK_METADATA_KEY];
+  let scoped = messages;
+  if (typeof watermarkId === "string" && watermarkId.length > 0) {
+    const index = messages.findIndex((message) => message.id === watermarkId);
+    if (index >= 0) {
+      scoped = messages.slice(index + 1);
+    }
+  }
+  return scoped.filter((message) => message.visibility !== "hidden");
+}
+
+function buildAssistantTurnMessage(sessionId: string, turnId: string, response: LanguageModelResponse): Message | null {
+  const textParts = response.message?.parts.filter((part) => part.kind !== "tool_call") ?? [];
+  const toolCallParts = response.toolCalls.map((toolCall) => ({
+    arguments: toolCall.arguments,
+    callId: toolCall.callId,
+    inputText: toolCall.inputText,
+    kind: "tool_call" as const,
+    toolName: toolCall.toolName
+  }));
+
+  if (textParts.length === 0 && toolCallParts.length === 0) {
+    return null;
+  }
+
+  return {
+    createdAt: new Date().toISOString(),
+    id: response.message?.id ?? `message.assistant.${response.id}`,
+    metadata: response.message?.metadata ?? {},
+    parts: [...textParts, ...toolCallParts],
+    role: "assistant",
+    sessionId,
+    source: "assistant",
+    tags: response.message?.tags ?? [],
+    turnId,
+    visibility: response.message?.visibility ?? "default"
+  };
+}
+
+function describeRejectedToolCalls(response: LanguageModelResponse): string[] {
+  const raw = response.metadata.rejectedToolCalls;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.flatMap((entry) => {
+    if (typeof entry === "string") {
+      return [entry];
+    }
+    if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
+      const reason = (entry as { reason?: unknown }).reason;
+      if (typeof reason === "string" && reason.length > 0) {
+        return [reason];
+      }
+    }
+    return [];
+  });
 }
 
 function createStatusMessage(session: SessionRecord, turnId: string, turnNumber: number): Message {
@@ -658,13 +942,15 @@ function createToolResultMessage(sessionId: string, turnId: string, toolCall: To
   return {
     createdAt: new Date().toISOString(),
     id: `message.tool.${toolCall.id}`,
-    metadata: {},
+    metadata: {
+      toolCallId: toolCall.id
+    },
     parts: [
       {
         kind: "json",
         value: {
-          error: toolCall.error ?? null,
-          result: toolCall.result ?? null,
+          ...(toolCall.error ? { error: toolCall.error } : {}),
+          ...(toolCall.result !== undefined && toolCall.result !== null ? { result: toolCall.result } : {}),
           status: toolCall.status,
           toolName: toolCall.toolName
         }

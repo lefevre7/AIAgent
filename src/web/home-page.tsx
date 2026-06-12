@@ -581,6 +581,8 @@ function summarizeChannelDelivery(delivery: Pick<ChannelDeliveryRecord, "channel
             return part.title ?? part.uri;
           case "image":
             return part.alt ?? part.uri;
+          case "tool_call":
+            return `[tool] ${part.toolName}`;
         }
       })
       .join(" "),
@@ -609,6 +611,8 @@ function summarizeMessage(message: Message): string {
             return part.title ?? part.uri;
           case "image":
             return part.alt ?? part.uri;
+          case "tool_call":
+            return `[tool] ${part.toolName}`;
         }
       })
       .join(" "),

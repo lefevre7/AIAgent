@@ -117,8 +117,8 @@ describe("lm shared transforms", () => {
     });
   });
 
-  test("normalizeToolCallProposals parses arguments, skips junk, and honors input modes", () => {
-    const proposals = normalizeToolCallProposals(
+  test("normalizeToolCallProposals parses arguments, reports junk, and honors input modes", () => {
+    const normalized = normalizeToolCallProposals(
       [
         { function: { arguments: '{"thought":"x"}', name: "think" }, id: "call-1" },
         { function: { arguments: { input: "free text", arguments: { a: 1 } }, name: "either_tool" } },
@@ -132,15 +132,16 @@ describe("lm shared transforms", () => {
       ]
     );
 
-    expect(proposals).toHaveLength(2);
-    expect(proposals[0]).toMatchObject({ arguments: { thought: "x" }, callId: "call-1", toolName: "think" });
-    expect(proposals[1]).toMatchObject({ arguments: { a: 1 }, inputText: "free text", toolName: "either_tool" });
+    expect(normalized.proposals).toHaveLength(2);
+    expect(normalized.proposals[0]).toMatchObject({ arguments: { thought: "x" }, callId: "call-1", toolName: "think" });
+    expect(normalized.proposals[1]).toMatchObject({ arguments: { a: 1 }, inputText: "free text", toolName: "either_tool" });
+    expect(normalized.rejected).toHaveLength(2);
   });
 
   test("normalizeToolCallProposals falls back to a generated call id", () => {
-    const [proposal] = normalizeToolCallProposals([{ function: { arguments: "{}", name: "think" } }], "auto", [
-      thinkToolDefinition
-    ]);
+    const {
+      proposals: [proposal]
+    } = normalizeToolCallProposals([{ function: { arguments: "{}", name: "think" } }], "auto", [thinkToolDefinition]);
     expect(proposal.callId).toBe("auto.1");
   });
 

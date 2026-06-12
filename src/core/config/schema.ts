@@ -81,8 +81,12 @@ const lmStudioProviderConfigSchema = z
 const ollamaProviderConfigSchema = z
   .object({
     baseUrl: urlLikeStringSchema,
+    // Sent as options.num_ctx on every request. Without it Ollama applies its own
+    // (small) default context and silently truncates large agent prompts.
+    contextLength: z.number().int().positive().max(10_000_000).optional(),
     enabled: z.boolean(),
     headers: z.record(z.string(), secretInputSchema),
+    keepAlive: z.string().min(1).max(64).optional(),
     model: z.string().min(1).max(256).optional(),
     timeoutMs: positiveTimeoutSchema
   })
@@ -193,6 +197,10 @@ const tunnelConfigSchema = z
 
 const memoryConfigSchema = z
   .object({
+    // Trigger threshold-based session compaction when the last model request used
+    // at least this many input tokens. Unset: derived from
+    // runtime.modelSettings.contextWindowTokens (80%) or a 100k fallback. 0 disables.
+    autoCompactThresholdTokens: z.number().int().min(0).max(100_000_000).optional(),
     candidateLimit: z.number().int().positive().max(1000),
     chatSessionRoot: z.string().min(1),
     chunkOverlapChars: z.number().int().min(0).max(20_000),
@@ -213,13 +221,45 @@ const memoryConfigSchema = z
   })
   .strict();
 
+const runtimeModelSettingsSchema = z
+  .object({
+    contextWindowTokens: z.number().int().positive().max(100_000_000).optional(),
+    maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    topP: z.number().min(0).max(1).optional()
+  })
+  .strict();
+
+const runtimePromptBudgetsSchema = z
+  .object({
+    instructionDocChars: z.number().int().min(0).max(10_000_000),
+    memorySummaryChars: z.number().int().min(0).max(10_000_000)
+  })
+  .strict();
+
 const runtimeConfigSchema = z
   .object({
     defaultModel: z.string().min(1).max(256),
     defaultProvider: providerIdSchema,
     logLevel: logLevelSchema,
+    maxConsecutiveNudges: z.number().int().positive().max(100),
+    maxTurnsPerRun: z.union([z.literal("unlimited"), z.number().int().positive().max(100_000)]),
+    modelSettings: runtimeModelSettingsSchema,
+    promptBudgets: runtimePromptBudgetsSchema,
     statusUpdates: z.boolean(),
     verboseEvents: z.boolean()
+  })
+  .strict();
+
+const toolsConfigSchema = z
+  .object({
+    // Extra invocation names always exposed to the model on top of the profile.
+    include: z.array(z.string().min(1).max(128)).max(256),
+    // Invocation names never exposed to the model (still executable via gateway).
+    exclude: z.array(z.string().min(1).max(128)).max(256),
+    // "lean" exposes a small high-value core set and relies on tool_search
+    // activation for the rest; "full" exposes every registered tool.
+    profile: z.enum(["full", "lean"])
   })
   .strict();
 
@@ -471,6 +511,7 @@ const appConfigObjectSchema = z
     providers: providersConfigSchema,
     runtime: runtimeConfigSchema,
     secrets: secretsConfigSchema,
+    tools: toolsConfigSchema,
     tunnel: tunnelConfigSchema,
     voice: voiceConfigSchema
   })
@@ -516,9 +557,11 @@ export type ExternalAgentConfigKind = z.infer<typeof externalAgentConfigKindSche
 export type ExternalAgentsConfig = z.infer<typeof externalAgentsConfigSchema>;
 export type ImageConfig = z.infer<typeof imageConfigSchema>;
 export type ImageProviderConfig = z.infer<typeof imageProviderConfigSchema>;
+export type RuntimeModelSettings = z.infer<typeof runtimeModelSettingsSchema>;
 export type SecretInput = z.infer<typeof secretInputSchema>;
 export type SecretProviderConfig = z.infer<typeof secretProviderConfigSchema>;
 export type SecretRef = z.infer<typeof secretRefSchema>;
+export type ToolsConfig = z.infer<typeof toolsConfigSchema>;
 export type VoiceConfig = z.infer<typeof voiceConfigSchema>;
 export type VoiceProviderConfig = z.infer<typeof voiceProviderConfigSchema>;
 
@@ -680,6 +723,13 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
       defaultModel: DEFAULT_LM_STUDIO_MODEL,
       defaultProvider: "lm_studio",
       logLevel: "info",
+      maxConsecutiveNudges: 3,
+      maxTurnsPerRun: "unlimited",
+      modelSettings: {},
+      promptBudgets: {
+        instructionDocChars: 12_000,
+        memorySummaryChars: 4_000
+      },
       statusUpdates: true,
       verboseEvents: true
     },
@@ -694,6 +744,11 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
           source: "env"
         }
       }
+    },
+    tools: {
+      exclude: [],
+      include: [],
+      profile: "lean"
     },
     tunnel: {
       enabled: false,

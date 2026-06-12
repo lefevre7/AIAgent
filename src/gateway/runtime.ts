@@ -16,6 +16,7 @@ import {
   ToolRuntime,
   createToolResultMessage,
   createDefaultToolRegistry,
+  resolveVisibleToolDefinitions,
   createExternalAgentApprovalTargetResolver,
   createImageServiceFromConfig,
   createMcpManagerFromLoadedConfig,
@@ -161,9 +162,20 @@ export class GatewayRuntime
     this.eventLog = new GatewayEventLog(path.join(options.config.memory.stateRoot, "gateway", "events.jsonl"));
     this.approvalCoordinator = new ApprovalCoordinator(options.sessions);
     this.agentLoop = new AgentLoop({
+      autoCompactThresholdTokens: options.config.memory.autoCompactThresholdTokens,
+      contextWindowTokens: options.config.runtime.modelSettings.contextWindowTokens,
       memoryContextProvider: options.memoryService,
       memoryLifecycle: options.memoryService,
       model: options.modelRuntime,
+      modelSettings: {
+        maxOutputTokens: options.config.runtime.modelSettings.maxOutputTokens,
+        temperature: options.config.runtime.modelSettings.temperature,
+        topP: options.config.runtime.modelSettings.topP
+      },
+      promptBudgets: {
+        instructionDocChars: options.config.runtime.promptBudgets.instructionDocChars,
+        memorySummaryChars: options.config.runtime.promptBudgets.memorySummaryChars
+      },
       onAssistantDelta: ({ delta, sessionId, turnId }) => {
         void this.emitEvent(
           {
@@ -208,6 +220,7 @@ export class GatewayRuntime
       sessions: options.sessions,
       surface: "gateway",
       taskStateProvider: options.taskStateService,
+      toolCatalog: options.toolRuntime,
       toolExecutor: options.toolRuntime,
       userHomeDirectory: options.userHomeDirectory
     });
@@ -837,7 +850,12 @@ export class GatewayRuntime
     currentSession = materialized.session;
 
     const result = await this.agentLoop.run({
-      availableTools: this.options.toolRuntime.listDefinitions(),
+      availableTools: resolveVisibleToolDefinitions({
+        registry: this.options.toolRuntime,
+        toolsConfig: this.options.config.tools
+      }),
+      maxConsecutiveNudges: this.options.config.runtime.maxConsecutiveNudges,
+      maxTurns: this.options.config.runtime.maxTurnsPerRun,
       session: currentSession,
       userMessages: params.userMessages
     });
@@ -1615,6 +1633,11 @@ export class GatewayRuntime
     }
 
     for (const message of result.messages.filter((entry) => shouldRelayMessageToChannel(entry))) {
+      // Tool-call parts are runtime bookkeeping, not user-facing content.
+      const relayParts = message.parts.filter((part) => part.kind !== "tool_call");
+      if (relayParts.length === 0) {
+        continue;
+      }
       await this.sendChannelMessage({
         attachments: collectArtifactsFromMessage(message),
         identity: route.identity,
@@ -1624,7 +1647,7 @@ export class GatewayRuntime
           source: message.source,
           ...(message.turnId ? { turnId: message.turnId } : {})
         },
-        parts: message.parts,
+        parts: relayParts,
         replyToId: route.lastInboundMessageId,
         sessionId: result.session.id
       });

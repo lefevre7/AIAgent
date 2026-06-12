@@ -489,6 +489,9 @@ function renderMessagePartsToText(parts: MessagePart[]): string | undefined {
           return part.summary;
         case "text":
           return part.text;
+        case "tool_call":
+          // Runtime bookkeeping; never user-facing channel content.
+          return "";
       }
     })
     .map((value) => value.trim())

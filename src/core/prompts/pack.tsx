@@ -26,6 +26,8 @@ export async function buildPromptPack(params: {
   availableTools?: ToolDefinition[];
   cwd: string;
   extraSkillRoots?: string[];
+  instructionDocCharBudget?: number;
+  memorySummaryCharBudget?: number;
   projectRootMarkers?: string[];
   taskSummary?: string;
   taskState?: TaskStateSnapshot | null;
@@ -47,15 +49,18 @@ export async function buildPromptPack(params: {
   ]);
 
   const skillToolAvailable = (params.availableTools ?? []).some((tool) => tool.name === "skill");
+  const toolSearchAvailable = (params.availableTools ?? []).some((tool) => tool.name === "tool_search");
   const prompt = renderPrompt(
     <SystemPromptTemplate
       agentsDocuments={agentsDocuments}
       availableSkills={availableSkills}
-      availableTools={params.availableTools ?? []}
+      instructionDocCharBudget={params.instructionDocCharBudget}
+      memorySummaryCharBudget={params.memorySummaryCharBudget}
       skillToolAvailable={skillToolAvailable}
       taskSummary={params.taskSummary}
       taskState={params.taskState}
       memoryContext={params.memoryContext}
+      toolSearchAvailable={toolSearchAvailable}
     />
   );
 
@@ -82,11 +87,13 @@ function SystemPromptTemplate(props: {
     user: AgentsInstructionDocument | null;
   };
   availableSkills: DiscoveredSkill[];
-  availableTools: ToolDefinition[];
+  instructionDocCharBudget?: number;
+  memorySummaryCharBudget?: number;
   skillToolAvailable: boolean;
   taskSummary?: string;
   taskState?: TaskStateSnapshot | null;
   memoryContext?: MemoryPromptContext | null;
+  toolSearchAvailable: boolean;
 }) {
   return (
     <>
@@ -126,6 +133,19 @@ function SystemPromptTemplate(props: {
         </ul>
       </section>
 
+      <section>
+        <h2>Working With Tools</h2>
+        <p>
+          The tools available right now are provided in this request's tool list with their own descriptions and
+          schemas; rely on that list rather than guessing.
+          {props.toolSearchAvailable
+            ? " The list is a focused core set. When you need a capability you do not see (for example browser automation, memory, notebooks, images, voice, messaging, external agents, or MCP-provided tools), call `tool_search` with a short description of what you need; matching tools become available to call on your next turn."
+            : ""}{" "}
+          Call tools with their exact names and valid JSON arguments. If a tool call fails, read the error, fix the
+          arguments or approach, and retry instead of repeating the same call.
+        </p>
+      </section>
+
       {props.taskSummary ? (
         <section>
           <h2>Current Task</h2>
@@ -163,28 +183,15 @@ function SystemPromptTemplate(props: {
       {props.memoryContext && (props.memoryContext.workspaceSummary || props.memoryContext.userGlobalSummary || props.memoryContext.sessionSummary) ? (
         <section>
           <h2>Durable Memory</h2>
-          {props.memoryContext.workspaceSummary ? <pre>{props.memoryContext.workspaceSummary}</pre> : null}
-          {props.memoryContext.userGlobalSummary ? <pre>{props.memoryContext.userGlobalSummary}</pre> : null}
-          {props.memoryContext.sessionSummary ? <pre>{props.memoryContext.sessionSummary}</pre> : null}
-        </section>
-      ) : null}
-
-      {props.availableTools.length > 0 ? (
-        <section>
-          <h2>Available Tools</h2>
-          <ul>
-            {props.availableTools
-              .slice()
-              .sort((left, right) => left.invocationName.localeCompare(right.invocationName))
-              .map((tool) => (
-                <li key={tool.toolId}>
-                  <code>{tool.invocationName}</code>: {tool.descriptor.purpose} Use when: {tool.descriptor.whenToUse.join("; ")}.{" "}
-                  {tool.descriptor.whenNotToUse.length > 0 ? `Avoid when: ${tool.descriptor.whenNotToUse.join("; ")}. ` : ""}
-                  Approval: {tool.approvalMode}. Guidance: {tool.usageGuidance}
-                  {tool.name !== tool.invocationName ? ` Canonical name: ${tool.name}.` : "."}
-                </li>
-              ))}
-          </ul>
+          {props.memoryContext.workspaceSummary ? (
+            <pre>{truncateForPrompt(props.memoryContext.workspaceSummary, props.memorySummaryCharBudget, "the workspace memory files")}</pre>
+          ) : null}
+          {props.memoryContext.userGlobalSummary ? (
+            <pre>{truncateForPrompt(props.memoryContext.userGlobalSummary, props.memorySummaryCharBudget, "the user-global memory files")}</pre>
+          ) : null}
+          {props.memoryContext.sessionSummary ? (
+            <pre>{truncateForPrompt(props.memoryContext.sessionSummary, props.memorySummaryCharBudget, "the chat session memory files")}</pre>
+          ) : null}
         </section>
       ) : null}
 
@@ -215,13 +222,29 @@ function SystemPromptTemplate(props: {
             closer to the working directory take priority.
           </p>
           {props.agentsDocuments.user ? (
-            <pre>{`# User-level instructions\nPath: ${props.agentsDocuments.user.path}\n\n${props.agentsDocuments.user.content}`}</pre>
+            <pre>{`# User-level instructions\nPath: ${props.agentsDocuments.user.path}\n\n${truncateForPrompt(
+              props.agentsDocuments.user.content,
+              props.instructionDocCharBudget,
+              props.agentsDocuments.user.path
+            )}`}</pre>
           ) : null}
           {props.agentsDocuments.project.map((document) => (
-            <pre key={document.path}>{`# Project instructions\nPath: ${document.path}\n\n${document.content}`}</pre>
+            <pre key={document.path}>{`# Project instructions\nPath: ${document.path}\n\n${truncateForPrompt(
+              document.content,
+              props.instructionDocCharBudget,
+              document.path
+            )}`}</pre>
           ))}
         </section>
       ) : null}
     </>
   );
+}
+
+function truncateForPrompt(content: string, budgetChars: number | undefined, source: string): string {
+  if (!budgetChars || budgetChars <= 0 || content.length <= budgetChars) {
+    return content;
+  }
+
+  return `${content.slice(0, budgetChars)}\n\n[Truncated to ${budgetChars} of ${content.length} characters. Read ${source} with read_file when you need the rest.]`;
 }

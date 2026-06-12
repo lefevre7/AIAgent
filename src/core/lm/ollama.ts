@@ -9,6 +9,7 @@ import type {
 import { languageModelResponseSchema } from "@/core/contracts";
 import { fetchJson, fetchStream, normalizeUnknownProviderError } from "@/core/lm/http";
 import {
+  buildRejectedToolCallMetadata,
   compactRecord,
   mapStopReason,
   normalizeToolCallProposals,
@@ -19,8 +20,10 @@ import {
 
 type OllamaAdapterOptions = {
   baseUrl: string;
+  contextLength?: number;
   fetchImpl?: typeof fetch;
   headers?: Record<string, string>;
+  keepAlive?: string;
   providerId?: string;
   timeoutMs: number;
 };
@@ -190,8 +193,8 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
       }
     }
 
-    const normalizedToolCalls = normalizeToolCallProposals(toolCalls, `${request.id}.tool`, request.availableTools);
-    for (const toolCall of normalizedToolCalls) {
+    const normalized = normalizeToolCallProposals(toolCalls, `${request.id}.tool`, request.availableTools);
+    for (const toolCall of normalized.proposals) {
       yield {
         kind: "response.tool_call",
         toolCall
@@ -202,22 +205,25 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
       kind: "response.completed",
       response: this.buildParsedResponse({
         content,
+        metadata: buildRejectedToolCallMetadata(normalized.rejected),
         modelId,
         request,
         stopReason,
-        toolCalls: normalizedToolCalls,
+        toolCalls: normalized.proposals,
         usage
       })
     };
   }
 
   private buildResponse(request: LanguageModelRequest, response: OllamaChatResponse): LanguageModelResponse {
+    const normalized = normalizeToolCallProposals(response.message?.tool_calls ?? [], `${request.id}.tool`, request.availableTools);
     return this.buildParsedResponse({
       content: response.message?.content ?? "",
+      metadata: buildRejectedToolCallMetadata(normalized.rejected),
       modelId: response.model ?? request.modelId,
       request,
       stopReason: response.done_reason ?? ((response.message?.tool_calls?.length ?? 0) > 0 ? "tool_calls" : "end_turn"),
-      toolCalls: normalizeToolCallProposals(response.message?.tool_calls ?? [], `${request.id}.tool`, request.availableTools),
+      toolCalls: normalized.proposals,
       usage: {
         inputTokens: response.prompt_eval_count ?? 0,
         outputTokens: response.eval_count ?? 0,
@@ -228,6 +234,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
 
   private buildParsedResponse(params: {
     content: string;
+    metadata?: Record<string, unknown>;
     modelId: string;
     request: LanguageModelRequest;
     stopReason: unknown;
@@ -252,7 +259,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
               turnId: params.request.turnId,
               visibility: "default"
             },
-      metadata: {},
+      metadata: params.metadata ?? {},
       modelId: params.modelId,
       provider: this.provider,
       stopReason: mapStopReason(params.stopReason),
@@ -265,9 +272,11 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     const tools = request.settings.toolChoice === "none" ? [] : serializeToolDefinitions(request.availableTools);
     return compactRecord({
       format: serializeOllamaResponseFormat(request.responseFormat),
+      keep_alive: this.options.keepAlive,
       messages: await serializeOllamaMessages(request),
       model: request.modelId,
       options: compactRecord({
+        num_ctx: this.options.contextLength,
         num_predict: request.settings.maxOutputTokens,
         stop: request.settings.stopSequences.length > 0 ? request.settings.stopSequences : undefined,
         temperature: request.settings.temperature,

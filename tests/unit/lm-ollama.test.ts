@@ -86,6 +86,44 @@ describe("OllamaLanguageModelAdapter", () => {
     expect(events.some((event) => event.kind === "response.error")).toBe(true);
   });
 
+  test("sends configured num_ctx and keep_alive on chat requests", async () => {
+    let capturedBody: Record<string, unknown> | null = null;
+    const adapter = new OllamaLanguageModelAdapter({
+      baseUrl: "http://localhost:11434",
+      contextLength: 32_768,
+      fetchImpl: async (_input, init) => {
+        capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ message: { content: "ok" }, model: "qwen2.5:14b" });
+      },
+      keepAlive: "10m",
+      timeoutMs: 1000
+    });
+
+    await adapter.generate(buildRequest());
+
+    expect(capturedBody).not.toBeNull();
+    expect((capturedBody as unknown as { options: { num_ctx: number } }).options.num_ctx).toBe(32_768);
+    expect((capturedBody as unknown as { keep_alive: string }).keep_alive).toBe("10m");
+  });
+
+  test("omits num_ctx and keep_alive when not configured", async () => {
+    let capturedBody: Record<string, unknown> | null = null;
+    const adapter = new OllamaLanguageModelAdapter({
+      baseUrl: "http://localhost:11434",
+      fetchImpl: async (_input, init) => {
+        capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return jsonResponse({ message: { content: "ok" } });
+      },
+      timeoutMs: 1000
+    });
+
+    await adapter.generate(buildRequest());
+
+    const body = capturedBody as unknown as { keep_alive?: unknown; options?: Record<string, unknown> };
+    expect(body.keep_alive).toBeUndefined();
+    expect(body.options?.num_ctx).toBeUndefined();
+  });
+
   test("streams reasoning, content, and tool calls", async () => {
     const adapter = new OllamaLanguageModelAdapter({
       baseUrl: "http://localhost:11434",

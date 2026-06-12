@@ -9,7 +9,22 @@
     "logLevel": "info",
     "statusUpdates": true,
     "verboseEvents": true
+    // Small-model knobs (see docs/SMALL_MODELS.md for full guidance):
+    // "maxTurnsPerRun": "unlimited",      // or a number
+    // "maxConsecutiveNudges": 3,          // no-progress guard
+    // "modelSettings": {
+    //   "contextWindowTokens": 32768,     // drives compaction + Ollama num_ctx fallback
+    //   "temperature": 0.7,
+    //   "topP": 0.8,
+    //   "maxOutputTokens": 4096
+    // },
+    // "promptBudgets": { "instructionDocChars": 12000, "memorySummaryChars": 4000 }
   },
+
+  // Tool exposure profile for the model. "lean" (default) advertises a small
+  // core set and relies on tool_search activation for the rest; "full" exposes
+  // every registered tool. See docs/SMALL_MODELS.md.
+  // "tools": { "profile": "lean", "include": [], "exclude": [] },
 
   "providers": {
     "imageProviders": {

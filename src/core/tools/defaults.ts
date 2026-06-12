@@ -1,6 +1,13 @@
 import { createToolApprovalDecider } from "@/core/approvals";
 import { DEFAULT_APPROVAL_SETTINGS } from "@/core/config";
-import type { BrowserAutomationService, ExternalAgentService, ImageService, VoiceService } from "@/core/contracts";
+import type {
+  BrowserAutomationService,
+  ExternalAgentService,
+  ImageService,
+  ToolDefinition,
+  ToolRegistry,
+  VoiceService
+} from "@/core/contracts";
 import { createExternalAgentApprovalTargetResolver } from "@/core/external-agents";
 import type { MCPManager } from "@/core/mcp";
 import { createMcpExecutableToolRegistry } from "@/core/mcp";
@@ -38,6 +45,49 @@ import type { FileBackedMemoryService } from "@/core/memory";
 import type { TaskStateService } from "@/core/plans";
 import type { FileSessionStore } from "@/core/sessions";
 import { WorkspaceMutationEngine } from "@/core/workspace";
+
+// Core tools exposed to the model by default under the "lean" tools profile.
+// Everything else stays registered and executable, and becomes model-visible
+// through tool_search activation or tools.include config. Keeping this set
+// small is a deliberate optimization for small local models: large tool
+// catalogs measurably degrade tool-selection accuracy and burn context.
+export const LEAN_TOOL_PROFILE_INVOCATION_NAMES: readonly string[] = [
+  "apply_patch",
+  "ask_user_question",
+  "attempt_complete",
+  "create_file",
+  "edit_file",
+  "grep_files",
+  "list_files",
+  "read_command_output",
+  "read_file",
+  "search_paths",
+  "shell_command",
+  "think",
+  "tool_search",
+  "update_plan",
+  "web_fetch",
+  "web_search"
+];
+
+export function resolveVisibleToolDefinitions(params: {
+  registry: Pick<ToolRegistry, "listDefinitions">;
+  toolsConfig: {
+    exclude: string[];
+    include: string[];
+    profile: "full" | "lean";
+  };
+}): ToolDefinition[] {
+  const excluded = new Set(params.toolsConfig.exclude);
+  const all = params.registry.listDefinitions();
+
+  if (params.toolsConfig.profile === "full") {
+    return all.filter((definition) => !excluded.has(definition.invocationName));
+  }
+
+  const allowed = new Set([...LEAN_TOOL_PROFILE_INVOCATION_NAMES, ...params.toolsConfig.include]);
+  return all.filter((definition) => allowed.has(definition.invocationName) && !excluded.has(definition.invocationName));
+}
 
 export function createDefaultToolRegistry(
   options: {

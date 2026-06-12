@@ -10,6 +10,7 @@ import { languageModelResponseSchema } from "@/core/contracts";
 import { fetchJson, fetchStream, normalizeUnknownProviderError } from "@/core/lm/http";
 import {
   buildAssistantMessageText,
+  buildRejectedToolCallMetadata,
   compactRecord,
   mapStopReason,
   normalizeToolCallProposals,
@@ -259,8 +260,8 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
         function: { arguments: entry.arguments, name: entry.name },
         id: entry.id
       }));
-    const toolCalls = normalizeToolCallProposals(assembledToolCalls, `${responseId}.tool`, request.availableTools);
-    for (const toolCall of toolCalls) {
+    const normalized = normalizeToolCallProposals(assembledToolCalls, `${responseId}.tool`, request.availableTools);
+    for (const toolCall of normalized.proposals) {
       yield {
         kind: "response.tool_call",
         toolCall
@@ -272,10 +273,11 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
       response: this.buildParsedResponse({
         content,
         id: responseId,
+        metadata: buildRejectedToolCallMetadata(normalized.rejected),
         modelId,
         request,
         stopReason,
-        toolCalls,
+        toolCalls: normalized.proposals,
         usage
       })
     };
@@ -284,15 +286,16 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
   private buildResponse(request: LanguageModelRequest, response: LMStudioChatResponse): LanguageModelResponse {
     const choice = response.choices?.[0];
     const content = buildAssistantMessageText(choice?.message?.content);
-    const toolCalls = normalizeToolCallProposals(choice?.message?.tool_calls ?? [], `${request.id}.tool`, request.availableTools);
+    const normalized = normalizeToolCallProposals(choice?.message?.tool_calls ?? [], `${request.id}.tool`, request.availableTools);
 
     return this.buildParsedResponse({
       content,
       id: response.id ?? `lm-response.${request.id}`,
+      metadata: buildRejectedToolCallMetadata(normalized.rejected),
       modelId: response.model ?? request.modelId,
       request,
-      stopReason: choice?.finish_reason ?? (toolCalls.length > 0 ? "tool_calls" : "end_turn"),
-      toolCalls,
+      stopReason: choice?.finish_reason ?? (normalized.proposals.length > 0 ? "tool_calls" : "end_turn"),
+      toolCalls: normalized.proposals,
       usage: {
         inputTokens: response.usage?.prompt_tokens ?? 0,
         outputTokens: response.usage?.completion_tokens ?? 0,
@@ -306,6 +309,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
   private buildParsedResponse(params: {
     content: string;
     id: string;
+    metadata?: Record<string, unknown>;
     modelId: string;
     request: LanguageModelRequest;
     stopReason: unknown;
@@ -329,7 +333,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
               turnId: params.request.turnId,
               visibility: "default"
             },
-      metadata: {},
+      metadata: params.metadata ?? {},
       modelId: params.modelId,
       provider: this.provider,
       stopReason: mapStopReason(params.stopReason),

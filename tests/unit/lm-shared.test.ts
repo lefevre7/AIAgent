@@ -60,7 +60,7 @@ describe("language-model shared helpers", () => {
   });
 
   test("normalizes tool call proposals from stringified function arguments", () => {
-    const proposals = normalizeToolCallProposals(
+    const normalized = normalizeToolCallProposals(
       [
         {
           function: {
@@ -72,7 +72,7 @@ describe("language-model shared helpers", () => {
       "fallback.tool"
     );
 
-    expect(proposals).toEqual([
+    expect(normalized.proposals).toEqual([
       {
         arguments: {
           path: "README.md"
@@ -81,6 +81,20 @@ describe("language-model shared helpers", () => {
         toolName: "read_file"
       }
     ]);
+    expect(normalized.rejected).toEqual([]);
+  });
+
+  test("reports malformed tool calls instead of silently dropping them", () => {
+    const normalized = normalizeToolCallProposals(
+      ["not an object", { function: { arguments: "{}" } }, { function: { arguments: '{"ok":true}', name: "read_file" } }],
+      "fallback.tool"
+    );
+
+    expect(normalized.proposals).toHaveLength(1);
+    expect(normalized.proposals[0]?.toolName).toBe("read_file");
+    expect(normalized.rejected).toHaveLength(2);
+    expect(normalized.rejected[0]?.reason).toContain("was not a JSON object");
+    expect(normalized.rejected[1]?.reason).toContain("missing a function name");
   });
 
   test("serializes invocation names and wraps free-form text tools for provider function calling", () => {
@@ -155,7 +169,7 @@ describe("language-model shared helpers", () => {
       }
     ]);
 
-    const proposals = normalizeToolCallProposals(
+    const normalized = normalizeToolCallProposals(
       [
         {
           function: {
@@ -168,7 +182,7 @@ describe("language-model shared helpers", () => {
       definitions
     );
 
-    expect(proposals).toEqual([
+    expect(normalized.proposals).toEqual([
       {
         arguments: {},
         callId: "fallback.tool.1",

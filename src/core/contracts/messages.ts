@@ -93,6 +93,16 @@ export const statusPartSchema = z
   })
   .strict();
 
+export const toolCallPartSchema = z
+  .object({
+    arguments: z.record(z.string(), jsonValueSchema).default({}),
+    callId: entityIdSchema,
+    inputText: z.string().min(1).optional(),
+    kind: z.literal("tool_call"),
+    toolName: z.string().min(1).max(128)
+  })
+  .strict();
+
 export const messagePartSchema = z.discriminatedUnion("kind", [
   audioPartSchema,
   citationPartSchema,
@@ -101,7 +111,8 @@ export const messagePartSchema = z.discriminatedUnion("kind", [
   jsonPartSchema,
   markdownPartSchema,
   statusPartSchema,
-  textPartSchema
+  textPartSchema,
+  toolCallPartSchema
 ]);
 
 export const messageSchema = z

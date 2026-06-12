@@ -50,8 +50,11 @@ export class LanguageModelRuntime {
     this.registerAdapter({
       adapter: new OllamaLanguageModelAdapter({
         baseUrl: options.config.providers.ollama.baseUrl,
+        contextLength:
+          options.config.providers.ollama.contextLength ?? options.config.runtime.modelSettings.contextWindowTokens,
         fetchImpl: options.fetchImpl,
         headers: materializeHeaders(options.config.providers.ollama.headers, "ollama"),
+        keepAlive: options.config.providers.ollama.keepAlive,
         providerId: "ollama",
         timeoutMs: options.config.providers.ollama.timeoutMs
       }),

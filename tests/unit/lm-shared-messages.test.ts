@@ -92,6 +92,85 @@ describe("language-model message serialization", () => {
     const messages = await serializeOpenAICompatibleMessages(request);
     expect(JSON.stringify(messages)).toContain("bold answer");
   });
+
+  test("serializes assistant tool calls and paired tool results natively for OpenAI-compatible providers", async () => {
+    const assistant: Message = {
+      ...message(
+        [
+          { kind: "text", text: "Reading the file." },
+          { arguments: { path: "README.md" }, callId: "call.1", kind: "tool_call", toolName: "read_file" }
+        ],
+        "assistant"
+      ),
+      id: "message.assistant.toolcall"
+    };
+    const toolResult: Message = {
+      ...message([{ kind: "json", value: { content: "hello", status: "succeeded" } }], "tool"),
+      id: "message.tool.call.1",
+      metadata: { toolCallId: "call.1" }
+    };
+
+    const messages = await serializeOpenAICompatibleMessages(buildRequest([assistant, toolResult]));
+
+    const assistantEntry = messages.find((entry) => entry.role === "assistant") as {
+      content: string;
+      tool_calls?: Array<{ function: { arguments: string; name: string }; id: string; type: string }>;
+    };
+    expect(assistantEntry.tool_calls).toEqual([
+      {
+        function: { arguments: '{"path":"README.md"}', name: "read_file" },
+        id: "call.1",
+        type: "function"
+      }
+    ]);
+
+    const toolEntry = messages.find((entry) => entry.role === "tool") as {
+      content: string;
+      tool_call_id: string;
+    };
+    expect(toolEntry.tool_call_id).toBe("call.1");
+    expect(toolEntry.content).toContain("hello");
+    // Tool results must be compact JSON, not pretty-printed.
+    expect(toolEntry.content).not.toContain("\n  ");
+  });
+
+  test("falls back to flattened text for orphan tool results with no matching assistant tool call", async () => {
+    const orphanResult: Message = {
+      ...message([{ kind: "json", value: { status: "succeeded" } }], "tool"),
+      id: "message.tool.orphan",
+      metadata: { toolCallId: "call.unknown" }
+    };
+
+    const messages = await serializeOpenAICompatibleMessages(buildRequest([orphanResult]));
+    expect(messages.some((entry) => entry.role === "tool")).toBe(false);
+    expect(JSON.stringify(messages)).toContain("[TOOL]");
+  });
+
+  test("serializes assistant tool calls and paired tool results natively for Ollama", async () => {
+    const assistant: Message = {
+      ...message([{ arguments: { path: "README.md" }, callId: "call.2", kind: "tool_call", toolName: "read_file" }], "assistant"),
+      id: "message.assistant.toolcall.ollama"
+    };
+    const toolResult: Message = {
+      ...message([{ kind: "json", value: { content: "hi" } }], "tool"),
+      id: "message.tool.call.2",
+      metadata: { toolCallId: "call.2" }
+    };
+
+    const messages = await serializeOllamaMessages(buildRequest([assistant, toolResult]));
+
+    const assistantEntry = messages.find((entry) => entry.role === "assistant");
+    expect(assistantEntry?.tool_calls).toEqual([
+      {
+        function: { arguments: { path: "README.md" }, name: "read_file" }
+      }
+    ]);
+
+    const toolEntry = messages.find((entry) => entry.role === "tool");
+    expect(toolEntry?.tool_call_id).toBe("call.2");
+    expect(toolEntry?.tool_name).toBe("read_file");
+    expect(toolEntry?.content).toContain("hi");
+  });
 });
 
 describe("language-model image URI resolution", () => {
