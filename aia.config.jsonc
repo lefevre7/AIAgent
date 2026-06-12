@@ -61,6 +61,22 @@
     }
   },
 
+  // MCP servers. Stdio servers spawn a local process; HTTP servers use
+  // type "streamable-http" (or "sse"/"auto") with a url and headers.
+  // Omitted "imports"/"templates" fall back to built-in defaults.
+  "mcp": {
+    "servers": {
+      "context7": {
+        "type": "stdio",
+        "enabled": true,
+        "required": false,
+        "tags": [],
+        "command": "npx",
+        "args": ["-y", "@upstash/context7-mcp@latest"]
+      }
+    }
+  },
+
   "gateway": {
     "hostname": "127.0.0.1",
     "port": 3000,
