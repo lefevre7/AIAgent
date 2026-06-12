@@ -64,4 +64,35 @@ describe("createStreamGuard", () => {
     expect(guard.signal.aborted).toBe(false);
     guard.dispose();
   });
+
+  test("uses the generous first-token budget before any token, then the tighter idle window", () => {
+    vi.useFakeTimers();
+    const guard = createStreamGuard({
+      firstTokenTimeoutMs: 1000,
+      idleTimeoutMs: 100
+    });
+
+    // Pre-first-token: the short idle window must NOT apply yet.
+    vi.advanceTimersByTime(300);
+    expect(guard.signal.aborted).toBe(false);
+
+    // First token arrives → switch to the tighter idle window.
+    guard.observe("hello");
+    vi.advanceTimersByTime(80);
+    expect(guard.signal.aborted).toBe(false);
+    vi.advanceTimersByTime(40);
+    expect(guard.abortReason()).toBe("idle");
+    guard.dispose();
+  });
+
+  test("aborts on the first-token budget when no token ever arrives", () => {
+    vi.useFakeTimers();
+    const guard = createStreamGuard({
+      firstTokenTimeoutMs: 1000,
+      idleTimeoutMs: 100
+    });
+    vi.advanceTimersByTime(1100);
+    expect(guard.abortReason()).toBe("idle");
+    guard.dispose();
+  });
 });

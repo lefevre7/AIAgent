@@ -249,6 +249,7 @@ export interface LanguageModelAdapter {
   readonly providerId: string;
 
   generate(request: LanguageModelRequest): Promise<LanguageModelResponse>;
+  getModelContextWindow?(modelId: string): Promise<number | undefined>;
   health(): Promise<ProviderHealth>;
   listModels(): Promise<LanguageModelDescriptor[]>;
   stream?(

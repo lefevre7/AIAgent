@@ -55,6 +55,8 @@ export class LanguageModelRuntime {
           "lmStudio"
         ),
         providerId: "lm_studio",
+        streamFirstTokenTimeoutMs:
+          options.config.providers.lmStudio.streamFirstTokenTimeoutMs,
         streamIdleTimeoutMs:
           options.config.providers.lmStudio.streamIdleTimeoutMs,
         timeoutMs: options.config.providers.lmStudio.timeoutMs
@@ -75,6 +77,8 @@ export class LanguageModelRuntime {
         ),
         keepAlive: options.config.providers.ollama.keepAlive,
         providerId: "ollama",
+        streamFirstTokenTimeoutMs:
+          options.config.providers.ollama.streamFirstTokenTimeoutMs,
         streamIdleTimeoutMs:
           options.config.providers.ollama.streamIdleTimeoutMs,
         timeoutMs: options.config.providers.ollama.timeoutMs

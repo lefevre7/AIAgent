@@ -413,6 +413,10 @@ export type StreamGuard = {
 };
 
 export type StreamGuardOptions = {
+  // Budget for time-to-first-token (prompt evaluation). Large local models with
+  // a big context can take much longer than the inter-token idle window before
+  // emitting anything, so the first token gets its own (generous) deadline.
+  firstTokenTimeoutMs?: number;
   idleTimeoutMs?: number;
   minRepeatLineLength?: number;
   repetitionThreshold?: number;
@@ -420,7 +424,9 @@ export type StreamGuardOptions = {
 
 // Guards a streamed generation against two local-model failure modes:
 //   * idle: the connection stops delivering tokens (reset on every chunk, so a
-//     healthy long stream is never killed — unlike an absolute deadline).
+//     healthy long stream is never killed — unlike an absolute deadline). A
+//     separate, larger budget covers time-to-first-token (prompt eval) so a slow
+//     prompt evaluation is not mistaken for a stall.
 //   * repetition: the model emits the same line many times in a row (a decode
 //     loop). Both abort the shared AbortController so the fetch unwinds.
 export function createStreamGuard(
@@ -428,16 +434,19 @@ export function createStreamGuard(
 ): StreamGuard {
   const controller = new AbortController();
   const idleMs = options.idleTimeoutMs ?? 0;
+  const firstTokenMs = options.firstTokenTimeoutMs ?? idleMs;
   const threshold = options.repetitionThreshold ?? 0;
   const minLineLength = options.minRepeatLineLength ?? 4;
   let reason: StreamGuardAbortReason | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let started = false;
   let pending = "";
   let lastLine: string | null = null;
   let repeatCount = 0;
 
   const arm = (): void => {
-    if (idleMs <= 0) {
+    const ms = started ? idleMs : firstTokenMs;
+    if (ms <= 0) {
       return;
     }
     if (timer) {
@@ -446,7 +455,7 @@ export function createStreamGuard(
     timer = setTimeout(() => {
       reason ??= "idle";
       controller.abort();
-    }, idleMs);
+    }, ms);
   };
 
   const considerLine = (line: string): void => {
@@ -478,6 +487,11 @@ export function createStreamGuard(
       }
     },
     observe: (text: string) => {
+      // The first non-empty token flips the guard from the first-token budget to
+      // the tighter inter-token idle window.
+      if (text.length > 0) {
+        started = true;
+      }
       arm();
       if (threshold <= 0 || text.length === 0) {
         return;

@@ -1029,9 +1029,53 @@ describe("agent loop", () => {
 
     expect(result.stopReason).toBe("completed");
     expect(metricsSeen.length).toBeGreaterThan(0);
-    expect(metricsSeen[0]?.tokensUsed).toBe(10);
+    // tokensUsed reports generated (output) tokens, which include reasoning.
+    expect(metricsSeen[0]?.tokensUsed).toBe(5);
+    // context % uses prompt (input) tokens: 10 / 100 = 10%.
     expect(metricsSeen[0]?.contextWindowPercentage).toBe(10);
     expect(typeof metricsSeen[0]?.elapsedSeconds).toBe("number");
+  });
+
+  test("falls back to a default context window for the % metric when none is configured", async () => {
+    const root = await createTempRoot();
+    const store = new FileSessionStore(path.join(root, ".aia"));
+    const session = buildSession();
+    await store.saveSession(session);
+
+    const metricsSeen: AgentLoopStatusMetrics[] = [];
+    const loop = new AgentLoop({
+      model: new FakeModel([
+        buildModelResponse({
+          messageText: "Done.",
+          sessionId: session.id,
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.fallback",
+              toolName: "attempt_complete"
+            }
+          ]
+        })
+      ]),
+      onStatus: ({ metrics }) => {
+        if (metrics) {
+          metricsSeen.push(metrics);
+        }
+      },
+      sessions: store
+    });
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      session,
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+    // No contextWindowTokens configured → the % is still emitted using the
+    // default window (32768): 10 / 32768 ≈ 0.0%.
+    expect(metricsSeen[0]).toHaveProperty("contextWindowPercentage");
+    expect(metricsSeen[0]?.contextWindowPercentage).toBe(0);
   });
 });
 

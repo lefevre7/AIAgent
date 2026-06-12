@@ -100,7 +100,9 @@ type AgentLoopOptions = {
     session: SessionRecord;
     snapshot: Awaited<ReturnType<FileSessionStore["getSessionSnapshot"]>>;
   }) => Promise<AgentLoopCompletionDecision>;
-  contextWindowTokens?: number;
+  // A number, or a getter so the host can resolve it lazily (e.g. after querying
+  // the provider for the model's context window).
+  contextWindowTokens?: number | (() => number | undefined);
   model: AgentLoopModel;
   modelSettings?: {
     frequencyPenalty?: number;
@@ -144,6 +146,9 @@ type AgentLoopOptions = {
 };
 
 const DEFAULT_AUTO_COMPACT_THRESHOLD_TOKENS = 100_000;
+// Used for the context-window % metric when no window is configured and the
+// provider could not report one.
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768;
 const AUTO_COMPACT_CONTEXT_WINDOW_FRACTION = 0.8;
 const DEFAULT_MAX_CONSECUTIVE_NUDGES = 3;
 const ACTIVATED_TOOLS_METADATA_KEY = "activatedToolNames";
@@ -867,13 +872,11 @@ export class AgentLoop {
       return null;
     }
 
+    const resolvedWindow = this.resolveContextWindowTokens();
     const threshold =
       this.options.autoCompactThresholdTokens ??
-      (this.options.contextWindowTokens
-        ? Math.floor(
-            this.options.contextWindowTokens *
-              AUTO_COMPACT_CONTEXT_WINDOW_FRACTION
-          )
+      (resolvedWindow
+        ? Math.floor(resolvedWindow * AUTO_COMPACT_CONTEXT_WINDOW_FRACTION)
         : DEFAULT_AUTO_COMPACT_THRESHOLD_TOKENS);
     if (threshold <= 0) {
       return null;
@@ -915,20 +918,32 @@ export class AgentLoop {
     response: LanguageModelResponse,
     runStartTime: number
   ): AgentLoopStatusMetrics {
-    const tokensUsed = response.usage.inputTokens;
-    const contextWindowTokens = this.options.contextWindowTokens;
+    // "Tokens used" = generated tokens (completion/eval count), which already
+    // includes any reasoning tokens. Context % reflects how full the window is,
+    // so it uses the prompt (input) tokens against the resolved window size.
+    const promptTokens = response.usage.inputTokens;
+    const contextWindowTokens =
+      this.resolveContextWindowTokens() ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
     return {
-      ...(contextWindowTokens && contextWindowTokens > 0
+      ...(contextWindowTokens > 0 && promptTokens > 0
         ? {
             contextWindowPercentage: Math.min(
               100,
-              Math.round((tokensUsed / contextWindowTokens) * 1000) / 10
+              Math.round((promptTokens / contextWindowTokens) * 1000) / 10
             )
           }
         : {}),
       elapsedSeconds: Math.round((Date.now() - runStartTime) / 1000),
-      tokensUsed
+      tokensUsed: response.usage.outputTokens
     };
+  }
+
+  private resolveContextWindowTokens(): number | undefined {
+    const configured =
+      typeof this.options.contextWindowTokens === "function"
+        ? this.options.contextWindowTokens()
+        : this.options.contextWindowTokens;
+    return configured && configured > 0 ? configured : undefined;
   }
 
   private async listSessionPendingApprovals(

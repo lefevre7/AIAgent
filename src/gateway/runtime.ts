@@ -163,6 +163,9 @@ export class GatewayRuntime
   private readonly eventLog: GatewayEventLog;
   private readonly approvalCoordinator: ApprovalCoordinator;
   private readonly agentLoop: AgentLoop;
+  // Resolved once in initialize() from the provider when not set in config; the
+  // AgentLoop reads it through a getter so it picks up the late-resolved value.
+  private resolvedContextWindowTokens: number | undefined;
 
   constructor(private readonly options: GatewayRuntimeOptions) {
     super();
@@ -173,8 +176,9 @@ export class GatewayRuntime
     this.agentLoop = new AgentLoop({
       autoCompactThresholdTokens:
         options.config.memory.autoCompactThresholdTokens,
-      contextWindowTokens:
-        options.config.runtime.modelSettings.contextWindowTokens,
+      contextWindowTokens: () =>
+        options.config.runtime.modelSettings.contextWindowTokens ??
+        this.resolvedContextWindowTokens,
       memoryContextProvider: options.memoryService,
       memoryLifecycle: options.memoryService,
       model: options.modelRuntime,
@@ -248,6 +252,34 @@ export class GatewayRuntime
 
   async initialize(): Promise<void> {
     await this.eventLog.initialize();
+    this.resolvedContextWindowTokens =
+      await this.resolveProviderContextWindow();
+  }
+
+  // Best-effort: ask the default provider for the configured model's context
+  // window so the status metric can show a real percentage. Skipped when the
+  // window is set in config; failures are swallowed (the loop falls back to a
+  // default). Capped by the adapter's own short lookup timeout.
+  private async resolveProviderContextWindow(): Promise<number | undefined> {
+    if (this.options.config.runtime.modelSettings.contextWindowTokens) {
+      return undefined;
+    }
+    try {
+      const provider = this.options.config.runtime.defaultProvider;
+      const adapter = this.options.modelRuntime.getAdapter(provider);
+      if (!adapter.getModelContextWindow) {
+        return undefined;
+      }
+      const modelId =
+        provider === "ollama"
+          ? this.options.config.providers.ollama.model
+          : this.options.config.providers.lmStudio.model;
+      const resolvedModelId =
+        modelId ?? this.options.config.runtime.defaultModel;
+      return await adapter.getModelContextWindow(resolvedModelId);
+    } catch {
+      return undefined;
+    }
   }
 
   async close(): Promise<void> {

@@ -134,6 +134,15 @@ absolute timeout for streaming. `fetchJson` (non-streaming) keeps the absolute
 60s) — abort fires only when **no tokens arrive** for that long, never while data
 flows.
 
+**Time-to-first-token is budgeted separately.** A large local model with a big
+context can spend minutes on prompt evaluation before the first token — during which
+no bytes arrive. If the 60s idle window were armed from request start, it would abort
+that healthy request. So the guard arms `firstTokenTimeoutMs`
+(`providers.*.streamFirstTokenTimeoutMs`, default 300s) until `observe()` sees the
+first non-empty token, then switches to the tighter `idleTimeoutMs`. (`started` flag in
+`createStreamGuard`.) This was a real regression: the idle guard firing during prompt
+eval surfaced as "stream stalled: no new tokens arrived within the idle timeout."
+
 ## In-generation repetition guard
 
 The no-progress guard above works *between* turns; it cannot stop a model that loops
@@ -169,6 +178,20 @@ keep their reasoning, and live streaming display is never altered.
 ## Status metrics
 
 `AgentLoop` emits `onStatus({ metrics })` after each model response with
-`{ contextWindowPercentage, tokensUsed, elapsedSeconds }` (context% requires
-`runtime.modelSettings.contextWindowTokens`). The gateway forwards them in the
-`gateway.status` event payload; the CLI renders them dimmed on stderr during the run.
+`{ contextWindowPercentage, tokensUsed, elapsedSeconds }`. The gateway forwards them in
+the `gateway.status` event payload; the CLI renders them dimmed on stderr during the run.
+
+- **`tokensUsed` = generated tokens** (`usage.outputTokens`, i.e. completion/eval count),
+  which already includes any reasoning tokens. **`contextWindowPercentage`** uses prompt
+  (input) tokens against the resolved window.
+- **Streaming usage must be requested.** LM Studio omits `usage` from streamed responses
+  unless the payload sets `stream_options: { include_usage: true }` (the usage arrives in
+  a final chunk with empty `choices`). Ollama returns `prompt_eval_count`/`eval_count`
+  natively. Without this, every metric read 0.
+- **Context-window resolution** (for the %): configured
+  `runtime.modelSettings.contextWindowTokens` → provider query
+  (`adapter.getModelContextWindow`; LM Studio `/api/v0/models`, Ollama `/api/show`
+  `*.context_length`; best-effort, resolved once in `GatewayRuntime.initialize`) →
+  default `32_768`. So the % renders even when nothing is configured. (The auto-compaction
+  threshold still falls back to 100k, not 32768, when no window is set — the 32768 default
+  is metric-only.)

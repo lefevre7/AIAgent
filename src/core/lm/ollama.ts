@@ -31,6 +31,7 @@ type OllamaAdapterOptions = {
   headers?: Record<string, string>;
   keepAlive?: string;
   providerId?: string;
+  streamFirstTokenTimeoutMs?: number;
   streamIdleTimeoutMs?: number;
   timeoutMs: number;
 };
@@ -121,10 +122,41 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     }));
   }
 
+  // Ollama reports context length in /api/show under model_info as an
+  // architecture-prefixed key (e.g. "qwen3.context_length"). Best effort.
+  async getModelContextWindow(modelId: string): Promise<number | undefined> {
+    try {
+      const response = await fetchJson<{
+        model_info?: Record<string, unknown>;
+      }>({
+        body: { model: modelId },
+        fetchImpl: this.options.fetchImpl,
+        headers: this.options.headers,
+        maxAttempts: 1,
+        timeoutMs: Math.min(this.options.timeoutMs, 5_000),
+        url: this.buildUrl("api/show")
+      });
+      const info = response.data.model_info ?? {};
+      for (const [key, value] of Object.entries(info)) {
+        if (
+          key.endsWith(".context_length") &&
+          typeof value === "number" &&
+          value > 0
+        ) {
+          return value;
+        }
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async *stream(
     request: LanguageModelRequest
   ): AsyncIterable<LanguageModelStreamEvent> {
     const guard = createStreamGuard({
+      firstTokenTimeoutMs: this.options.streamFirstTokenTimeoutMs,
       idleTimeoutMs: this.options.streamIdleTimeoutMs,
       repetitionThreshold: STREAM_REPETITION_THRESHOLD
     });

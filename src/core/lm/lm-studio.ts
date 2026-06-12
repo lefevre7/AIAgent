@@ -30,6 +30,7 @@ type LMStudioAdapterOptions = {
   fetchImpl?: typeof fetch;
   headers?: Record<string, string>;
   providerId?: string;
+  streamFirstTokenTimeoutMs?: number;
   streamIdleTimeoutMs?: number;
   timeoutMs: number;
 };
@@ -123,10 +124,41 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     }));
   }
 
+  // The OpenAI-compatible /v1/models endpoint does not report context length, but
+  // LM Studio's native REST API (/api/v0/models) exposes max/loaded context. Best
+  // effort: returns undefined (caller falls back) on any failure.
+  async getModelContextWindow(modelId: string): Promise<number | undefined> {
+    try {
+      const origin = this.options.baseUrl
+        .replace(/\/+$/u, "")
+        .replace(/\/v\d+$/u, "");
+      const response = await fetchJson<{
+        data?: Array<{
+          id?: string;
+          loaded_context_length?: number;
+          max_context_length?: number;
+        }>;
+      }>({
+        fetchImpl: this.options.fetchImpl,
+        headers: this.options.headers,
+        maxAttempts: 1,
+        timeoutMs: Math.min(this.options.timeoutMs, 5_000),
+        url: `${origin}/api/v0/models`
+      });
+      const match = (response.data.data ?? []).find(
+        (entry) => entry.id === modelId
+      );
+      return match?.loaded_context_length ?? match?.max_context_length;
+    } catch {
+      return undefined;
+    }
+  }
+
   async *stream(
     request: LanguageModelRequest
   ): AsyncIterable<LanguageModelStreamEvent> {
     const guard = createStreamGuard({
+      firstTokenTimeoutMs: this.options.streamFirstTokenTimeoutMs,
       idleTimeoutMs: this.options.streamIdleTimeoutMs,
       repetitionThreshold: STREAM_REPETITION_THRESHOLD
     });
@@ -451,6 +483,10 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
           ? request.settings.stopSequences
           : undefined,
       stream,
+      // Without this LM Studio omits token usage from streamed responses, so the
+      // runtime would report 0 tokens / 0% context. The usage arrives in a final
+      // chunk with empty choices.
+      stream_options: stream ? { include_usage: true } : undefined,
       temperature: request.settings.temperature,
       tool_choice:
         request.availableTools.length === 0

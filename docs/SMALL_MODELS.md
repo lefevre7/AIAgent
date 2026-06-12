@@ -84,11 +84,13 @@ When the last model request's real `usage.inputTokens` reaches the threshold, th
 },
 "providers": {
   "lmStudio": {
-    "streamIdleTimeoutMs": 60000   // abort a stream only after 60s with no new tokens (not an absolute deadline)
+    "streamFirstTokenTimeoutMs": 300000, // budget for prompt eval before the FIRST token (big models are slow to start)
+    "streamIdleTimeoutMs": 60000         // after the first token, abort only after 60s with no new tokens
   },
   "ollama": {
-    "contextLength": 32768,        // sent as options.num_ctx on every request
-    "keepAlive": "10m",            // keeps the model loaded between turns
+    "contextLength": 32768,              // sent as options.num_ctx on every request
+    "keepAlive": "10m",                  // keeps the model loaded between turns
+    "streamFirstTokenTimeoutMs": 300000,
     "streamIdleTimeoutMs": 60000
   }
 }
@@ -97,10 +99,14 @@ When the last model request's real `usage.inputTokens` reaches the threshold, th
 Every `modelSettings` sampling control is threaded through both adapters' request
 payloads (LM Studio top-level OpenAI-compatible fields + llama.cpp `repeat_penalty`/
 `top_k`/`min_p`; Ollama under `options`). Fields you leave unset are omitted entirely,
-so they never override a model preset/Modelfile default. `streamIdleTimeoutMs` governs
-streaming aborts by **inactivity**; `timeoutMs` still bounds non-streaming requests. A
-generation is also aborted if the same line repeats ≥6× (a decode loop) — see
-`docs/AGENT_LOOP.md`.
+so they never override a model preset/Modelfile default. `streamFirstTokenTimeoutMs`
+bounds prompt evaluation (time-to-first-token) and `streamIdleTimeoutMs` governs the
+**inter-token** idle once generation starts; `timeoutMs` still bounds non-streaming
+requests. A generation is also aborted if the same line repeats ≥6× (a decode loop).
+The status line shows generated tokens (incl. reasoning) and context-window % — the %
+auto-detects the model's context length from the provider (LM Studio `/api/v0/models`,
+Ollama `/api/show`) and falls back to 32768, or set `runtime.modelSettings.contextWindowTokens`
+for an exact value. See `docs/AGENT_LOOP.md`.
 
 `modelSettings` are global request defaults (applied by the agent loop when set; provider/server defaults apply otherwise). `providers.ollama.contextLength` falls back to `runtime.modelSettings.contextWindowTokens` when unset. LM Studio's context length is configured in LM Studio itself.
 

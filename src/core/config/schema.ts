@@ -89,6 +89,9 @@ const lmStudioProviderConfigSchema = z
     enabled: z.boolean(),
     headers: z.record(z.string(), secretInputSchema),
     model: z.string().min(1).max(256),
+    // Budget for the first streamed token (prompt evaluation can be slow on big
+    // local models); separate from the inter-token idle window below.
+    streamFirstTokenTimeoutMs: positiveTimeoutSchema.optional(),
     // Abort a streaming response only after this many ms with no new tokens
     // (inactivity), instead of an absolute deadline that kills healthy long
     // streams. `timeoutMs` still bounds non-streaming requests.
@@ -107,6 +110,7 @@ const ollamaProviderConfigSchema = z
     headers: z.record(z.string(), secretInputSchema),
     keepAlive: z.string().min(1).max(64).optional(),
     model: z.string().min(1).max(256).optional(),
+    streamFirstTokenTimeoutMs: positiveTimeoutSchema.optional(),
     streamIdleTimeoutMs: positiveTimeoutSchema.optional(),
     timeoutMs: positiveTimeoutSchema
   })
@@ -783,6 +787,7 @@ export function createDefaultAppConfig(params: {
         enabled: true,
         headers: {},
         model: DEFAULT_LM_STUDIO_MODEL,
+        streamFirstTokenTimeoutMs: 300_000,
         streamIdleTimeoutMs: 60_000,
         timeoutMs: 120_000
       },
@@ -790,6 +795,7 @@ export function createDefaultAppConfig(params: {
         baseUrl: DEFAULT_OLLAMA_BASE_URL,
         enabled: true,
         headers: {},
+        streamFirstTokenTimeoutMs: 300_000,
         streamIdleTimeoutMs: 60_000,
         timeoutMs: 120_000
       },
