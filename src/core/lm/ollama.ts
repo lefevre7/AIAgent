@@ -12,7 +12,7 @@ import {
   buildRejectedToolCallMetadata,
   compactRecord,
   mapStopReason,
-  normalizeToolCallProposals,
+  resolveToolCallProposals,
   serializeOllamaMessages,
   serializeOllamaResponseFormat,
   serializeToolDefinitions
@@ -193,8 +193,13 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
       }
     }
 
-    const normalized = normalizeToolCallProposals(toolCalls, `${request.id}.tool`, request.availableTools);
-    for (const toolCall of normalized.proposals) {
+    const resolved = resolveToolCallProposals({
+      content,
+      definitions: request.availableTools,
+      fallbackPrefix: `${request.id}.tool`,
+      nativeToolCalls: toolCalls
+    });
+    for (const toolCall of resolved.proposals) {
       yield {
         kind: "response.tool_call",
         toolCall
@@ -204,26 +209,37 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     yield {
       kind: "response.completed",
       response: this.buildParsedResponse({
-        content,
-        metadata: buildRejectedToolCallMetadata(normalized.rejected),
+        content: resolved.content,
+        metadata: {
+          ...buildRejectedToolCallMetadata(resolved.rejected),
+          ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
+        },
         modelId,
         request,
-        stopReason,
-        toolCalls: normalized.proposals,
+        stopReason: resolved.proposals.length > 0 ? "tool_calls" : stopReason,
+        toolCalls: resolved.proposals,
         usage
       })
     };
   }
 
   private buildResponse(request: LanguageModelRequest, response: OllamaChatResponse): LanguageModelResponse {
-    const normalized = normalizeToolCallProposals(response.message?.tool_calls ?? [], `${request.id}.tool`, request.availableTools);
-    return this.buildParsedResponse({
+    const resolved = resolveToolCallProposals({
       content: response.message?.content ?? "",
-      metadata: buildRejectedToolCallMetadata(normalized.rejected),
+      definitions: request.availableTools,
+      fallbackPrefix: `${request.id}.tool`,
+      nativeToolCalls: response.message?.tool_calls ?? []
+    });
+    return this.buildParsedResponse({
+      content: resolved.content,
+      metadata: {
+        ...buildRejectedToolCallMetadata(resolved.rejected),
+        ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
+      },
       modelId: response.model ?? request.modelId,
       request,
-      stopReason: response.done_reason ?? ((response.message?.tool_calls?.length ?? 0) > 0 ? "tool_calls" : "end_turn"),
-      toolCalls: normalized.proposals,
+      stopReason: resolved.proposals.length > 0 ? "tool_calls" : response.done_reason ?? "end_turn",
+      toolCalls: resolved.proposals,
       usage: {
         inputTokens: response.prompt_eval_count ?? 0,
         outputTokens: response.eval_count ?? 0,

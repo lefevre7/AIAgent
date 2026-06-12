@@ -15,6 +15,7 @@ export type PromptPack = {
   availableSkills: DiscoveredSkill[];
   nudges: {
     completionBlocked: string;
+    noProgress: string;
     statusUpdate: string;
     steeringResume: string;
     taskContinuation: string;
@@ -70,6 +71,8 @@ export async function buildPromptPack(params: {
     nudges: {
       completionBlocked:
         "Your `attempt_complete` request was rejected because required work is still unresolved. Read the rejection reasons carefully, fix the remaining issues, then provide a brief update and call `attempt_complete` again only when the task is truly done.",
+      noProgress:
+        "You have spent consecutive turns only thinking or revising the plan without taking a concrete action. Stop planning now: either call an action tool that makes real progress on the task, or call `attempt_complete` if the task is already done. Do not call `think` or `update_plan` again until you have taken a real action.",
       statusUpdate:
         "Before your next major action, restate the current goal, what you tried most recently, what changed, and the next concrete step. Keep it short and action-oriented.",
       steeringResume:

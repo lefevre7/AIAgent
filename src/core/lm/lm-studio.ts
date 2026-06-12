@@ -13,7 +13,7 @@ import {
   buildRejectedToolCallMetadata,
   compactRecord,
   mapStopReason,
-  normalizeToolCallProposals,
+  resolveToolCallProposals,
   serializeOpenAICompatibleMessages,
   serializeOpenAICompatibleResponseFormat,
   serializeToolDefinitions
@@ -260,8 +260,13 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
         function: { arguments: entry.arguments, name: entry.name },
         id: entry.id
       }));
-    const normalized = normalizeToolCallProposals(assembledToolCalls, `${responseId}.tool`, request.availableTools);
-    for (const toolCall of normalized.proposals) {
+    const resolved = resolveToolCallProposals({
+      content,
+      definitions: request.availableTools,
+      fallbackPrefix: `${responseId}.tool`,
+      nativeToolCalls: assembledToolCalls
+    });
+    for (const toolCall of resolved.proposals) {
       yield {
         kind: "response.tool_call",
         toolCall
@@ -271,13 +276,16 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     yield {
       kind: "response.completed",
       response: this.buildParsedResponse({
-        content,
+        content: resolved.content,
         id: responseId,
-        metadata: buildRejectedToolCallMetadata(normalized.rejected),
+        metadata: {
+          ...buildRejectedToolCallMetadata(resolved.rejected),
+          ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
+        },
         modelId,
         request,
-        stopReason,
-        toolCalls: normalized.proposals,
+        stopReason: resolved.proposals.length > 0 ? "tool_calls" : stopReason,
+        toolCalls: resolved.proposals,
         usage
       })
     };
@@ -285,17 +293,24 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
 
   private buildResponse(request: LanguageModelRequest, response: LMStudioChatResponse): LanguageModelResponse {
     const choice = response.choices?.[0];
-    const content = buildAssistantMessageText(choice?.message?.content);
-    const normalized = normalizeToolCallProposals(choice?.message?.tool_calls ?? [], `${request.id}.tool`, request.availableTools);
+    const resolved = resolveToolCallProposals({
+      content: buildAssistantMessageText(choice?.message?.content),
+      definitions: request.availableTools,
+      fallbackPrefix: `${request.id}.tool`,
+      nativeToolCalls: choice?.message?.tool_calls ?? []
+    });
 
     return this.buildParsedResponse({
-      content,
+      content: resolved.content,
       id: response.id ?? `lm-response.${request.id}`,
-      metadata: buildRejectedToolCallMetadata(normalized.rejected),
+      metadata: {
+        ...buildRejectedToolCallMetadata(resolved.rejected),
+        ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
+      },
       modelId: response.model ?? request.modelId,
       request,
-      stopReason: choice?.finish_reason ?? (normalized.proposals.length > 0 ? "tool_calls" : "end_turn"),
-      toolCalls: normalized.proposals,
+      stopReason: resolved.proposals.length > 0 ? "tool_calls" : choice?.finish_reason ?? "end_turn",
+      toolCalls: resolved.proposals,
       usage: {
         inputTokens: response.usage?.prompt_tokens ?? 0,
         outputTokens: response.usage?.completion_tokens ?? 0,

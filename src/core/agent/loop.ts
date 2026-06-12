@@ -115,6 +115,12 @@ const AUTO_COMPACT_CONTEXT_WINDOW_FRACTION = 0.8;
 const DEFAULT_MAX_CONSECUTIVE_NUDGES = 3;
 const ACTIVATED_TOOLS_METADATA_KEY = "activatedToolNames";
 const COMPACTION_WATERMARK_METADATA_KEY = "compactedThroughMessageId";
+// Tool families that record thought or plan state without acting on the task.
+// A turn whose only calls belong to these families makes no real progress, so
+// it counts toward the no-progress guard instead of resetting it. Classifying
+// by the tool's declared family (not the loaded model) keeps this explicit and
+// model-agnostic.
+const NO_PROGRESS_TOOL_FAMILIES = new Set(["planning", "reasoning"]);
 
 export class AgentLoop {
   constructor(private readonly options: AgentLoopOptions) {}
@@ -458,7 +464,22 @@ export class AgentLoop {
         continue;
       }
 
-      consecutiveNudges = 0;
+      // A turn whose only tool calls are planning/reasoning (think, update_plan)
+      // changes no task state, so it must not reset the no-progress guard — that
+      // reset is what let a model loop "think -> plan -> think -> plan" forever.
+      const noProgressTurn = nonCompletionCalls.every((call) => isNoProgressToolName(call.toolName, params.availableTools));
+      if (noProgressTurn) {
+        consecutiveNudges += 1;
+        if (consecutiveNudges > maxConsecutiveNudges) {
+          return failNoProgressGuard(
+            "The runtime stopped after repeated planning or reasoning turns without taking action.",
+            `The model produced ${consecutiveNudges} consecutive turns that only planned or reasoned without acting.`
+          );
+        }
+      } else {
+        consecutiveNudges = 0;
+      }
+
       session = await this.persistSession(session, "awaiting_tool_execution", {
         activeTurnId: turn.id,
         statusSummary: `Executing ${nonCompletionCalls.length} tool call(s).`
@@ -538,10 +559,22 @@ export class AgentLoop {
       turn.completedAt = new Date().toISOString();
       turn.status = "completed";
       turn.summary = `Executed ${toolOutcomes.length} tool call(s).`;
-      await this.options.sessions.appendTurn(turn);
-      appendedTurns.push(turn);
-      pendingInputMessages = toolResultMessages;
-      nextTrigger = "tool_result";
+
+      if (noProgressTurn) {
+        const noProgressMessage = createSystemMessage(session.id, turn.id, promptPack.nudges.noProgress, "system", "compact");
+        await this.options.sessions.appendMessages([noProgressMessage]);
+        appendedMessages.push(noProgressMessage);
+        turn.outputMessageIds.push(noProgressMessage.id);
+        await this.options.sessions.appendTurn(turn);
+        appendedTurns.push(turn);
+        pendingInputMessages = [...toolResultMessages, noProgressMessage];
+        nextTrigger = "system_nudge";
+      } else {
+        await this.options.sessions.appendTurn(turn);
+        appendedTurns.push(turn);
+        pendingInputMessages = toolResultMessages;
+        nextTrigger = "tool_result";
+      }
     }
 
     session = await this.persistSession(session, "completion_blocked", {
@@ -808,6 +841,15 @@ function buildAssistantTurnMessage(sessionId: string, turnId: string, response: 
     turnId,
     visibility: response.message?.visibility ?? "default"
   };
+}
+
+function isNoProgressToolName(toolName: string, definitions: ToolDefinition[]): boolean {
+  const definition = definitions.find(
+    (candidate) =>
+      candidate.invocationName === toolName || candidate.name === toolName || candidate.aliases.includes(toolName)
+  );
+  const family = definition?.annotations?.meta?.family;
+  return typeof family === "string" && NO_PROGRESS_TOOL_FAMILIES.has(family);
 }
 
 function describeRejectedToolCalls(response: LanguageModelResponse): string[] {

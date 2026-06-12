@@ -351,6 +351,227 @@ export function buildRejectedToolCallMetadata(rejected: RejectedToolCallProposal
   };
 }
 
+export type ResolvedToolCallProposals = NormalizedToolCallProposals & {
+  content: string;
+  recoveredFromText: boolean;
+};
+
+// LM Studio / Ollama only populate the native `tool_calls` field when the
+// server-side chat template recognizes the model's tool-call syntax. Reasoning
+// and coder models (Qwen3-Coder XML, GPT-OSS Harmony, Hermes <tool_call> JSON,
+// LM Studio's [TOOL_REQUEST] default) frequently emit the call as plain text in
+// `content` instead — see lmstudio-ai/lmstudio-bug-tracker#825. Without a text
+// fallback the runtime sees a tool-less turn and nudges forever. This recovers
+// those calls and strips their markup from the content so history is not
+// double-fed.
+export function resolveToolCallProposals(params: {
+  content: string;
+  definitions?: ToolDefinition[];
+  fallbackPrefix: string;
+  nativeToolCalls: unknown[];
+}): ResolvedToolCallProposals {
+  const definitions = params.definitions ?? [];
+  const native = normalizeToolCallProposals(params.nativeToolCalls, params.fallbackPrefix, definitions);
+  if (native.proposals.length > 0 || params.content.trim().length === 0) {
+    return { content: params.content, proposals: native.proposals, recoveredFromText: false, rejected: native.rejected };
+  }
+
+  const matches = parseTextToolCalls(params.content, definitions);
+  if (matches.length === 0) {
+    return { content: params.content, proposals: native.proposals, recoveredFromText: false, rejected: native.rejected };
+  }
+
+  const asNative = matches.map((match, index) => ({
+    function: {
+      arguments: typeof match.arguments === "string" ? match.arguments : JSON.stringify(match.arguments),
+      name: match.name
+    },
+    id: `${params.fallbackPrefix}.text.${index + 1}`
+  }));
+  const recovered = normalizeToolCallProposals(asNative, `${params.fallbackPrefix}.text`, definitions);
+
+  return {
+    content: stripSpans(params.content, matches.map((match) => match.span)),
+    proposals: recovered.proposals,
+    recoveredFromText: recovered.proposals.length > 0,
+    rejected: [...native.rejected, ...recovered.rejected]
+  };
+}
+
+type TextToolCallMatch = {
+  arguments: Record<string, JsonValue> | string;
+  name: string;
+  span: [number, number];
+};
+
+// Scans assistant content for tool calls emitted as text in the common local
+// model formats. Each detector records the matched character span so the caller
+// can remove only the tool-call markup while preserving surrounding prose and
+// reasoning. Detectors are intentionally conservative: a candidate is only
+// accepted when a tool name can be resolved.
+export function parseTextToolCalls(content: string, definitions: ToolDefinition[] = []): TextToolCallMatch[] {
+  const matches: TextToolCallMatch[] = [];
+  const claimed: Array<[number, number]> = [];
+
+  const claim = (start: number, end: number): boolean => {
+    if (claimed.some(([from, to]) => start < to && end > from)) {
+      return false;
+    }
+    claimed.push([start, end]);
+    return true;
+  };
+
+  const push = (rawName: string, args: Record<string, JsonValue> | string, start: number, end: number): void => {
+    const name = resolveKnownToolName(rawName, definitions) ?? rawName.trim();
+    if (name.length === 0 || !claim(start, end)) {
+      return;
+    }
+    matches.push({ arguments: args, name, span: [start, end] });
+  };
+
+  // Qwen3-Coder: <function=NAME><parameter=key>value</parameter>...</function>
+  const functionBlock = /<function\s*=\s*([^>\s]+)\s*>([\s\S]*?)<\/function>/gu;
+  for (let match = functionBlock.exec(content); match; match = functionBlock.exec(content)) {
+    const args: Record<string, JsonValue> = {};
+    const parameter = /<parameter\s*=\s*([^>\s]+)\s*>([\s\S]*?)<\/parameter>/gu;
+    for (let param = parameter.exec(match[2]); param; param = parameter.exec(match[2])) {
+      args[param[1].trim()] = coerceParameterValue(param[2]);
+    }
+    push(match[1], args, match.index, match.index + match[0].length);
+  }
+
+  // Hermes / generic: <tool_call>{ "name": "...", "arguments": {...} }</tool_call>
+  const toolCallTag = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gu;
+  for (let match = toolCallTag.exec(content); match; match = toolCallTag.exec(content)) {
+    const parsed = parseJsonToolCall(match[1], definitions);
+    if (parsed) {
+      push(parsed.name, parsed.arguments, match.index, match.index + match[0].length);
+    }
+  }
+
+  // GPT-OSS Harmony: <|channel|>commentary to=functions.NAME ... <|message|>{...}<|call|>
+  const harmony = /<\|channel\|>commentary[\s\S]*?to=functions\.([\w.-]+)[\s\S]*?<\|message\|>([\s\S]*?)(?:<\|call\|>|<\|end\|>|<\|return\|>|$)/gu;
+  for (let match = harmony.exec(content); match; match = harmony.exec(content)) {
+    push(match[1], parseArgumentsBody(match[2]), match.index, match.index + match[0].length);
+  }
+
+  // LM Studio default fallback: [TOOL_REQUEST]{ "name": "...", "arguments": {...} }[END_TOOL_REQUEST]
+  const toolRequest = /\[TOOL_REQUEST\]\s*([\s\S]*?)\s*\[END_TOOL_REQUEST\]/gu;
+  for (let match = toolRequest.exec(content); match; match = toolRequest.exec(content)) {
+    const parsed = parseJsonToolCall(match[1], definitions);
+    if (parsed) {
+      push(parsed.name, parsed.arguments, match.index, match.index + match[0].length);
+    }
+  }
+
+  return matches.sort((left, right) => left.span[0] - right.span[0]);
+}
+
+function parseJsonToolCall(
+  body: string,
+  definitions: ToolDefinition[]
+): { arguments: Record<string, JsonValue> | string; name: string } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.trim());
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(parsed)) {
+    return null;
+  }
+
+  const explicitName =
+    typeof parsed.name === "string" ? parsed.name : typeof parsed.tool === "string" ? parsed.tool : null;
+  if (explicitName) {
+    const args = parsed.arguments ?? parsed.parameters ?? {};
+    return {
+      arguments: isPlainObject(args) ? sanitizeJsonRecord(args) : typeof args === "string" ? args : {},
+      name: explicitName
+    };
+  }
+
+  // Tolerate idiosyncratic shapes such as {"status":"ok","attempt_complete":{}}
+  // where the tool name is itself a key whose value is the arguments object.
+  for (const [key, value] of Object.entries(parsed)) {
+    if (resolveKnownToolName(key, definitions)) {
+      return {
+        arguments: isPlainObject(value) ? sanitizeJsonRecord(value) : {},
+        name: key
+      };
+    }
+  }
+
+  return null;
+}
+
+function parseArgumentsBody(body: string): Record<string, JsonValue> | string {
+  const trimmed = body.trim();
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (isPlainObject(parsed)) {
+      return sanitizeJsonRecord(parsed);
+    }
+  } catch {
+    // fall through to raw text
+  }
+  return trimmed;
+}
+
+function coerceParameterValue(raw: string): JsonValue {
+  const trimmed = raw.trim();
+  if (trimmed === "True") {
+    return true;
+  }
+  if (trimmed === "False") {
+    return false;
+  }
+  if (trimmed === "None") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed === null || typeof parsed === "boolean" || typeof parsed === "number" || isPlainObject(parsed) || Array.isArray(parsed)) {
+      return sanitizeJsonValue(parsed);
+    }
+  } catch {
+    // not JSON; treat as a plain string
+  }
+  return trimmed;
+}
+
+function resolveKnownToolName(rawName: string, definitions: ToolDefinition[]): string | null {
+  const name = rawName.trim();
+  if (name.length === 0) {
+    return null;
+  }
+  for (const definition of definitions) {
+    if (definition.invocationName === name || definition.name === name) {
+      return definition.invocationName;
+    }
+  }
+  const lower = name.toLowerCase();
+  for (const definition of definitions) {
+    if (
+      definition.invocationName.toLowerCase() === lower ||
+      definition.name.toLowerCase() === lower ||
+      definition.aliases.some((alias) => alias.toLowerCase() === lower)
+    ) {
+      return definition.invocationName;
+    }
+  }
+  return null;
+}
+
+function stripSpans(content: string, spans: Array<[number, number]>): string {
+  const ordered = [...spans].sort((left, right) => right[0] - left[0]);
+  let result = content;
+  for (const [start, end] of ordered) {
+    result = `${result.slice(0, start)}${result.slice(end)}`;
+  }
+  return result.replace(/\n{3,}/gu, "\n\n").trim();
+}
+
 function describeRawToolCall(value: unknown): string {
   try {
     const serialized = JSON.stringify(value);

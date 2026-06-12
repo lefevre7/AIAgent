@@ -617,6 +617,61 @@ describe("agent loop", () => {
     const snapshot = await store.getSessionSnapshot("session.loop.1");
     expect(snapshot?.session.status).toBe("failed");
   });
+
+  test("stops with completion_blocked when the model only plans or reasons without acting", async () => {
+    const { loop, store } = await createLoop(
+      Array.from({ length: 4 }, (_unused, index) =>
+        buildModelResponse({
+          messageText: `Planning iteration ${index + 1}.`,
+          sessionId: "session.loop.1",
+          toolCalls: [{ arguments: { thought: `still planning ${index + 1}` }, callId: `tool.think.${index + 1}`, toolName: "think" }]
+        })
+      ),
+      {
+        toolExecutor: {
+          async execute(call): Promise<AgentLoopToolExecutionResult> {
+            const completedCall: ToolCallRecord = {
+              ...call,
+              completedAt: new Date().toISOString(),
+              result: { acknowledged: true },
+              status: "succeeded"
+            };
+            return {
+              resultMessage: {
+                createdAt: new Date().toISOString(),
+                id: `message.tool.${call.id}`,
+                metadata: {},
+                parts: [{ kind: "json", value: { acknowledged: true } }],
+                role: "tool",
+                sessionId: call.sessionId,
+                source: "tool_runtime",
+                tags: [],
+                turnId: call.turnId,
+                visibility: "default"
+              },
+              toolCall: completedCall
+            };
+          }
+        }
+      }
+    );
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool(), buildThinkTool()],
+      maxTurns: 10,
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completion_blocked");
+    expect(result.turns.some((turn) => turn.summary?.includes("planning or reasoning turns without taking action"))).toBe(true);
+    const snapshot = await store.getSessionSnapshot("session.loop.1");
+    expect(
+      snapshot?.messages.some(
+        (message) => message.source === "system" && message.parts.some((part) => part.kind === "text" && part.text.includes("Stop planning now"))
+      )
+    ).toBe(true);
+  });
 });
 
 async function createLoop(
@@ -838,6 +893,53 @@ function buildReadFileTool(): ToolDefinition {
     streamingMode: "none",
     toolId: "tool.builtin.read_file",
     usageGuidance: "Use when you need to inspect file contents before editing.",
+    version: "1.0.0"
+  };
+}
+
+function buildThinkTool(): ToolDefinition {
+  return {
+    aliases: ["reason"],
+    annotations: {
+      meta: { family: "reasoning" },
+      readOnlyHint: true,
+      title: "Think"
+    },
+    approvalMode: "never",
+    descriptor: {
+      approvalNotes: "Records a thought without acting.",
+      examples: ["Plan before acting."],
+      purpose: "Record reasoning without changing anything.",
+      sideEffectSummary: "No side effects.",
+      whenNotToUse: ["Do not use it to perform work."],
+      whenToUse: ["Use to reason before acting."]
+    },
+    description: "Record a private reasoning note without taking any action.",
+    displayName: "Think",
+    execution: {
+      inputMode: "json",
+      resumable: false,
+      taskSupport: "forbidden"
+    },
+    idempotent: true,
+    inputSchema: {
+      type: "object"
+    },
+    invocationName: "think",
+    kind: "built_in",
+    metadata: {},
+    name: "think",
+    outputKind: "json",
+    retryable: true,
+    searchTags: ["think"],
+    sideEffects: ["none"],
+    source: {
+      displayName: "Built-in Tools",
+      kind: "built_in"
+    },
+    streamingMode: "none",
+    toolId: "tool.builtin.think",
+    usageGuidance: "Use to reason without acting.",
     version: "1.0.0"
   };
 }
