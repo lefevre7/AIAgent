@@ -82,7 +82,10 @@ import {
   type ToolCallRecord,
   type ToolDefinition
 } from "@/core/contracts";
-import { createGatewayError as gatewayError, normalizeGatewayError } from "@/gateway/errors";
+import {
+  createGatewayError as gatewayError,
+  normalizeGatewayError
+} from "@/gateway/errors";
 
 type ActiveGatewayRun = {
   cancelRequested: boolean;
@@ -134,13 +137,17 @@ type GatewayRuntimeOptions = {
 
 export interface GatewayRuntimeProviderRegistrationHost {
   registerEmbeddingAdapter(registration: EmbeddingAdapterRegistration): void;
-  registerLanguageModelAdapter(registration: LanguageModelAdapterRegistration): void;
+  registerLanguageModelAdapter(
+    registration: LanguageModelAdapterRegistration
+  ): void;
 }
 
 export interface GatewayRuntimeLike {
   getApprovalRecord(requestId: string): Promise<GatewayApprovalRecord>;
   getSessionSnapshot(sessionId: string): Promise<GatewaySessionSnapshot>;
-  listApprovalRecords(query: z.input<typeof gatewayApprovalListQuerySchema>): Promise<GatewayApprovalRecord[]>;
+  listApprovalRecords(
+    query: z.input<typeof gatewayApprovalListQuerySchema>
+  ): Promise<GatewayApprovalRecord[]>;
   replayEvents(query: GatewayEventReplayQuery): Promise<GatewayEventPage>;
   request(request: GatewayRequest): Promise<GatewayResponse>;
   subscribe(listener: (event: GatewayEvent) => void): () => void;
@@ -159,22 +166,34 @@ export class GatewayRuntime
 
   constructor(private readonly options: GatewayRuntimeOptions) {
     super();
-    this.eventLog = new GatewayEventLog(path.join(options.config.memory.stateRoot, "gateway", "events.jsonl"));
+    this.eventLog = new GatewayEventLog(
+      path.join(options.config.memory.stateRoot, "gateway", "events.jsonl")
+    );
     this.approvalCoordinator = new ApprovalCoordinator(options.sessions);
     this.agentLoop = new AgentLoop({
-      autoCompactThresholdTokens: options.config.memory.autoCompactThresholdTokens,
-      contextWindowTokens: options.config.runtime.modelSettings.contextWindowTokens,
+      autoCompactThresholdTokens:
+        options.config.memory.autoCompactThresholdTokens,
+      contextWindowTokens:
+        options.config.runtime.modelSettings.contextWindowTokens,
       memoryContextProvider: options.memoryService,
       memoryLifecycle: options.memoryService,
       model: options.modelRuntime,
       modelSettings: {
+        frequencyPenalty: options.config.runtime.modelSettings.frequencyPenalty,
         maxOutputTokens: options.config.runtime.modelSettings.maxOutputTokens,
+        minP: options.config.runtime.modelSettings.minP,
+        presencePenalty: options.config.runtime.modelSettings.presencePenalty,
+        repetitionPenalty:
+          options.config.runtime.modelSettings.repetitionPenalty,
         temperature: options.config.runtime.modelSettings.temperature,
+        topK: options.config.runtime.modelSettings.topK,
         topP: options.config.runtime.modelSettings.topP
       },
       promptBudgets: {
-        instructionDocChars: options.config.runtime.promptBudgets.instructionDocChars,
-        memorySummaryChars: options.config.runtime.promptBudgets.memorySummaryChars
+        instructionDocChars:
+          options.config.runtime.promptBudgets.instructionDocChars,
+        memorySummaryChars:
+          options.config.runtime.promptBudgets.memorySummaryChars
       },
       onAssistantDelta: ({ delta, sessionId, turnId }) => {
         void this.emitEvent(
@@ -200,7 +219,7 @@ export class GatewayRuntime
           false
         );
       },
-      onStatus: async ({ session, summary }) => {
+      onStatus: async ({ session, summary, metrics }) => {
         await this.emitEvent(
           {
             createdAt: new Date().toISOString(),
@@ -209,6 +228,7 @@ export class GatewayRuntime
               sessionId: session.id
             },
             payload: {
+              ...(metrics ? { metrics } : {}),
               ok: true,
               status: summary
             },
@@ -246,25 +266,42 @@ export class GatewayRuntime
   async getChannelStatuses(channel?: string): Promise<ChannelRuntimeStatus[]> {
     if (this.options.channelService) {
       const statuses = await this.options.channelService.listRuntimeStatuses();
-      return channel ? statuses.filter((entry) => entry.channel === channel) : statuses;
+      return channel
+        ? statuses.filter((entry) => entry.channel === channel)
+        : statuses;
     }
 
     const config = this.options.config.channels;
     const statuses = [
       {
-        capabilities: ["approvals", "attachments", "images", "outbound_messages", "steering"] as const,
+        capabilities: [
+          "approvals",
+          "attachments",
+          "images",
+          "outbound_messages",
+          "steering"
+        ] as const,
         channel: "discord" as const,
-        configured: typeof config.discord.appId === "string" && typeof config.discord.botToken === "string",
+        configured:
+          typeof config.discord.appId === "string" &&
+          typeof config.discord.botToken === "string",
         enabled: config.discord.enabled,
         metadata: {},
         status: config.discord.enabled
-          ? typeof config.discord.appId === "string" && typeof config.discord.botToken === "string"
+          ? typeof config.discord.appId === "string" &&
+            typeof config.discord.botToken === "string"
             ? "not_implemented"
             : "not_configured"
           : "disabled"
       },
       {
-        capabilities: ["approvals", "attachments", "images", "outbound_messages", "steering"] as const,
+        capabilities: [
+          "approvals",
+          "attachments",
+          "images",
+          "outbound_messages",
+          "steering"
+        ] as const,
         channel: "whatsapp" as const,
         configured: typeof config.whatsapp.sessionDirectory === "string",
         enabled: config.whatsapp.enabled,
@@ -276,7 +313,13 @@ export class GatewayRuntime
           : "disabled"
       },
       {
-        capabilities: ["approvals", "attachments", "outbound_messages", "steering", "webhooks"] as const,
+        capabilities: [
+          "approvals",
+          "attachments",
+          "outbound_messages",
+          "steering",
+          "webhooks"
+        ] as const,
         channel: "teams" as const,
         configured:
           typeof config.teams.appId === "string" &&
@@ -293,18 +336,30 @@ export class GatewayRuntime
           : "disabled"
       },
       {
-        capabilities: ["attachments", "images", "outbound_messages", "steering"] as const,
+        capabilities: [
+          "attachments",
+          "images",
+          "outbound_messages",
+          "steering"
+        ] as const,
         channel: "imessage" as const,
-        configured: typeof config.imessage.blueBubblesUrl === "string" && typeof config.imessage.blueBubblesPassword === "string",
+        configured:
+          typeof config.imessage.blueBubblesUrl === "string" &&
+          typeof config.imessage.blueBubblesPassword === "string",
         enabled: config.imessage.enabled,
         metadata: {},
         status: config.imessage.enabled
-          ? typeof config.imessage.blueBubblesUrl === "string" && typeof config.imessage.blueBubblesPassword === "string"
+          ? typeof config.imessage.blueBubblesUrl === "string" &&
+            typeof config.imessage.blueBubblesPassword === "string"
             ? "not_implemented"
             : "not_configured"
           : "disabled"
       }
-    ].map((entry) => gatewayResponsePayloadSchemas["channel.list"].shape.channels.element.parse(entry));
+    ].map((entry) =>
+      gatewayResponsePayloadSchemas[
+        "channel.list"
+      ].shape.channels.element.parse(entry)
+    );
 
     if (!channel) {
       return statuses;
@@ -333,21 +388,31 @@ export class GatewayRuntime
     return this.options.taskStateService.getTaskState(sessionId);
   }
 
-  async listSessions(query: z.input<typeof gatewaySessionListQuerySchema> = {}): Promise<SessionRecord[]> {
+  async listSessions(
+    query: z.input<typeof gatewaySessionListQuerySchema> = {}
+  ): Promise<SessionRecord[]> {
     const parsed = gatewaySessionListQuerySchema.parse(query);
     const sessions = await this.options.sessions.listSessions();
     return sessions
-      .filter((session) => (parsed.status ? session.status === parsed.status : true))
+      .filter((session) =>
+        parsed.status ? session.status === parsed.status : true
+      )
       .slice(0, parsed.limit);
   }
 
-  searchTools(query: z.input<typeof gatewayRequestPayloadSchemas["tool.search"]>): ToolDefinition[] {
+  searchTools(
+    query: z.input<(typeof gatewayRequestPayloadSchemas)["tool.search"]>
+  ): ToolDefinition[] {
     return this.options.toolRuntime
-      .searchDefinitions(gatewayRequestPayloadSchemas["tool.search"].parse(query))
+      .searchDefinitions(
+        gatewayRequestPayloadSchemas["tool.search"].parse(query)
+      )
       .map((match) => match.definition);
   }
 
-  async acceptChannelMessage(message: ChannelMessage): Promise<GatewayRunRecord | null> {
+  async acceptChannelMessage(
+    message: ChannelMessage
+  ): Promise<GatewayRunRecord | null> {
     let normalized = channelMessageSchema.parse(message);
     if (!normalized.sessionId) {
       normalized = await this.ensureSessionForChannelMessage(normalized);
@@ -363,7 +428,9 @@ export class GatewayRuntime
       return null;
     }
 
-    const session = await this.options.sessions.getSession(normalized.sessionId);
+    const session = await this.options.sessions.getSession(
+      normalized.sessionId
+    );
     if (!session || this.activeRunsBySession.has(session.id)) {
       return null;
     }
@@ -381,14 +448,18 @@ export class GatewayRuntime
     return run;
   }
 
-  async listApprovalRecords(query: z.input<typeof gatewayApprovalListQuerySchema>) {
+  async listApprovalRecords(
+    query: z.input<typeof gatewayApprovalListQuerySchema>
+  ) {
     const parsed = gatewayApprovalListQuerySchema.parse(query);
     let records: GatewayApprovalRecord[];
 
     if (parsed.pendingOnly) {
       const pending = await this.options.sessions.readPendingApprovals();
       records = Object.values(pending)
-        .filter((entry) => !parsed.sessionId || entry.sessionId === parsed.sessionId)
+        .filter(
+          (entry) => !parsed.sessionId || entry.sessionId === parsed.sessionId
+        )
         .map((entry) =>
           gatewayApprovalRecordSchema.parse({
             request: entry.request
@@ -398,14 +469,20 @@ export class GatewayRuntime
       const sessions = parsed.sessionId
         ? [await this.requireSession(parsed.sessionId)]
         : await this.options.sessions.listSessions();
-      const snapshots = await Promise.all(sessions.map(async (session) => this.options.sessions.getSessionSnapshot(session.id)));
+      const snapshots = await Promise.all(
+        sessions.map(async (session) =>
+          this.options.sessions.getSessionSnapshot(session.id)
+        )
+      );
       records = snapshots
         .filter((snapshot): snapshot is SessionSnapshot => snapshot !== null)
         .flatMap((snapshot) => buildApprovalRecords(snapshot));
     }
 
     return records
-      .sort((left, right) => right.request.createdAt.localeCompare(left.request.createdAt))
+      .sort((left, right) =>
+        right.request.createdAt.localeCompare(left.request.createdAt)
+      )
       .slice(0, parsed.limit);
   }
 
@@ -419,21 +496,30 @@ export class GatewayRuntime
 
     const sessions = await this.options.sessions.listSessions();
     for (const session of sessions) {
-      const snapshot = await this.options.sessions.getSessionSnapshot(session.id);
+      const snapshot = await this.options.sessions.getSessionSnapshot(
+        session.id
+      );
       if (!snapshot) {
         continue;
       }
 
-      const match = buildApprovalRecords(snapshot).find((record) => record.request.id === requestId);
+      const match = buildApprovalRecords(snapshot).find(
+        (record) => record.request.id === requestId
+      );
       if (match) {
         return match;
       }
     }
 
-    throw gatewayError("not_found", `Approval request "${requestId}" was not found.`);
+    throw gatewayError(
+      "not_found",
+      `Approval request "${requestId}" was not found.`
+    );
   }
 
-  async replayEvents(query: GatewayEventReplayQuery): Promise<GatewayEventPage> {
+  async replayEvents(
+    query: GatewayEventReplayQuery
+  ): Promise<GatewayEventPage> {
     return this.eventLog.list(gatewayEventReplayQuerySchema.parse(query));
   }
 
@@ -479,7 +565,9 @@ export class GatewayRuntime
     }
   }
 
-  registerLanguageModelAdapter(registration: LanguageModelAdapterRegistration): void {
+  registerLanguageModelAdapter(
+    registration: LanguageModelAdapterRegistration
+  ): void {
     this.options.modelRuntime.registerAdapter(registration);
   }
 
@@ -487,19 +575,32 @@ export class GatewayRuntime
     switch (request.topic) {
       case "approval.get":
         return gatewayResponsePayloadSchemas["approval.get"].parse(
-          await this.getApprovalRecord(gatewayRequestPayloadSchemas["approval.get"].parse(request.payload).requestId)
+          await this.getApprovalRecord(
+            gatewayRequestPayloadSchemas["approval.get"].parse(request.payload)
+              .requestId
+          )
         );
       case "approval.list":
         return gatewayResponsePayloadSchemas["approval.list"].parse({
-          approvals: await this.listApprovalRecords(gatewayRequestPayloadSchemas["approval.list"].parse(request.payload))
+          approvals: await this.listApprovalRecords(
+            gatewayRequestPayloadSchemas["approval.list"].parse(request.payload)
+          )
         });
       case "approval.resolve":
         return gatewayResponsePayloadSchemas["approval.resolve"].parse(
-          await this.resolveApproval(gatewayRequestPayloadSchemas["approval.resolve"].parse(request.payload))
+          await this.resolveApproval(
+            gatewayRequestPayloadSchemas["approval.resolve"].parse(
+              request.payload
+            )
+          )
         );
       case "channel.health":
         return gatewayResponsePayloadSchemas["channel.health"].parse({
-          channels: await this.getChannelStatuses(gatewayRequestPayloadSchemas["channel.health"].parse(request.payload).channel)
+          channels: await this.getChannelStatuses(
+            gatewayRequestPayloadSchemas["channel.health"].parse(
+              request.payload
+            ).channel
+          )
         });
       case "channel.list":
         gatewayRequestPayloadSchemas["channel.list"].parse(request.payload);
@@ -508,24 +609,40 @@ export class GatewayRuntime
         });
       case "channel.send":
         return gatewayResponsePayloadSchemas["channel.send"].parse(
-          await this.sendChannelMessage(gatewayRequestPayloadSchemas["channel.send"].parse(request.payload))
+          await this.sendChannelMessage(
+            gatewayRequestPayloadSchemas["channel.send"].parse(request.payload)
+          )
         );
       case "external_agent.cancel":
         return gatewayResponsePayloadSchemas["external_agent.cancel"].parse(
-          await this.requireExternalAgentService().cancel(gatewayRequestPayloadSchemas["external_agent.cancel"].parse(request.payload))
+          await this.requireExternalAgentService().cancel(
+            gatewayRequestPayloadSchemas["external_agent.cancel"].parse(
+              request.payload
+            )
+          )
         );
       case "external_agent.get": {
-        const jobId = gatewayRequestPayloadSchemas["external_agent.get"].parse(request.payload).jobId;
+        const jobId = gatewayRequestPayloadSchemas["external_agent.get"].parse(
+          request.payload
+        ).jobId;
         const job = await this.requireExternalAgentService().getJob(jobId);
         if (!job) {
-          throw gatewayError("not_found", `External-agent job "${jobId}" was not found.`);
+          throw gatewayError(
+            "not_found",
+            `External-agent job "${jobId}" was not found.`
+          );
         }
         return gatewayResponsePayloadSchemas["external_agent.get"].parse(job);
       }
       case "external_agent.list": {
         const service = this.requireExternalAgentService();
-        const query = gatewayRequestPayloadSchemas["external_agent.list"].parse(request.payload);
-        const [definitions, jobs] = await Promise.all([service.listDefinitions(), service.listJobs(query)]);
+        const query = gatewayRequestPayloadSchemas["external_agent.list"].parse(
+          request.payload
+        );
+        const [definitions, jobs] = await Promise.all([
+          service.listDefinitions(),
+          service.listJobs(query)
+        ]);
         return gatewayResponsePayloadSchemas["external_agent.list"].parse({
           definitions,
           jobs
@@ -533,11 +650,19 @@ export class GatewayRuntime
       }
       case "external_agent.resume":
         return gatewayResponsePayloadSchemas["external_agent.resume"].parse(
-          await this.requireExternalAgentService().resume(gatewayRequestPayloadSchemas["external_agent.resume"].parse(request.payload))
+          await this.requireExternalAgentService().resume(
+            gatewayRequestPayloadSchemas["external_agent.resume"].parse(
+              request.payload
+            )
+          )
         );
       case "external_agent.run":
         return gatewayResponsePayloadSchemas["external_agent.run"].parse(
-          await this.requireExternalAgentService().run(gatewayRequestPayloadSchemas["external_agent.run"].parse(request.payload))
+          await this.requireExternalAgentService().run(
+            gatewayRequestPayloadSchemas["external_agent.run"].parse(
+              request.payload
+            )
+          )
         );
       case "gateway.health":
         gatewayRequestPayloadSchemas["gateway.health"].parse(request.payload);
@@ -551,58 +676,100 @@ export class GatewayRuntime
         });
       case "memory.query":
         return gatewayResponsePayloadSchemas["memory.query"].parse({
-          hits: await this.options.memoryService.query(gatewayRequestPayloadSchemas["memory.query"].parse(request.payload))
+          hits: await this.options.memoryService.query(
+            gatewayRequestPayloadSchemas["memory.query"].parse(request.payload)
+          )
         });
       case "model.health":
         return gatewayResponsePayloadSchemas["model.health"].parse(
-          await this.options.modelRuntime.health(gatewayRequestPayloadSchemas["model.health"].parse(request.payload).provider)
+          await this.options.modelRuntime.health(
+            gatewayRequestPayloadSchemas["model.health"].parse(request.payload)
+              .provider
+          )
         );
       case "run.cancel":
         return gatewayResponsePayloadSchemas["run.cancel"].parse({
-          run: await this.cancelRun(gatewayRequestPayloadSchemas["run.cancel"].parse(request.payload).runId)
+          run: await this.cancelRun(
+            gatewayRequestPayloadSchemas["run.cancel"].parse(request.payload)
+              .runId
+          )
         });
       case "session.cancel":
         return gatewayResponsePayloadSchemas["session.cancel"].parse({
-          run: await this.cancelSession(gatewayRequestPayloadSchemas["session.cancel"].parse(request.payload).sessionId)
+          run: await this.cancelSession(
+            gatewayRequestPayloadSchemas["session.cancel"].parse(
+              request.payload
+            ).sessionId
+          )
         });
       case "session.create":
         return gatewayResponsePayloadSchemas["session.create"].parse(
-          await this.createSession(gatewayRequestPayloadSchemas["session.create"].parse(request.payload), request.id)
+          await this.createSession(
+            gatewayRequestPayloadSchemas["session.create"].parse(
+              request.payload
+            ),
+            request.id
+          )
         );
       case "session.list": {
         return gatewayResponsePayloadSchemas["session.list"].parse({
-          sessions: await this.listSessions(gatewayRequestPayloadSchemas["session.list"].parse(request.payload))
+          sessions: await this.listSessions(
+            gatewayRequestPayloadSchemas["session.list"].parse(request.payload)
+          )
         });
       }
       case "session.message":
         return gatewayResponsePayloadSchemas["session.message"].parse(
-          await this.enqueueSessionMessage(gatewayRequestPayloadSchemas["session.message"].parse(request.payload), request.id)
+          await this.enqueueSessionMessage(
+            gatewayRequestPayloadSchemas["session.message"].parse(
+              request.payload
+            ),
+            request.id
+          )
         );
       case "session.resume":
         return gatewayResponsePayloadSchemas["session.resume"].parse(
-          await this.enqueueSessionResume(gatewayRequestPayloadSchemas["session.resume"].parse(request.payload), request.id)
+          await this.enqueueSessionResume(
+            gatewayRequestPayloadSchemas["session.resume"].parse(
+              request.payload
+            ),
+            request.id
+          )
         );
       case "session.snapshot":
         return gatewayResponsePayloadSchemas["session.snapshot"].parse(
-          await this.getSessionSnapshot(gatewayRequestPayloadSchemas["session.snapshot"].parse(request.payload).sessionId)
+          await this.getSessionSnapshot(
+            gatewayRequestPayloadSchemas["session.snapshot"].parse(
+              request.payload
+            ).sessionId
+          )
         );
       case "steering.inject":
         return gatewayResponsePayloadSchemas["steering.inject"].parse(
-          await this.injectSteering(gatewayRequestPayloadSchemas["steering.inject"].parse(request.payload))
+          await this.injectSteering(
+            gatewayRequestPayloadSchemas["steering.inject"].parse(
+              request.payload
+            )
+          )
         );
       case "tool.execute":
         return gatewayResponsePayloadSchemas["tool.execute"].parse(
-          await this.enqueueToolExecution(gatewayRequestPayloadSchemas["tool.execute"].parse(request.payload), request.id)
+          await this.enqueueToolExecution(
+            gatewayRequestPayloadSchemas["tool.execute"].parse(request.payload),
+            request.id
+          )
         );
       case "tool.search":
         return gatewayResponsePayloadSchemas["tool.search"].parse({
-          tools: this.searchTools(gatewayRequestPayloadSchemas["tool.search"].parse(request.payload))
+          tools: this.searchTools(
+            gatewayRequestPayloadSchemas["tool.search"].parse(request.payload)
+          )
         });
     }
   }
 
   private async sendChannelMessage(
-    input: z.infer<typeof gatewayRequestPayloadSchemas["channel.send"]>
+    input: z.infer<(typeof gatewayRequestPayloadSchemas)["channel.send"]>
   ): Promise<ChannelMessage> {
     const message = await this.requireChannelService().send(input);
     await this.emitChannelMessageEvent(message);
@@ -644,16 +811,21 @@ export class GatewayRuntime
   private async cancelSession(sessionId: string): Promise<GatewayRunRecord> {
     const active = this.activeRunsBySession.get(sessionId);
     if (!active) {
-      throw gatewayError("not_found", `Session "${sessionId}" has no active gateway run.`);
+      throw gatewayError(
+        "not_found",
+        `Session "${sessionId}" has no active gateway run.`
+      );
     }
 
     return this.cancelRun(active.run.id);
   }
 
   private async createSession(
-    input: z.infer<typeof gatewayRequestPayloadSchemas["session.create"]>,
+    input: z.infer<(typeof gatewayRequestPayloadSchemas)["session.create"]>,
     requestId: string
-  ): Promise<z.infer<typeof gatewayResponsePayloadSchemas["session.create"]>> {
+  ): Promise<
+    z.infer<(typeof gatewayResponsePayloadSchemas)["session.create"]>
+  > {
     const session = await this.persistCreatedSession({
       channelThreadId: input.channelThreadId,
       cwd: input.cwd,
@@ -690,7 +862,7 @@ export class GatewayRuntime
   }
 
   private async enqueueSessionMessage(
-    input: z.infer<typeof gatewayRequestPayloadSchemas["session.message"]>,
+    input: z.infer<(typeof gatewayRequestPayloadSchemas)["session.message"]>,
     requestId: string
   ) {
     const session = await this.requireIdleSession(input.sessionId);
@@ -710,7 +882,7 @@ export class GatewayRuntime
   }
 
   private async enqueueSessionResume(
-    input: z.infer<typeof gatewayRequestPayloadSchemas["session.resume"]>,
+    input: z.infer<(typeof gatewayRequestPayloadSchemas)["session.resume"]>,
     requestId: string
   ) {
     const session = await this.requireIdleSession(input.sessionId);
@@ -729,7 +901,7 @@ export class GatewayRuntime
   }
 
   private async enqueueToolExecution(
-    input: z.infer<typeof gatewayRequestPayloadSchemas["tool.execute"]>,
+    input: z.infer<(typeof gatewayRequestPayloadSchemas)["tool.execute"]>,
     requestId: string
   ) {
     const session = await this.requireIdleSession(input.sessionId);
@@ -745,11 +917,16 @@ export class GatewayRuntime
     };
   }
 
-  private async resolveApproval(input: z.infer<typeof gatewayRequestPayloadSchemas["approval.resolve"]>) {
+  private async resolveApproval(
+    input: z.infer<(typeof gatewayRequestPayloadSchemas)["approval.resolve"]>
+  ) {
     const pending = await this.options.sessions.readPendingApprovals();
     const pendingEntry = pending[input.requestId];
     if (!pendingEntry) {
-      throw gatewayError("not_found", `Pending approval "${input.requestId}" was not found.`);
+      throw gatewayError(
+        "not_found",
+        `Pending approval "${input.requestId}" was not found.`
+      );
     }
 
     const resolution: ApprovalResolution = approvalResolutionSchema.parse({
@@ -791,8 +968,11 @@ export class GatewayRuntime
     };
   }
 
-  private async injectSteering(input: SteeringInjection): Promise<SteeringInjection> {
-    const steering = gatewayRequestPayloadSchemas["steering.inject"].parse(input);
+  private async injectSteering(
+    input: SteeringInjection
+  ): Promise<SteeringInjection> {
+    const steering =
+      gatewayRequestPayloadSchemas["steering.inject"].parse(input);
     await this.requireSession(steering.sessionId);
     await this.options.sessions.appendSteeringInjections([steering]);
     return steering;
@@ -809,7 +989,11 @@ export class GatewayRuntime
     this.trackRun(this.executeSessionRun(runId, session, params));
   }
 
-  private launchToolRun(runId: string, session: SessionRecord, input: z.infer<typeof gatewayRequestPayloadSchemas["tool.execute"]>): void {
+  private launchToolRun(
+    runId: string,
+    session: SessionRecord,
+    input: z.infer<(typeof gatewayRequestPayloadSchemas)["tool.execute"]>
+  ): void {
     this.trackRun(this.executeToolRun(runId, session, input));
   }
 
@@ -846,7 +1030,8 @@ export class GatewayRuntime
     });
 
     let currentSession = session;
-    const materialized = await this.materializeResolvedToolApprovals(currentSession);
+    const materialized =
+      await this.materializeResolvedToolApprovals(currentSession);
     currentSession = materialized.session;
 
     const result = await this.agentLoop.run({
@@ -862,17 +1047,25 @@ export class GatewayRuntime
 
     await this.emitSessionRunEvents(result);
     await this.relaySessionOutputsToChannel(result).catch(async (error) => {
-      await this.emitLogEvent("warn", error instanceof Error ? error.message : String(error), {
-        sessionId: result.session.id
-      });
+      await this.emitLogEvent(
+        "warn",
+        error instanceof Error ? error.message : String(error),
+        {
+          sessionId: result.session.id
+        }
+      );
     });
 
     if (active.cancelRequested) {
-      const cancelledSession = await this.persistSession(result.session, "cancelled", {
-        activeTurnId: undefined,
-        clearError: false,
-        statusSummary: "The active gateway run was cancelled."
-      });
+      const cancelledSession = await this.persistSession(
+        result.session,
+        "cancelled",
+        {
+          activeTurnId: undefined,
+          clearError: false,
+          statusSummary: "The active gateway run was cancelled."
+        }
+      );
       await this.emitEvent(
         {
           createdAt: cancelledSession.updatedAt,
@@ -885,30 +1078,56 @@ export class GatewayRuntime
       );
       await this.completeRun(active, {
         completionReason: "session_cancelled",
-        messageIds: [...materialized.messageIds, ...result.messages.map((message) => message.id)],
+        messageIds: [
+          ...materialized.messageIds,
+          ...result.messages.map((message) => message.id)
+        ],
         sessionId: cancelledSession.id,
         status: "cancelled",
-        toolCallIds: [...materialized.toolCallIds, ...result.toolCalls.map((toolCall) => toolCall.id)],
-        turnIds: [...materialized.turnIds, ...result.turns.map((turn) => turn.id)]
+        toolCallIds: [
+          ...materialized.toolCallIds,
+          ...result.toolCalls.map((toolCall) => toolCall.id)
+        ],
+        turnIds: [
+          ...materialized.turnIds,
+          ...result.turns.map((turn) => turn.id)
+        ]
       });
       return;
     }
 
     await this.completeRun(active, {
-      completionReason: mapSessionStopReasonToCompletionReason(result.stopReason),
-      messageIds: [...materialized.messageIds, ...result.messages.map((message) => message.id)],
+      completionReason: mapSessionStopReasonToCompletionReason(
+        result.stopReason
+      ),
+      messageIds: [
+        ...materialized.messageIds,
+        ...result.messages.map((message) => message.id)
+      ],
       sessionId: result.session.id,
       status: result.stopReason === "failed" ? "failed" : "completed",
-      toolCallIds: [...materialized.toolCallIds, ...result.toolCalls.map((toolCall) => toolCall.id)],
-      turnIds: [...materialized.turnIds, ...result.turns.map((turn) => turn.id)],
-      ...(result.stopReason === "failed" ? { error: result.session.lastError ?? gatewayError("failed", "The session run failed.") } : {})
+      toolCallIds: [
+        ...materialized.toolCallIds,
+        ...result.toolCalls.map((toolCall) => toolCall.id)
+      ],
+      turnIds: [
+        ...materialized.turnIds,
+        ...result.turns.map((turn) => turn.id)
+      ],
+      ...(result.stopReason === "failed"
+        ? {
+            error:
+              result.session.lastError ??
+              gatewayError("failed", "The session run failed.")
+          }
+        : {})
     });
   }
 
   private async executeToolRun(
     runId: string,
     session: SessionRecord,
-    input: z.infer<typeof gatewayRequestPayloadSchemas["tool.execute"]>
+    input: z.infer<(typeof gatewayRequestPayloadSchemas)["tool.execute"]>
   ): Promise<void> {
     const active = this.requireActiveRun(runId);
     if (active.cancelRequested) {
@@ -931,11 +1150,15 @@ export class GatewayRuntime
       trigger: "gateway_request"
     });
 
-    const updatedSession = await this.persistSession(session, "awaiting_tool_execution", {
-      activeTurnId: turn.id,
-      clearError: true,
-      statusSummary: `Executing gateway tool "${input.toolName}".`
-    });
+    const updatedSession = await this.persistSession(
+      session,
+      "awaiting_tool_execution",
+      {
+        activeTurnId: turn.id,
+        clearError: true,
+        statusSummary: `Executing gateway tool "${input.toolName}".`
+      }
+    );
 
     const toolCall = toolCallRecordSchema.parse({
       arguments: input.arguments,
@@ -977,7 +1200,9 @@ export class GatewayRuntime
     }
 
     if (outcome.approvalRequest) {
-      await this.options.sessions.appendApprovalRequest(outcome.approvalRequest);
+      await this.options.sessions.appendApprovalRequest(
+        outcome.approvalRequest
+      );
       turn.approvalRequestIds = [outcome.approvalRequest.id];
       turn.completedAt = new Date().toISOString();
       turn.status = "waiting_for_approval";
@@ -1017,13 +1242,17 @@ export class GatewayRuntime
         true
       );
 
-      const awaitingApprovalSession = await this.persistSession(updatedSession, "awaiting_approval", {
-        activeTurnId: turn.id,
-        clearError: true,
-        pendingApprovalIds: [outcome.approvalRequest.id],
-        pendingToolCallIds: [outcome.toolCall.id],
-        statusSummary: `Waiting for approval to execute gateway tool "${input.toolName}".`
-      });
+      const awaitingApprovalSession = await this.persistSession(
+        updatedSession,
+        "awaiting_approval",
+        {
+          activeTurnId: turn.id,
+          clearError: true,
+          pendingApprovalIds: [outcome.approvalRequest.id],
+          pendingToolCallIds: [outcome.toolCall.id],
+          statusSummary: `Waiting for approval to execute gateway tool "${input.toolName}".`
+        }
+      );
       await this.emitEvent(
         {
           createdAt: awaitingApprovalSession.updatedAt,
@@ -1054,16 +1283,20 @@ export class GatewayRuntime
         : `Gateway tool "${input.toolName}" completed.`;
     await this.options.sessions.appendTurn(turn);
 
-    const finalSession = await this.persistSession(updatedSession, "awaiting_user", {
-      activeTurnId: undefined,
-      clearError: outcome.toolCall.status !== "failed",
-      pendingApprovalIds: [],
-      pendingToolCallIds: [],
-      statusSummary:
-        outcome.toolCall.status === "failed"
-          ? `Gateway tool "${input.toolName}" failed.`
-          : `Gateway tool "${input.toolName}" completed.`
-    });
+    const finalSession = await this.persistSession(
+      updatedSession,
+      "awaiting_user",
+      {
+        activeTurnId: undefined,
+        clearError: outcome.toolCall.status !== "failed",
+        pendingApprovalIds: [],
+        pendingToolCallIds: [],
+        statusSummary:
+          outcome.toolCall.status === "failed"
+            ? `Gateway tool "${input.toolName}" failed.`
+            : `Gateway tool "${input.toolName}" completed.`
+      }
+    );
 
     await this.emitEvent(
       {
@@ -1105,10 +1338,12 @@ export class GatewayRuntime
     }
 
     await this.completeRun(active, {
-      completionReason: outcome.toolCall.status === "failed" ? "tool_failed" : "tool_succeeded",
+      completionReason:
+        outcome.toolCall.status === "failed" ? "tool_failed" : "tool_succeeded",
       error:
         outcome.toolCall.status === "failed"
-          ? outcome.toolCall.error ?? gatewayError("failed", "The tool execution failed.")
+          ? (outcome.toolCall.error ??
+            gatewayError("failed", "The tool execution failed."))
           : undefined,
       messageIds: resultMessageId ? [resultMessageId] : [],
       sessionId: finalSession.id,
@@ -1118,7 +1353,9 @@ export class GatewayRuntime
     });
   }
 
-  private async emitSessionRunEvents(result: Awaited<ReturnType<AgentLoop["run"]>>): Promise<void> {
+  private async emitSessionRunEvents(
+    result: Awaited<ReturnType<AgentLoop["run"]>>
+  ): Promise<void> {
     for (const approvalRequest of result.approvalRequests) {
       await this.emitEvent(
         {
@@ -1153,7 +1390,9 @@ export class GatewayRuntime
           metadata: {},
           payload: {
             ...toolCall,
-            resultMessageId: result.messages.find((message) => message.id === `message.tool.${toolCall.id}`)?.id
+            resultMessageId: result.messages.find(
+              (message) => message.id === `message.tool.${toolCall.id}`
+            )?.id
           },
           topic: "tool.updated"
         },
@@ -1238,12 +1477,16 @@ export class GatewayRuntime
     return session;
   }
 
-  private async ensureSessionForChannelMessage(message: ChannelMessage): Promise<ChannelMessage> {
+  private async ensureSessionForChannelMessage(
+    message: ChannelMessage
+  ): Promise<ChannelMessage> {
     if (!this.options.channelService) {
       return message;
     }
 
-    const existingRoute = await this.options.channelService.getRouteForIdentity(message.identity);
+    const existingRoute = await this.options.channelService.getRouteForIdentity(
+      message.identity
+    );
     if (existingRoute) {
       return channelMessageSchema.parse({
         ...message,
@@ -1275,7 +1518,9 @@ export class GatewayRuntime
     });
   }
 
-  private async maybeHandleChannelCommand(message: ChannelMessage): Promise<{ handled: boolean; run: GatewayRunRecord | null }> {
+  private async maybeHandleChannelCommand(
+    message: ChannelMessage
+  ): Promise<{ handled: boolean; run: GatewayRunRecord | null }> {
     const command = parseChannelCommand(message);
     if (!command || !message.sessionId) {
       return {
@@ -1310,13 +1555,21 @@ export class GatewayRuntime
   ): Promise<GatewayRunRecord | null> {
     const session = await this.requireSession(message.sessionId as string);
     if (this.activeRunsBySession.has(session.id)) {
-      await this.sendChannelTextReply(message, `Session "${session.title}" is busy right now. Please retry once the current run finishes.`);
+      await this.sendChannelTextReply(
+        message,
+        `Session "${session.title}" is busy right now. Please retry once the current run finishes.`
+      );
       return null;
     }
 
-    const requestId = command.requestId ?? (await this.resolveLatestPendingApprovalId(session.id));
+    const requestId =
+      command.requestId ??
+      (await this.resolveLatestPendingApprovalId(session.id));
     if (!requestId) {
-      await this.sendChannelTextReply(message, "There are no pending approvals for this conversation.");
+      await this.sendChannelTextReply(
+        message,
+        "There are no pending approvals for this conversation."
+      );
       return null;
     }
 
@@ -1329,9 +1582,15 @@ export class GatewayRuntime
     const approval = resolved.approval;
     await this.sendChannelTextReply(
       message,
-      buildChannelApprovalAcknowledgement(approval.request, approval.resolution as ApprovalResolution)
+      buildChannelApprovalAcknowledgement(
+        approval.request,
+        approval.resolution as ApprovalResolution
+      )
     );
-    return this.queueSessionResumeRun(session, `gateway-request.channel-approval.${crypto.randomUUID()}`);
+    return this.queueSessionResumeRun(
+      session,
+      `gateway-request.channel-approval.${crypto.randomUUID()}`
+    );
   }
 
   private async handleChannelSteeringCommand(
@@ -1340,7 +1599,10 @@ export class GatewayRuntime
   ): Promise<GatewayRunRecord | null> {
     const session = await this.requireSession(message.sessionId as string);
     if (this.activeRunsBySession.has(session.id)) {
-      await this.sendChannelTextReply(message, `Session "${session.title}" is busy right now. Please retry after the active run finishes.`);
+      await this.sendChannelTextReply(
+        message,
+        `Session "${session.title}" is busy right now. Please retry after the active run finishes.`
+      );
       return null;
     }
 
@@ -1355,11 +1617,20 @@ export class GatewayRuntime
       source: "channel",
       state: "queued"
     });
-    await this.sendChannelTextReply(message, `Queued steering for "${session.title}".`);
-    return this.queueSessionResumeRun(session, `gateway-request.channel-steering.${steering.id}`);
+    await this.sendChannelTextReply(
+      message,
+      `Queued steering for "${session.title}".`
+    );
+    return this.queueSessionResumeRun(
+      session,
+      `gateway-request.channel-steering.${steering.id}`
+    );
   }
 
-  private async queueSessionResumeRun(session: SessionRecord, requestId: string): Promise<GatewayRunRecord> {
+  private async queueSessionResumeRun(
+    session: SessionRecord,
+    requestId: string
+  ): Promise<GatewayRunRecord> {
     const run = await this.queueRun({
       kind: "session_resume",
       requestId,
@@ -1371,9 +1642,12 @@ export class GatewayRuntime
     return run;
   }
 
-  private async materializeResolvedToolApprovals(session: SessionRecord): Promise<MaterializedApprovalResume> {
+  private async materializeResolvedToolApprovals(
+    session: SessionRecord
+  ): Promise<MaterializedApprovalResume> {
     const snapshot = await this.options.sessions.getSessionSnapshot(session.id);
-    const pendingToolCallIds = snapshot?.resumeMetadata?.pendingToolCallIds ?? [];
+    const pendingToolCallIds =
+      snapshot?.resumeMetadata?.pendingToolCallIds ?? [];
     if (pendingToolCallIds.length === 0) {
       return {
         messageIds: [],
@@ -1386,7 +1660,10 @@ export class GatewayRuntime
     const latestResolutions = new Map<string, ApprovalResolution>();
     for (const resolution of snapshot?.approvalResolutions ?? []) {
       const previous = latestResolutions.get(resolution.requestId);
-      if (!previous || previous.decidedAt.localeCompare(resolution.decidedAt) < 0) {
+      if (
+        !previous ||
+        previous.decidedAt.localeCompare(resolution.decidedAt) < 0
+      ) {
         latestResolutions.set(resolution.requestId, resolution);
       }
     }
@@ -1401,12 +1678,16 @@ export class GatewayRuntime
     const turnIds: string[] = [];
 
     for (const pendingToolCallId of pendingToolCallIds) {
-      const pendingToolCall = snapshot?.toolCalls.find((toolCall) => toolCall.id === pendingToolCallId);
+      const pendingToolCall = snapshot?.toolCalls.find(
+        (toolCall) => toolCall.id === pendingToolCallId
+      );
       if (!pendingToolCall?.approvalRequestId) {
         continue;
       }
 
-      const resolution = latestResolutions.get(pendingToolCall.approvalRequestId);
+      const resolution = latestResolutions.get(
+        pendingToolCall.approvalRequestId
+      );
       if (!resolution) {
         remainingPendingToolCallIds.push(pendingToolCallId);
         continue;
@@ -1414,8 +1695,18 @@ export class GatewayRuntime
 
       const materialized =
         resolution.decision === "approved"
-          ? await this.executeApprovedPendingToolCall(session, snapshot, pendingToolCall, resolution)
-          : this.materializeDeclinedPendingToolCall(session, snapshot, pendingToolCall, resolution);
+          ? await this.executeApprovedPendingToolCall(
+              session,
+              snapshot,
+              pendingToolCall,
+              resolution
+            )
+          : this.materializeDeclinedPendingToolCall(
+              session,
+              snapshot,
+              pendingToolCall,
+              resolution
+            );
 
       await this.options.sessions.appendToolCalls([materialized.toolCall]);
       await this.options.sessions.appendTurn(materialized.turn);
@@ -1439,7 +1730,9 @@ export class GatewayRuntime
 
       await this.emitEvent(
         {
-          createdAt: materialized.toolCall.completedAt ?? materialized.toolCall.startedAt,
+          createdAt:
+            materialized.toolCall.completedAt ??
+            materialized.toolCall.startedAt,
           id: `tool-updated.${materialized.toolCall.id}`,
           metadata: {},
           payload: {
@@ -1452,7 +1745,8 @@ export class GatewayRuntime
       );
       await this.emitEvent(
         {
-          createdAt: materialized.turn.completedAt ?? materialized.turn.startedAt,
+          createdAt:
+            materialized.turn.completedAt ?? materialized.turn.startedAt,
           id: `turn-updated.${materialized.turn.id}`,
           metadata: {},
           payload: materialized.turn,
@@ -1462,7 +1756,11 @@ export class GatewayRuntime
       );
     }
 
-    if (toolCallIds.length === 0 && turnIds.length === 0 && messageIds.length === 0) {
+    if (
+      toolCallIds.length === 0 &&
+      turnIds.length === 0 &&
+      messageIds.length === 0
+    ) {
       return {
         messageIds,
         session,
@@ -1509,7 +1807,11 @@ export class GatewayRuntime
     snapshot: SessionSnapshot | null,
     pendingToolCall: ToolCallRecord,
     resolution: ApprovalResolution
-  ): Promise<{ message?: Message; toolCall: ToolCallRecord; turn: z.infer<typeof turnRecordSchema> }> {
+  ): Promise<{
+    message?: Message;
+    toolCall: ToolCallRecord;
+    turn: z.infer<typeof turnRecordSchema>;
+  }> {
     const startedAt = new Date().toISOString();
     const turn = turnRecordSchema.parse({
       approvalRequestIds: [resolution.requestId],
@@ -1540,7 +1842,9 @@ export class GatewayRuntime
         // The operator's resolution comment is the answer for interactive
         // tools (e.g. ask_user_question) and useful operator context for
         // every other tool resumed after approval.
-        ...(typeof resolution.comment === "string" ? { approvalResolutionComment: resolution.comment } : {}),
+        ...(typeof resolution.comment === "string"
+          ? { approvalResolutionComment: resolution.comment }
+          : {}),
         resumedFromToolCallId: pendingToolCall.id
       },
       result: undefined,
@@ -1548,10 +1852,13 @@ export class GatewayRuntime
       status: "pending",
       turnId: turn.id
     });
-    const outcome = await this.options.toolRuntime.executeApproved(resumedCall, {
-      session,
-      turn
-    });
+    const outcome = await this.options.toolRuntime.executeApproved(
+      resumedCall,
+      {
+        session,
+        turn
+      }
+    );
     turn.requestedToolCallIds = [outcome.toolCall.id];
     turn.executedToolCallIds = [outcome.toolCall.id];
     if (outcome.resultMessage) {
@@ -1576,7 +1883,11 @@ export class GatewayRuntime
     snapshot: SessionSnapshot | null,
     pendingToolCall: ToolCallRecord,
     resolution: ApprovalResolution
-  ): { message: Message; toolCall: ToolCallRecord; turn: z.infer<typeof turnRecordSchema> } {
+  ): {
+    message: Message;
+    toolCall: ToolCallRecord;
+    turn: z.infer<typeof turnRecordSchema>;
+  } {
     const startedAt = new Date().toISOString();
     const turn = turnRecordSchema.parse({
       approvalRequestIds: [resolution.requestId],
@@ -1622,19 +1933,27 @@ export class GatewayRuntime
     };
   }
 
-  private async relaySessionOutputsToChannel(result: Awaited<ReturnType<AgentLoop["run"]>>): Promise<void> {
+  private async relaySessionOutputsToChannel(
+    result: Awaited<ReturnType<AgentLoop["run"]>>
+  ): Promise<void> {
     if (!this.options.channelService) {
       return;
     }
 
-    const route = await this.options.channelService.getRouteForSession(result.session.id);
+    const route = await this.options.channelService.getRouteForSession(
+      result.session.id
+    );
     if (!route) {
       return;
     }
 
-    for (const message of result.messages.filter((entry) => shouldRelayMessageToChannel(entry))) {
+    for (const message of result.messages.filter((entry) =>
+      shouldRelayMessageToChannel(entry)
+    )) {
       // Tool-call parts are runtime bookkeeping, not user-facing content.
-      const relayParts = message.parts.filter((part) => part.kind !== "tool_call");
+      const relayParts = message.parts.filter(
+        (part) => part.kind !== "tool_call"
+      );
       if (relayParts.length === 0) {
         continue;
       }
@@ -1672,15 +1991,22 @@ export class GatewayRuntime
     }
   }
 
-  private async resolveLatestPendingApprovalId(sessionId: string): Promise<string | null> {
+  private async resolveLatestPendingApprovalId(
+    sessionId: string
+  ): Promise<string | null> {
     const pending = await this.options.sessions.readPendingApprovals();
     const latest = Object.values(pending)
       .filter((entry) => entry.sessionId === sessionId)
-      .sort((left, right) => right.request.createdAt.localeCompare(left.request.createdAt))[0];
+      .sort((left, right) =>
+        right.request.createdAt.localeCompare(left.request.createdAt)
+      )[0];
     return latest?.request.id ?? null;
   }
 
-  private async sendChannelTextReply(message: ChannelMessage, text: string): Promise<void> {
+  private async sendChannelTextReply(
+    message: ChannelMessage,
+    text: string
+  ): Promise<void> {
     await this.sendChannelMessage({
       attachments: [],
       identity: message.identity,
@@ -1696,9 +2022,13 @@ export class GatewayRuntime
       replyToId: message.id,
       sessionId: message.sessionId
     }).catch(async (error) => {
-      await this.emitLogEvent("warn", error instanceof Error ? error.message : String(error), {
-        ...(message.sessionId ? { sessionId: message.sessionId } : {})
-      });
+      await this.emitLogEvent(
+        "warn",
+        error instanceof Error ? error.message : String(error),
+        {
+          ...(message.sessionId ? { sessionId: message.sessionId } : {})
+        }
+      );
     });
   }
 
@@ -1722,7 +2052,10 @@ export class GatewayRuntime
     );
   }
 
-  private createUserMessage(sessionId: string, input: z.infer<typeof gatewayMessageInputSchema>): Message {
+  private createUserMessage(
+    sessionId: string,
+    input: z.infer<typeof gatewayMessageInputSchema>
+  ): Message {
     return messageSchema.parse({
       createdAt: new Date().toISOString(),
       id: `message.gateway.user.${crypto.randomUUID()}`,
@@ -1746,7 +2079,9 @@ export class GatewayRuntime
         channelId: message.identity.channel,
         channelMessageId: message.id,
         channelUserId: message.identity.userId,
-        ...(message.identity.roomId ? { channelRoomId: message.identity.roomId } : {})
+        ...(message.identity.roomId
+          ? { channelRoomId: message.identity.roomId }
+          : {})
       },
       parts: message.parts,
       role: "user",
@@ -1756,7 +2091,11 @@ export class GatewayRuntime
     });
   }
 
-  private async queueRun(params: { kind: GatewayRunKind; requestId: string; sessionId: string }): Promise<GatewayRunRecord> {
+  private async queueRun(params: {
+    kind: GatewayRunKind;
+    requestId: string;
+    sessionId: string;
+  }): Promise<GatewayRunRecord> {
     const run = gatewayRunRecordSchema.parse({
       createdAt: new Date().toISOString(),
       id: `gateway-run.${crypto.randomUUID()}`,
@@ -1788,12 +2127,18 @@ export class GatewayRuntime
 
   private async transitionRun(
     active: ActiveGatewayRun,
-    patch: Partial<Omit<GatewayRunRecord, "id" | "kind" | "sessionId" | "createdAt" | "requestId">>
+    patch: Partial<
+      Omit<
+        GatewayRunRecord,
+        "id" | "kind" | "sessionId" | "createdAt" | "requestId"
+      >
+    >
   ): Promise<void> {
     active.run = gatewayRunRecordSchema.parse({
       ...active.run,
       ...patch,
-      approvalRequestIds: patch.approvalRequestIds ?? active.run.approvalRequestIds,
+      approvalRequestIds:
+        patch.approvalRequestIds ?? active.run.approvalRequestIds,
       messageIds: patch.messageIds ?? active.run.messageIds,
       toolCallIds: patch.toolCallIds ?? active.run.toolCallIds,
       turnIds: patch.turnIds ?? active.run.turnIds,
@@ -1825,7 +2170,8 @@ export class GatewayRuntime
     }
   ): Promise<void> {
     await this.transitionRun(active, {
-      approvalRequestIds: params.approvalRequestIds ?? active.run.approvalRequestIds,
+      approvalRequestIds:
+        params.approvalRequestIds ?? active.run.approvalRequestIds,
       completedAt: new Date().toISOString(),
       completionReason: params.completionReason,
       error: params.error,
@@ -1839,7 +2185,10 @@ export class GatewayRuntime
     this.activeRunsBySession.delete(active.run.sessionId);
   }
 
-  private async finalizeCancelledRun(active: ActiveGatewayRun, session: SessionRecord): Promise<void> {
+  private async finalizeCancelledRun(
+    active: ActiveGatewayRun,
+    session: SessionRecord
+  ): Promise<void> {
     const cancelledSession = await this.persistSession(session, "cancelled", {
       activeTurnId: undefined,
       clearError: false,
@@ -1879,7 +2228,9 @@ export class GatewayRuntime
       ...session,
       activeTurnId: options.activeTurnId,
       lastActiveAt: updatedAt,
-      lastError: options.clearError ? undefined : options.structuredError ?? session.lastError,
+      lastError: options.clearError
+        ? undefined
+        : (options.structuredError ?? session.lastError),
       status,
       updatedAt
     });
@@ -1908,7 +2259,10 @@ export class GatewayRuntime
   private async requireIdleSession(sessionId: string): Promise<SessionRecord> {
     const session = await this.requireSession(sessionId);
     if (this.activeRunsBySession.has(sessionId)) {
-      throw gatewayError("busy", `Session "${sessionId}" already has an active gateway run.`);
+      throw gatewayError(
+        "busy",
+        `Session "${sessionId}" already has an active gateway run.`
+      );
     }
     return session;
   }
@@ -1923,7 +2277,10 @@ export class GatewayRuntime
 
   private requireExternalAgentService(): ExternalAgentService {
     if (!this.options.externalAgentService) {
-      throw gatewayError("not_implemented", "External-agent execution is not configured for this gateway instance.");
+      throw gatewayError(
+        "not_implemented",
+        "External-agent execution is not configured for this gateway instance."
+      );
     }
 
     return this.options.externalAgentService;
@@ -1931,13 +2288,18 @@ export class GatewayRuntime
 
   private requireChannelService(): ChannelService {
     if (!this.options.channelService) {
-      throw gatewayError("not_implemented", "Messaging channels are not configured for this gateway instance.");
+      throw gatewayError(
+        "not_implemented",
+        "Messaging channels are not configured for this gateway instance."
+      );
     }
 
     return this.options.channelService;
   }
 
-  private async emitChannelMessageEvent(message: ChannelMessage): Promise<void> {
+  private async emitChannelMessageEvent(
+    message: ChannelMessage
+  ): Promise<void> {
     await this.emitEvent(
       {
         createdAt: message.createdAt,
@@ -1952,9 +2314,14 @@ export class GatewayRuntime
     );
   }
 
-  private async emitEvent(event: GatewayEvent, persist: boolean): Promise<void> {
+  private async emitEvent(
+    event: GatewayEvent,
+    persist: boolean
+  ): Promise<void> {
     const normalizedEvent = normalizeGatewayEventId(event);
-    const emitted = persist ? await this.eventLog.append(normalizedEvent) : gatewayEventSchema.parse(normalizedEvent);
+    const emitted = persist
+      ? await this.eventLog.append(normalizedEvent)
+      : gatewayEventSchema.parse(normalizedEvent);
     this.emit("event", emitted);
   }
 }
@@ -1971,7 +2338,9 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
   sessions?: FileSessionStore;
   userHomeDirectory?: string;
 }): Promise<GatewayRuntime> {
-  const sessions = params.sessions ?? new FileSessionStore(params.loaded.resolvedConfig.memory.stateRoot);
+  const sessions =
+    params.sessions ??
+    new FileSessionStore(params.loaded.resolvedConfig.memory.stateRoot);
   const mcpManager = createMcpManagerFromLoadedConfig({
     cwd: params.cwd,
     env: params.env,
@@ -1984,7 +2353,9 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
 
   const memoryService = await createMemoryServiceFromConfig({
     config: params.loaded.resolvedConfig,
-    embeddingAdapters: params.embeddingAdapters?.map((registration) => registration.adapter),
+    embeddingAdapters: params.embeddingAdapters?.map(
+      (registration) => registration.adapter
+    ),
     fetchImpl: params.fetchImpl,
     sessions
   });
@@ -1993,8 +2364,10 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     artifactRoot: params.loaded.resolvedConfig.browser.artifactRoot,
     headless: params.loaded.resolvedConfig.browser.headless,
     launchTimeoutMs: params.loaded.resolvedConfig.browser.launchTimeoutMs,
-    navigationTimeoutMs: params.loaded.resolvedConfig.browser.navigationTimeoutMs,
-    snapshotMaxElements: params.loaded.resolvedConfig.browser.snapshotMaxElements,
+    navigationTimeoutMs:
+      params.loaded.resolvedConfig.browser.navigationTimeoutMs,
+    snapshotMaxElements:
+      params.loaded.resolvedConfig.browser.snapshotMaxElements,
     snapshotTextChars: params.loaded.resolvedConfig.browser.snapshotTextChars,
     viewport: params.loaded.resolvedConfig.browser.viewport
   });
@@ -2011,9 +2384,9 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     baseDirectory: params.cwd,
     stateRoot: params.loaded.resolvedConfig.memory.stateRoot
   });
-  const imageService = Object.values(params.loaded.resolvedConfig.providers.imageProviders).some(
-    (providerConfig) => providerConfig.enabled
-  )
+  const imageService = Object.values(
+    params.loaded.resolvedConfig.providers.imageProviders
+  ).some((providerConfig) => providerConfig.enabled)
     ? createImageServiceFromConfig(params.loaded.resolvedConfig, {
         fetchImpl: params.fetchImpl
       })
@@ -2103,7 +2476,8 @@ export async function createGatewayRuntime(params: {
 class GatewayEventLog {
   private initialized = false;
   private nextSequence = 1;
-  private readonly events: Array<{ event: GatewayEvent; sequence: number }> = [];
+  private readonly events: Array<{ event: GatewayEvent; sequence: number }> =
+    [];
 
   constructor(private readonly filePath: string) {}
 
@@ -2114,8 +2488,13 @@ class GatewayEventLog {
 
     try {
       const raw = await fs.readFile(this.filePath, "utf8");
-      for (const line of raw.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
-        const persisted = persistedGatewayEventSchema.parse(JSON.parse(line) as unknown);
+      for (const line of raw
+        .split("\n")
+        .map((entry) => entry.trim())
+        .filter(Boolean)) {
+        const persisted = persistedGatewayEventSchema.parse(
+          JSON.parse(line) as unknown
+        );
         this.events.push(persisted);
         this.nextSequence = Math.max(this.nextSequence, persisted.sequence + 1);
       }
@@ -2142,7 +2521,11 @@ class GatewayEventLog {
     });
     this.events.push(persisted);
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.appendFile(this.filePath, `${JSON.stringify(persisted)}\n`, "utf8");
+    await fs.appendFile(
+      this.filePath,
+      `${JSON.stringify(persisted)}\n`,
+      "utf8"
+    );
     return persisted.event;
   }
 
@@ -2185,11 +2568,16 @@ function normalizeGatewayEventId(event: GatewayEvent): GatewayEvent {
   });
 }
 
-function buildApprovalRecords(snapshot: SessionSnapshot): GatewayApprovalRecord[] {
+function buildApprovalRecords(
+  snapshot: SessionSnapshot
+): GatewayApprovalRecord[] {
   const latestResolutions = new Map<string, ApprovalResolution>();
   for (const resolution of snapshot.approvalResolutions) {
     const previous = latestResolutions.get(resolution.requestId);
-    if (!previous || previous.decidedAt.localeCompare(resolution.decidedAt) < 0) {
+    if (
+      !previous ||
+      previous.decidedAt.localeCompare(resolution.decidedAt) < 0
+    ) {
       latestResolutions.set(resolution.requestId, resolution);
     }
   }
@@ -2213,8 +2601,16 @@ function buildMessageParts(input: z.infer<typeof gatewayMessageInputSchema>) {
   return parts;
 }
 
-function buildChannelApprovalAcknowledgement(request: ApprovalRequest, resolution: ApprovalResolution): string {
-  const decision = resolution.decision === "approved" ? "Approved" : resolution.decision === "denied" ? "Denied" : "Cancelled";
+function buildChannelApprovalAcknowledgement(
+  request: ApprovalRequest,
+  resolution: ApprovalResolution
+): string {
+  const decision =
+    resolution.decision === "approved"
+      ? "Approved"
+      : resolution.decision === "denied"
+        ? "Denied"
+        : "Cancelled";
   return `${decision} approval for "${request.target.label}".`;
 }
 
@@ -2230,9 +2626,9 @@ function buildChannelApprovalPrompt(request: ApprovalRequest): string {
 function buildChannelHelpText(): string {
   return [
     "Channel commands:",
-    '/approve <requestId> to approve the latest pending action.',
-    '/deny <requestId> <reason> to reject an action.',
-    '/steer <message> to inject steering into the current session.'
+    "/approve <requestId> to approve the latest pending action.",
+    "/deny <requestId> <reason> to reject an action.",
+    "/steer <message> to inject steering into the current session."
   ].join("\n");
 }
 
@@ -2241,7 +2637,9 @@ function buildChannelSessionGoal(message: ChannelMessage): string {
   return `Respond helpfully to ${describeChannel(message.identity.channel)} messages from ${target}.`;
 }
 
-function buildChannelSessionMetadata(message: ChannelMessage): Record<string, JsonValue> {
+function buildChannelSessionMetadata(
+  message: ChannelMessage
+): Record<string, JsonValue> {
   return {
     ...message.metadata,
     channelAccountId: message.identity.accountId,
@@ -2249,7 +2647,9 @@ function buildChannelSessionMetadata(message: ChannelMessage): Record<string, Js
     channelDisplayName: message.identity.displayName ?? null,
     channelId: message.identity.channel,
     channelUserId: message.identity.userId,
-    ...(message.identity.roomId ? { channelRoomId: message.identity.roomId } : {})
+    ...(message.identity.roomId
+      ? { channelRoomId: message.identity.roomId }
+      : {})
   };
 }
 
@@ -2257,8 +2657,10 @@ function buildChannelSessionTitle(message: ChannelMessage): string {
   return `${formatChannelDisplayName(message.identity.channel)} ${message.identity.displayName ?? message.identity.userId}`;
 }
 
-
-function buildDeclinedToolError(toolName: string, resolution: ApprovalResolution): StructuredError {
+function buildDeclinedToolError(
+  toolName: string,
+  resolution: ApprovalResolution
+): StructuredError {
   const decision = resolution.decision;
   return {
     code:
@@ -2323,11 +2725,20 @@ function parseChannelCommand(message: ChannelMessage): ChannelCommand | null {
     case "cancel":
     case "deny": {
       const [maybeRequestId, ...commentTokens] = rest;
-      const hasRequestId = typeof maybeRequestId === "string" && maybeRequestId.length > 0 && maybeRequestId.includes(".");
-      const comment = (hasRequestId ? commentTokens : rest).join(" ").trim() || undefined;
+      const hasRequestId =
+        typeof maybeRequestId === "string" &&
+        maybeRequestId.length > 0 &&
+        maybeRequestId.includes(".");
+      const comment =
+        (hasRequestId ? commentTokens : rest).join(" ").trim() || undefined;
       return {
         comment,
-        decision: command === "approve" ? "approved" : command === "deny" ? "denied" : "cancelled",
+        decision:
+          command === "approve"
+            ? "approved"
+            : command === "deny"
+              ? "denied"
+              : "cancelled",
         kind: "approval",
         requestId: hasRequestId ? maybeRequestId : undefined
       };
@@ -2357,11 +2768,15 @@ function shouldRelayMessageToChannel(message: Message): boolean {
   return message.visibility !== "hidden" && message.role === "assistant";
 }
 
-function describeChannel(channel: ChannelMessage["identity"]["channel"]): string {
+function describeChannel(
+  channel: ChannelMessage["identity"]["channel"]
+): string {
   return channel === "whatsapp" ? "WhatsApp" : channel;
 }
 
-function formatChannelDisplayName(channel: ChannelMessage["identity"]["channel"]): string {
+function formatChannelDisplayName(
+  channel: ChannelMessage["identity"]["channel"]
+): string {
   return channel === "whatsapp" ? "WhatsApp" : toTitleCase(channel);
 }
 
@@ -2403,21 +2818,29 @@ export function eventMatchesGatewaySubscription(
   return deriveGatewayEventSessionId(event) === subscription.sessionId;
 }
 
-export function deriveGatewayEventSessionId(event: GatewayEvent): string | undefined {
+export function deriveGatewayEventSessionId(
+  event: GatewayEvent
+): string | undefined {
   switch (event.topic) {
     case "approval.requested":
       return event.payload.sessionId;
     case "approval.resolved":
-      return typeof event.metadata.sessionId === "string" ? event.metadata.sessionId : undefined;
+      return typeof event.metadata.sessionId === "string"
+        ? event.metadata.sessionId
+        : undefined;
     case "channel.message":
       return event.payload.sessionId ?? undefined;
     case "external_agent.updated":
       return event.payload.request.sessionId ?? undefined;
     case "gateway.status":
     case "log.emitted":
-      return typeof event.metadata.sessionId === "string" ? event.metadata.sessionId : undefined;
+      return typeof event.metadata.sessionId === "string"
+        ? event.metadata.sessionId
+        : undefined;
     case "memory.updated":
-      return typeof event.metadata.sessionId === "string" ? event.metadata.sessionId : undefined;
+      return typeof event.metadata.sessionId === "string"
+        ? event.metadata.sessionId
+        : undefined;
     case "message.created":
       return event.payload.sessionId;
     case "message.delta":
@@ -2442,7 +2865,9 @@ export function deriveGatewayEventSessionId(event: GatewayEvent): string | undef
 }
 
 function encodeCursor(sequence: number): string {
-  return Buffer.from(JSON.stringify({ sequence }), "utf8").toString("base64url");
+  return Buffer.from(JSON.stringify({ sequence }), "utf8").toString(
+    "base64url"
+  );
 }
 
 function decodeCursor(cursor: string | undefined): number {
@@ -2451,8 +2876,12 @@ function decodeCursor(cursor: string | undefined): number {
   }
 
   try {
-    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { sequence?: unknown };
-    return typeof parsed.sequence === "number" && Number.isInteger(parsed.sequence) && parsed.sequence >= 0
+    const parsed = JSON.parse(
+      Buffer.from(cursor, "base64url").toString("utf8")
+    ) as { sequence?: unknown };
+    return typeof parsed.sequence === "number" &&
+      Number.isInteger(parsed.sequence) &&
+      parsed.sequence >= 0
       ? parsed.sequence
       : 0;
   } catch {

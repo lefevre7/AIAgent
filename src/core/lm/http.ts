@@ -23,16 +23,22 @@ type JsonRequestOptions = {
   headers?: Record<string, string>;
   maxAttempts?: number;
   method?: "GET" | "POST";
+  // When provided (streaming), this signal governs aborts instead of an absolute
+  // deadline, so an inactivity timer can keep a healthy long stream alive.
+  signal?: AbortSignal;
   timeoutMs: number;
   url: string;
 };
 
 type StreamRequestOptions = JsonRequestOptions;
 
-export async function fetchJson<T>(options: JsonRequestOptions): Promise<JsonHttpResult<T>> {
+export async function fetchJson<T>(
+  options: JsonRequestOptions
+): Promise<JsonHttpResult<T>> {
   const response = await fetchWithRetries(options);
   const rawText = await response.text();
-  const data = rawText.trim().length === 0 ? (null as T) : (JSON.parse(rawText) as T);
+  const data =
+    rawText.trim().length === 0 ? (null as T) : (JSON.parse(rawText) as T);
 
   return {
     data,
@@ -42,7 +48,9 @@ export async function fetchJson<T>(options: JsonRequestOptions): Promise<JsonHtt
   };
 }
 
-export async function fetchStream(options: StreamRequestOptions): Promise<Response> {
+export async function fetchStream(
+  options: StreamRequestOptions
+): Promise<Response> {
   return fetchWithRetries(options);
 }
 
@@ -55,7 +63,9 @@ export function normalizeUnknownProviderError(
   }
 
   if (error instanceof Error) {
-    const retriable = error.name === "AbortError" || /ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT/u.test(error.message);
+    const retriable =
+      error.name === "AbortError" ||
+      /ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT/u.test(error.message);
     return {
       code: defaults.code ?? "provider_request_error",
       details: {
@@ -75,29 +85,38 @@ export function normalizeUnknownProviderError(
   };
 }
 
-function buildHeaders(headers: Record<string, string> | undefined, body: unknown): HeadersInit {
+function buildHeaders(
+  headers: Record<string, string> | undefined,
+  body: unknown
+): HeadersInit {
   return {
-    "content-type": body === undefined ? "application/json" : "application/json",
+    "content-type":
+      body === undefined ? "application/json" : "application/json",
     ...headers
   };
 }
 
-async function fetchWithRetries(options: JsonRequestOptions): Promise<Response> {
+async function fetchWithRetries(
+  options: JsonRequestOptions
+): Promise<Response> {
   const maxAttempts = options.maxAttempts ?? 2;
   let lastError: ProviderRequestError | null = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const response = await (options.fetchImpl ?? fetch)(options.url, {
-        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        body:
+          options.body === undefined ? undefined : JSON.stringify(options.body),
         headers: buildHeaders(options.headers, options.body),
         method: options.method ?? (options.body === undefined ? "GET" : "POST"),
-        signal: AbortSignal.timeout(options.timeoutMs)
+        signal: options.signal ?? AbortSignal.timeout(options.timeoutMs)
       });
 
       if (!response.ok) {
         const rawText = await response.text();
-        throw new ProviderRequestError(buildHttpError(response.status, options.url, rawText));
+        throw new ProviderRequestError(
+          buildHttpError(response.status, options.url, rawText)
+        );
       }
 
       return response;
@@ -106,7 +125,8 @@ async function fetchWithRetries(options: JsonRequestOptions): Promise<Response> 
         code: "provider_request_error",
         details: {
           attempt,
-          method: options.method ?? (options.body === undefined ? "GET" : "POST"),
+          method:
+            options.method ?? (options.body === undefined ? "GET" : "POST"),
           url: options.url
         }
       });
@@ -120,17 +140,24 @@ async function fetchWithRetries(options: JsonRequestOptions): Promise<Response> 
     }
   }
 
-  throw lastError ?? new ProviderRequestError({
-    code: "provider_request_error",
-    details: {
-      url: options.url
-    },
-    message: `Request to ${options.url} failed.`,
-    retriable: false
-  });
+  throw (
+    lastError ??
+    new ProviderRequestError({
+      code: "provider_request_error",
+      details: {
+        url: options.url
+      },
+      message: `Request to ${options.url} failed.`,
+      retriable: false
+    })
+  );
 }
 
-function buildHttpError(status: number, url: string, rawText: string): StructuredError {
+function buildHttpError(
+  status: number,
+  url: string,
+  rawText: string
+): StructuredError {
   const bodyDetails = tryParseJson(rawText);
   const message =
     extractErrorMessage(bodyDetails) ??

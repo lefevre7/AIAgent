@@ -10,6 +10,7 @@ import {
   FileSessionStore,
   type AgentLoopCompletionDecision,
   type AgentLoopModel,
+  type AgentLoopStatusMetrics,
   type AgentLoopToolExecutionResult,
   type ApprovalRequest,
   type ApprovalResolution,
@@ -39,7 +40,13 @@ describe("agent loop", () => {
       buildModelResponse({
         messageText: "The requested work is complete.",
         sessionId: "session.loop.1",
-        toolCalls: [{ arguments: {}, callId: "tool.complete.1", toolName: "attempt_complete" }]
+        toolCalls: [
+          {
+            arguments: {},
+            callId: "tool.complete.1",
+            toolName: "attempt_complete"
+          }
+        ]
       })
     ]);
 
@@ -52,7 +59,11 @@ describe("agent loop", () => {
     expect(result.stopReason).toBe("completed");
     expect(result.session.status).toBe("completed");
     expect(result.turns).toHaveLength(1);
-    expect((await store.getSessionSnapshot(result.session.id))?.messages.some((message) => message.role === "assistant")).toBe(true);
+    expect(
+      (await store.getSessionSnapshot(result.session.id))?.messages.some(
+        (message) => message.role === "assistant"
+      )
+    ).toBe(true);
   });
 
   test("nudges the model when it replies without attempt_complete, and the model sees the nudge", async () => {
@@ -65,7 +76,13 @@ describe("agent loop", () => {
       buildModelResponse({
         messageText: "The work is now complete.",
         sessionId: "session.loop.1",
-        toolCalls: [{ arguments: {}, callId: "tool.complete.2", toolName: "attempt_complete" }]
+        toolCalls: [
+          {
+            arguments: {},
+            callId: "tool.complete.2",
+            toolName: "attempt_complete"
+          }
+        ]
       })
     ]);
 
@@ -79,22 +96,40 @@ describe("agent loop", () => {
     expect(result.stopReason).toBe("completed");
     expect(result.turns).toHaveLength(2);
     const snapshot = await store.getSessionSnapshot(result.session.id);
-    expect(snapshot?.messages.some((message) => message.source === "system" && message.visibility === "compact")).toBe(true);
+    expect(
+      snapshot?.messages.some(
+        (message) =>
+          message.source === "system" && message.visibility === "compact"
+      )
+    ).toBe(true);
     expect(result.turns[1]?.trigger).toBe("system_nudge");
     const secondRequest = model.requests[1];
     expect(
       secondRequest?.messages.some(
         (message) =>
           message.source === "system" &&
-          message.parts.some((part) => part.kind === "text" && part.text.includes("You must keep working"))
+          message.parts.some(
+            (part) =>
+              part.kind === "text" &&
+              part.text.includes("You must keep working")
+          )
       )
     ).toBe(true);
   });
 
   test("stops with completion_blocked after too many consecutive no-tool turns", async () => {
     const noToolResponse = () =>
-      buildModelResponse({ messageText: "Acknowledged.", sessionId: "session.loop.1", toolCalls: [] });
-    const { loop } = await createLoop([noToolResponse(), noToolResponse(), noToolResponse(), noToolResponse()]);
+      buildModelResponse({
+        messageText: "Acknowledged.",
+        sessionId: "session.loop.1",
+        toolCalls: []
+      });
+    const { loop } = await createLoop([
+      noToolResponse(),
+      noToolResponse(),
+      noToolResponse(),
+      noToolResponse()
+    ]);
 
     const result = await loop.run({
       availableTools: [buildAttemptCompleteTool()],
@@ -114,14 +149,22 @@ describe("agent loop", () => {
       toolCalls: []
     });
     malformedResponse.metadata = {
-      rejectedToolCalls: [{ reason: "Tool call 1 was missing a function name." }]
+      rejectedToolCalls: [
+        { reason: "Tool call 1 was missing a function name." }
+      ]
     };
     const { loop, model } = await createLoop([
       malformedResponse,
       buildModelResponse({
         messageText: "Retrying correctly and completing.",
         sessionId: "session.loop.1",
-        toolCalls: [{ arguments: {}, callId: "tool.complete.rejected", toolName: "attempt_complete" }]
+        toolCalls: [
+          {
+            arguments: {},
+            callId: "tool.complete.rejected",
+            toolName: "attempt_complete"
+          }
+        ]
       })
     ]);
 
@@ -135,11 +178,12 @@ describe("agent loop", () => {
     expect(result.stopReason).toBe("completed");
     const secondRequest = model.requests[1];
     expect(
-      secondRequest?.messages.some(
-        (message) =>
-          message.parts.some(
-            (part) => part.kind === "text" && part.text.includes("Tool call 1 was missing a function name.")
-          )
+      secondRequest?.messages.some((message) =>
+        message.parts.some(
+          (part) =>
+            part.kind === "text" &&
+            part.text.includes("Tool call 1 was missing a function name.")
+        )
       )
     ).toBe(true);
   });
@@ -151,13 +195,23 @@ describe("agent loop", () => {
         sessionId: "session.loop.1",
         toolCalls: [
           { arguments: {}, callId: "tool.think.mix", toolName: "think" },
-          { arguments: {}, callId: "tool.complete.mix", toolName: "attempt_complete" }
+          {
+            arguments: {},
+            callId: "tool.complete.mix",
+            toolName: "attempt_complete"
+          }
         ]
       }),
       buildModelResponse({
         messageText: "Now completing on its own.",
         sessionId: "session.loop.1",
-        toolCalls: [{ arguments: {}, callId: "tool.complete.mixdone", toolName: "attempt_complete" }]
+        toolCalls: [
+          {
+            arguments: {},
+            callId: "tool.complete.mixdone",
+            toolName: "attempt_complete"
+          }
+        ]
       })
     ]);
 
@@ -169,16 +223,36 @@ describe("agent loop", () => {
     });
 
     expect(result.stopReason).toBe("completed");
-    expect(result.turns.some((turn) => turn.summary === "The runtime rejected a mixed completion/tool turn.")).toBe(true);
-    expect(result.turns.some((turn) => turn.trigger === "system_nudge")).toBe(true);
+    expect(
+      result.turns.some(
+        (turn) =>
+          turn.summary === "The runtime rejected a mixed completion/tool turn."
+      )
+    ).toBe(true);
+    expect(result.turns.some((turn) => turn.trigger === "system_nudge")).toBe(
+      true
+    );
     const snapshot = await store.getSessionSnapshot(result.session.id);
-    expect(snapshot?.messages.some((message) => message.source === "system" && message.visibility === "compact")).toBe(true);
+    expect(
+      snapshot?.messages.some(
+        (message) =>
+          message.source === "system" && message.visibility === "compact"
+      )
+    ).toBe(true);
   });
 
   test("stops with completion_blocked when the turn limit is reached without completion", async () => {
     const { loop } = await createLoop([
-      buildModelResponse({ messageText: "Still working (1).", sessionId: "session.loop.1", toolCalls: [] }),
-      buildModelResponse({ messageText: "Still working (2).", sessionId: "session.loop.1", toolCalls: [] })
+      buildModelResponse({
+        messageText: "Still working (1).",
+        sessionId: "session.loop.1",
+        toolCalls: []
+      }),
+      buildModelResponse({
+        messageText: "Still working (2).",
+        sessionId: "session.loop.1",
+        toolCalls: []
+      })
     ]);
 
     const result = await loop.run({
@@ -200,12 +274,24 @@ describe("agent loop", () => {
         buildModelResponse({
           messageText: "I think this is done.",
           sessionId: "session.loop.1",
-          toolCalls: [{ arguments: {}, callId: "tool.complete.3", toolName: "attempt_complete" }]
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.3",
+              toolName: "attempt_complete"
+            }
+          ]
         }),
         buildModelResponse({
           messageText: "I addressed the remaining issue and this is now done.",
           sessionId: "session.loop.1",
-          toolCalls: [{ arguments: {}, callId: "tool.complete.4", toolName: "attempt_complete" }]
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.4",
+              toolName: "attempt_complete"
+            }
+          ]
         })
       ],
       {
@@ -239,7 +325,13 @@ describe("agent loop", () => {
       snapshot?.messages.some(
         (message) =>
           message.source === "system" &&
-          message.parts.some((part) => part.kind === "text" && part.text.includes("A required verification step is still unresolved."))
+          message.parts.some(
+            (part) =>
+              part.kind === "text" &&
+              part.text.includes(
+                "A required verification step is still unresolved."
+              )
+          )
       )
     ).toBe(true);
   });
@@ -250,12 +342,24 @@ describe("agent loop", () => {
         buildModelResponse({
           messageText: "I need to inspect the file first.",
           sessionId: "session.loop.1",
-          toolCalls: [{ arguments: { path: "AGENTS.md" }, callId: "tool.read.1", toolName: "read_file" }]
+          toolCalls: [
+            {
+              arguments: { path: "AGENTS.md" },
+              callId: "tool.read.1",
+              toolName: "read_file"
+            }
+          ]
         }),
         buildModelResponse({
           messageText: "I used the tool output and the work is complete.",
           sessionId: "session.loop.1",
-          toolCalls: [{ arguments: {}, callId: "tool.complete.5", toolName: "attempt_complete" }]
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.5",
+              toolName: "attempt_complete"
+            }
+          ]
         })
       ],
       {
@@ -275,7 +379,15 @@ describe("agent loop", () => {
                 createdAt: new Date().toISOString(),
                 id: `message.tool.${call.id}`,
                 metadata: {},
-                parts: [{ kind: "json", value: { content: "AGENTS.md contents", status: "succeeded" } }],
+                parts: [
+                  {
+                    kind: "json",
+                    value: {
+                      content: "AGENTS.md contents",
+                      status: "succeeded"
+                    }
+                  }
+                ],
                 role: "tool",
                 sessionId: call.sessionId,
                 source: "tool_runtime",
@@ -314,9 +426,16 @@ describe("agent loop", () => {
 
     const model = new FakeModel([
       buildModelResponse({
-        messageText: "The operator approved the risky action and the task is complete.",
+        messageText:
+          "The operator approved the risky action and the task is complete.",
         sessionId: session.id,
-        toolCalls: [{ arguments: {}, callId: "tool.complete.6", toolName: "attempt_complete" }]
+        toolCalls: [
+          {
+            arguments: {},
+            callId: "tool.complete.6",
+            toolName: "attempt_complete"
+          }
+        ]
       })
     ]);
     const loop = new AgentLoop({
@@ -350,7 +469,7 @@ describe("agent loop", () => {
     expect(resumed.turns[0]?.trigger).toBe("steering");
   });
 
-  test('resumes with queued steering generated from a denied approval comment', async () => {
+  test("resumes with queued steering generated from a denied approval comment", async () => {
     const root = await createTempRoot();
     const store = new FileSessionStore(path.join(root, ".aia"));
     const session = buildSession();
@@ -362,7 +481,8 @@ describe("agent loop", () => {
       autoQueueDeniedCommentAsSteering: true,
       resolution: buildApprovalResolution("approval.loop.1", {
         actor: "web",
-        comment: "Do not write yet. Read the file, explain the risk, and propose a patch instead.",
+        comment:
+          "Do not write yet. Read the file, explain the risk, and propose a patch instead.",
         decision: "denied",
         id: "approval-resolution.loop.denied"
       }),
@@ -371,9 +491,16 @@ describe("agent loop", () => {
 
     const model = new FakeModel([
       buildModelResponse({
-        messageText: "I followed the updated direction and the task is complete.",
+        messageText:
+          "I followed the updated direction and the task is complete.",
         sessionId: session.id,
-        toolCalls: [{ arguments: {}, callId: "tool.complete.7", toolName: "attempt_complete" }]
+        toolCalls: [
+          {
+            arguments: {},
+            callId: "tool.complete.7",
+            toolName: "attempt_complete"
+          }
+        ]
       })
     ]);
     const loop = new AgentLoop({
@@ -388,7 +515,11 @@ describe("agent loop", () => {
 
     expect(resumed.stopReason).toBe("completed");
     expect(resumed.turns[0]?.trigger).toBe("steering");
-    expect(resumed.messages.some((message) => message.role === "user" && message.source === "operator")).toBe(true);
+    expect(
+      resumed.messages.some(
+        (message) => message.role === "user" && message.source === "operator"
+      )
+    ).toBe(true);
   });
 
   test("initializes memory placeholders and compacts on accepted completion when a memory lifecycle is configured", async () => {
@@ -399,7 +530,13 @@ describe("agent loop", () => {
         buildModelResponse({
           messageText: "The work is complete.",
           sessionId: "session.loop.1",
-          toolCalls: [{ arguments: {}, callId: "tool.complete.8", toolName: "attempt_complete" }]
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.8",
+              toolName: "attempt_complete"
+            }
+          ]
         })
       ],
       {
@@ -430,12 +567,24 @@ describe("agent loop", () => {
       buildModelResponse({
         messageText: "Reading the file.",
         sessionId: "session.loop.1",
-        toolCalls: [{ arguments: { path: "AGENTS.md" }, callId: "tool.read.default", toolName: "read_file" }]
+        toolCalls: [
+          {
+            arguments: { path: "AGENTS.md" },
+            callId: "tool.read.default",
+            toolName: "read_file"
+          }
+        ]
       }),
       buildModelResponse({
         messageText: "Giving up after the tool failed.",
         sessionId: "session.loop.1",
-        toolCalls: [{ arguments: {}, callId: "tool.complete.default", toolName: "attempt_complete" }]
+        toolCalls: [
+          {
+            arguments: {},
+            callId: "tool.complete.default",
+            toolName: "attempt_complete"
+          }
+        ]
       })
     ]);
 
@@ -455,12 +604,24 @@ describe("agent loop", () => {
       buildModelResponse({
         messageText: "Reading the file first.",
         sessionId: "session.loop.1",
-        toolCalls: [{ arguments: { path: "AGENTS.md" }, callId: "tool.read.native", toolName: "read_file" }]
+        toolCalls: [
+          {
+            arguments: { path: "AGENTS.md" },
+            callId: "tool.read.native",
+            toolName: "read_file"
+          }
+        ]
       }),
       buildModelResponse({
         messageText: "Done.",
         sessionId: "session.loop.1",
-        toolCalls: [{ arguments: {}, callId: "tool.complete.native", toolName: "attempt_complete" }]
+        toolCalls: [
+          {
+            arguments: {},
+            callId: "tool.complete.native",
+            toolName: "attempt_complete"
+          }
+        ]
       })
     ]);
 
@@ -474,12 +635,24 @@ describe("agent loop", () => {
     expect(result.stopReason).toBe("completed");
     const snapshot = await store.getSessionSnapshot(result.session.id);
     const assistantToolCallMessage = snapshot?.messages.find(
-      (message) => message.role === "assistant" && message.parts.some((part) => part.kind === "tool_call")
+      (message) =>
+        message.role === "assistant" &&
+        message.parts.some((part) => part.kind === "tool_call")
     );
     expect(assistantToolCallMessage).toBeDefined();
-    const toolCallPart = assistantToolCallMessage?.parts.find((part) => part.kind === "tool_call");
-    expect(toolCallPart && toolCallPart.kind === "tool_call" ? toolCallPart.toolName : undefined).toBe("read_file");
-    expect(toolCallPart && toolCallPart.kind === "tool_call" ? toolCallPart.callId : undefined).toBe("tool.read.native");
+    const toolCallPart = assistantToolCallMessage?.parts.find(
+      (part) => part.kind === "tool_call"
+    );
+    expect(
+      toolCallPart && toolCallPart.kind === "tool_call"
+        ? toolCallPart.toolName
+        : undefined
+    ).toBe("read_file");
+    expect(
+      toolCallPart && toolCallPart.kind === "tool_call"
+        ? toolCallPart.callId
+        : undefined
+    ).toBe("tool.read.native");
   });
 
   test("activates tools discovered through tool_search on the next turn", async () => {
@@ -503,12 +676,24 @@ describe("agent loop", () => {
         buildModelResponse({
           messageText: "Searching for a browser tool.",
           sessionId: "session.loop.1",
-          toolCalls: [{ arguments: { query: "browser" }, callId: "tool.search.1", toolName: "tool_search" }]
+          toolCalls: [
+            {
+              arguments: { query: "browser" },
+              callId: "tool.search.1",
+              toolName: "tool_search"
+            }
+          ]
         }),
         buildModelResponse({
           messageText: "Done.",
           sessionId: "session.loop.1",
-          toolCalls: [{ arguments: {}, callId: "tool.complete.activate", toolName: "attempt_complete" }]
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.activate",
+              toolName: "attempt_complete"
+            }
+          ]
         })
       ],
       {
@@ -541,8 +726,16 @@ describe("agent loop", () => {
 
     expect(result.stopReason).toBe("completed");
     const secondRequest = model.requests[1];
-    expect(secondRequest?.availableTools.some((tool) => tool.invocationName === "browser_open")).toBe(true);
-    expect(model.requests[0]?.availableTools.some((tool) => tool.invocationName === "browser_open")).toBe(false);
+    expect(
+      secondRequest?.availableTools.some(
+        (tool) => tool.invocationName === "browser_open"
+      )
+    ).toBe(true);
+    expect(
+      model.requests[0]?.availableTools.some(
+        (tool) => tool.invocationName === "browser_open"
+      )
+    ).toBe(false);
   });
 
   test("compacts the session and stops replaying pre-compaction history once the token threshold is crossed", async () => {
@@ -550,9 +743,19 @@ describe("agent loop", () => {
     const overThresholdResponse = buildModelResponse({
       messageText: "Reading the file.",
       sessionId: "session.loop.1",
-      toolCalls: [{ arguments: { path: "AGENTS.md" }, callId: "tool.read.compact", toolName: "read_file" }]
+      toolCalls: [
+        {
+          arguments: { path: "AGENTS.md" },
+          callId: "tool.read.compact",
+          toolName: "read_file"
+        }
+      ]
     });
-    overThresholdResponse.usage = { inputTokens: 5_000, outputTokens: 10, totalTokens: 5_010 };
+    overThresholdResponse.usage = {
+      inputTokens: 5_000,
+      outputTokens: 10,
+      totalTokens: 5_010
+    };
 
     const { loop, model } = await createLoop(
       [
@@ -560,14 +763,23 @@ describe("agent loop", () => {
         buildModelResponse({
           messageText: "Done.",
           sessionId: "session.loop.1",
-          toolCalls: [{ arguments: {}, callId: "tool.complete.compact", toolName: "attempt_complete" }]
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.compact",
+              toolName: "attempt_complete"
+            }
+          ]
         })
       ],
       {
         autoCompactThresholdTokens: 1_000,
         memoryLifecycle: {
           async compactSession(params) {
-            compactCalls.push({ sessionId: params.sessionId, trigger: params.trigger });
+            compactCalls.push({
+              sessionId: params.sessionId,
+              trigger: params.trigger
+            });
           },
           async initializeSessionMemory() {
             // no-op
@@ -596,12 +808,21 @@ describe("agent loop", () => {
     });
 
     expect(result.stopReason).toBe("completed");
-    expect(compactCalls).toContainEqual({ sessionId: "session.loop.1", trigger: "threshold" });
+    expect(compactCalls).toContainEqual({
+      sessionId: "session.loop.1",
+      trigger: "threshold"
+    });
     // After compaction the original user message must no longer be replayed;
     // the post-compaction request should start from the compaction watermark.
     const secondRequest = model.requests[1];
-    expect(secondRequest?.messages.some((message) => message.id === "message.user.loop.1")).toBe(false);
-    expect(secondRequest?.messages.some((message) => message.role === "tool")).toBe(true);
+    expect(
+      secondRequest?.messages.some(
+        (message) => message.id === "message.user.loop.1"
+      )
+    ).toBe(false);
+    expect(
+      secondRequest?.messages.some((message) => message.role === "tool")
+    ).toBe(true);
   });
 
   test("persists a failed session when the model throws an unexpected error", async () => {
@@ -624,7 +845,13 @@ describe("agent loop", () => {
         buildModelResponse({
           messageText: `Planning iteration ${index + 1}.`,
           sessionId: "session.loop.1",
-          toolCalls: [{ arguments: { thought: `still planning ${index + 1}` }, callId: `tool.think.${index + 1}`, toolName: "think" }]
+          toolCalls: [
+            {
+              arguments: { thought: `still planning ${index + 1}` },
+              callId: `tool.think.${index + 1}`,
+              toolName: "think"
+            }
+          ]
         })
       ),
       {
@@ -664,13 +891,147 @@ describe("agent loop", () => {
     });
 
     expect(result.stopReason).toBe("completion_blocked");
-    expect(result.turns.some((turn) => turn.summary?.includes("planning or reasoning turns without taking action"))).toBe(true);
+    expect(
+      result.turns.some((turn) =>
+        turn.summary?.includes(
+          "planning or reasoning turns without taking action"
+        )
+      )
+    ).toBe(true);
     const snapshot = await store.getSessionSnapshot("session.loop.1");
     expect(
       snapshot?.messages.some(
-        (message) => message.source === "system" && message.parts.some((part) => part.kind === "text" && part.text.includes("Stop planning now"))
+        (message) =>
+          message.source === "system" &&
+          message.parts.some(
+            (part) =>
+              part.kind === "text" && part.text.includes("Stop planning now")
+          )
       )
     ).toBe(true);
+  });
+
+  test("strips <think> reasoning from the persisted assistant message on tool-call turns", async () => {
+    const { loop, store } = await createLoop(
+      [
+        buildModelResponse({
+          messageText:
+            "<think>internal deliberation that should not persist</think>\nReading the file now.",
+          sessionId: "session.loop.1",
+          toolCalls: [
+            {
+              arguments: { path: "AGENTS.md" },
+              callId: "tool.read.think",
+              toolName: "read_file"
+            }
+          ]
+        }),
+        buildModelResponse({
+          messageText: "Done.",
+          sessionId: "session.loop.1",
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.think",
+              toolName: "attempt_complete"
+            }
+          ]
+        })
+      ],
+      {
+        toolExecutor: {
+          async execute(call): Promise<AgentLoopToolExecutionResult> {
+            const completedCall: ToolCallRecord = {
+              ...call,
+              completedAt: new Date().toISOString(),
+              result: { content: "ok" },
+              status: "succeeded"
+            };
+            return {
+              resultMessage: {
+                createdAt: new Date().toISOString(),
+                id: `message.tool.${call.id}`,
+                metadata: {},
+                parts: [{ kind: "json", value: { content: "ok" } }],
+                role: "tool",
+                sessionId: call.sessionId,
+                source: "tool_runtime",
+                tags: [],
+                turnId: call.turnId,
+                visibility: "default"
+              },
+              toolCall: completedCall
+            };
+          }
+        }
+      }
+    );
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool(), buildReadFileTool()],
+      maxTurns: 4,
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+    const snapshot = await store.getSessionSnapshot("session.loop.1");
+    const assistantWithTool = snapshot?.messages.find(
+      (message) =>
+        message.role === "assistant" &&
+        message.parts.some(
+          (part) => part.kind === "tool_call" && part.toolName === "read_file"
+        )
+    );
+    const text = (assistantWithTool?.parts ?? [])
+      .map((part) => (part.kind === "text" ? part.text : ""))
+      .join(" ");
+    expect(text).not.toContain("internal deliberation");
+    expect(text).not.toContain("<think>");
+    expect(text).toContain("Reading the file now.");
+  });
+
+  test("emits status metrics (tokens, context %, elapsed) after each model response", async () => {
+    const root = await createTempRoot();
+    const store = new FileSessionStore(path.join(root, ".aia"));
+    const session = buildSession();
+    await store.saveSession(session);
+
+    const metricsSeen: AgentLoopStatusMetrics[] = [];
+    const loop = new AgentLoop({
+      contextWindowTokens: 100,
+      model: new FakeModel([
+        buildModelResponse({
+          messageText: "Done.",
+          sessionId: session.id,
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.metrics",
+              toolName: "attempt_complete"
+            }
+          ]
+        })
+      ]),
+      onStatus: ({ metrics }) => {
+        if (metrics) {
+          metricsSeen.push(metrics);
+        }
+      },
+      sessions: store
+    });
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      session,
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+    expect(metricsSeen.length).toBeGreaterThan(0);
+    expect(metricsSeen[0]?.tokensUsed).toBe(10);
+    expect(metricsSeen[0]?.contextWindowPercentage).toBe(10);
+    expect(typeof metricsSeen[0]?.elapsedSeconds).toBe("number");
   });
 });
 
@@ -684,14 +1045,22 @@ async function createLoop(
       snapshot: Awaited<ReturnType<FileSessionStore["getSessionSnapshot"]>>;
     }) => Promise<AgentLoopCompletionDecision>;
     memoryLifecycle?: {
-      compactSession(params: { sessionId: string; trigger: "completion" | "threshold"; sourceTokenCount?: number; threshold?: number }): Promise<void>;
+      compactSession(params: {
+        sessionId: string;
+        trigger: "completion" | "threshold";
+        sourceTokenCount?: number;
+        threshold?: number;
+      }): Promise<void>;
       initializeSessionMemory(session: SessionRecord): Promise<void>;
     };
     toolCatalog?: {
       getDefinition(toolName: string): ToolDefinition | null;
     };
     toolExecutor?: {
-      execute(call: ToolCallRecord, context: { session: SessionRecord; turn: TurnRecord }): Promise<AgentLoopToolExecutionResult>;
+      execute(
+        call: ToolCallRecord,
+        context: { session: SessionRecord; turn: TurnRecord }
+      ): Promise<AgentLoopToolExecutionResult>;
     };
   } = {}
 ) {
@@ -724,12 +1093,22 @@ async function createTempRoot(): Promise<string> {
 }
 
 class FakeModel implements AgentLoopModel {
-  readonly requests: Array<Omit<LanguageModelRequest, "modelId" | "provider"> & { modelId?: string; provider?: LanguageModelRequest["provider"] }> = [];
+  readonly requests: Array<
+    Omit<LanguageModelRequest, "modelId" | "provider"> & {
+      modelId?: string;
+      provider?: LanguageModelRequest["provider"];
+    }
+  > = [];
   private index = 0;
 
   constructor(private readonly responses: LanguageModelResponse[]) {}
 
-  async generate(request: Omit<LanguageModelRequest, "modelId" | "provider"> & { modelId?: string; provider?: LanguageModelRequest["provider"] }) {
+  async generate(
+    request: Omit<LanguageModelRequest, "modelId" | "provider"> & {
+      modelId?: string;
+      provider?: LanguageModelRequest["provider"];
+    }
+  ) {
     this.requests.push(request);
     const response = this.responses[this.index];
     if (!response) {
@@ -813,7 +1192,8 @@ function buildAttemptCompleteTool(): ToolDefinition {
     },
     approvalMode: "never",
     descriptor: {
-      approvalNotes: "The runtime will validate completion before ending the task.",
+      approvalNotes:
+        "The runtime will validate completion before ending the task.",
       examples: ["Use after the requested work is fully done."],
       purpose: "Finish the task through the runtime completion gate.",
       sideEffectSummary: "No side effects.",
@@ -845,7 +1225,8 @@ function buildAttemptCompleteTool(): ToolDefinition {
     },
     streamingMode: "none",
     toolId: "tool.builtin.attempt_complete",
-    usageGuidance: "Use only when the task is actually complete and ready for runtime validation.",
+    usageGuidance:
+      "Use only when the task is actually complete and ready for runtime validation.",
     version: "1.0.0"
   };
 }

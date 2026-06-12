@@ -9,17 +9,35 @@ import {
   structuredErrorSchema
 } from "@/core/contracts/common";
 import { messageSchema } from "@/core/contracts/messages";
-import { toolDefinitionSchema, toolInvocationNameSchema } from "@/core/contracts/tools";
+import {
+  toolDefinitionSchema,
+  toolInvocationNameSchema
+} from "@/core/contracts/tools";
 
-export const providerKindSchema = z.enum(["embedding", "image", "language_model", "voice"]);
+export const providerKindSchema = z.enum([
+  "embedding",
+  "image",
+  "language_model",
+  "voice"
+]);
 export const providerIdSchema = z
   .string()
   .min(1)
   .max(128)
   .regex(/^[a-z][a-z0-9_-]{0,127}$/);
 export const languageModelProviderSchema = providerIdSchema;
-export const providerHealthStatusSchema = z.enum(["degraded", "healthy", "unavailable"]);
-export const languageModelQueueJobStatusSchema = z.enum(["cancelled", "completed", "failed", "queued", "running"]);
+export const providerHealthStatusSchema = z.enum([
+  "degraded",
+  "healthy",
+  "unavailable"
+]);
+export const languageModelQueueJobStatusSchema = z.enum([
+  "cancelled",
+  "completed",
+  "failed",
+  "queued",
+  "running"
+]);
 export const languageModelStopReasonSchema = z.enum([
   "cancelled",
   "content_filter",
@@ -50,10 +68,15 @@ export const languageModelDescriptorSchema = z
 
 export const languageModelSettingsSchema = z
   .object({
+    frequencyPenalty: z.number().min(-2).max(2).optional(),
     maxOutputTokens: z.number().int().positive().optional(),
+    minP: z.number().min(0).max(1).optional(),
+    presencePenalty: z.number().min(-2).max(2).optional(),
+    repetitionPenalty: z.number().min(0).max(2).optional(),
     stopSequences: z.array(z.string().min(1)).default([]),
     temperature: z.number().min(0).max(2).optional(),
     toolChoice: z.enum(["auto", "none", "required"]).default("auto"),
+    topK: z.number().int().min(0).max(1000).optional(),
     topP: z.number().min(0).max(1).optional()
   })
   .strict();
@@ -228,22 +251,36 @@ export interface LanguageModelAdapter {
   generate(request: LanguageModelRequest): Promise<LanguageModelResponse>;
   health(): Promise<ProviderHealth>;
   listModels(): Promise<LanguageModelDescriptor[]>;
-  stream?(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent>;
+  stream?(
+    request: LanguageModelRequest
+  ): AsyncIterable<LanguageModelStreamEvent>;
 }
 
 export type EmbeddingRequest = z.infer<typeof embeddingRequestSchema>;
 export type EmbeddingResponse = z.infer<typeof embeddingResponseSchema>;
-export type EmbeddingModelDescriptor = z.infer<typeof embeddingModelDescriptorSchema>;
-export type LanguageModelDescriptor = z.infer<typeof languageModelDescriptorSchema>;
+export type EmbeddingModelDescriptor = z.infer<
+  typeof embeddingModelDescriptorSchema
+>;
+export type LanguageModelDescriptor = z.infer<
+  typeof languageModelDescriptorSchema
+>;
 export type LanguageModelProvider = z.infer<typeof languageModelProviderSchema>;
 export type LanguageModelQueueJob = z.infer<typeof languageModelQueueJobSchema>;
-export type LanguageModelQueueJobStatus = z.infer<typeof languageModelQueueJobStatusSchema>;
+export type LanguageModelQueueJobStatus = z.infer<
+  typeof languageModelQueueJobStatusSchema
+>;
 export type LanguageModelRequest = z.infer<typeof languageModelRequestSchema>;
 export type LanguageModelResponse = z.infer<typeof languageModelResponseSchema>;
-export type LanguageModelResponseFormat = z.infer<typeof languageModelResponseFormatSchema>;
+export type LanguageModelResponseFormat = z.infer<
+  typeof languageModelResponseFormatSchema
+>;
 export type LanguageModelSettings = z.infer<typeof languageModelSettingsSchema>;
-export type LanguageModelStopReason = z.infer<typeof languageModelStopReasonSchema>;
-export type LanguageModelStreamEvent = z.infer<typeof languageModelStreamEventSchema>;
+export type LanguageModelStopReason = z.infer<
+  typeof languageModelStopReasonSchema
+>;
+export type LanguageModelStreamEvent = z.infer<
+  typeof languageModelStreamEventSchema
+>;
 export type ModelToolCallProposal = z.infer<typeof modelToolCallProposalSchema>;
 export type ProviderHealth = z.infer<typeof providerHealthSchema>;
 export type ProviderHealthStatus = z.infer<typeof providerHealthStatusSchema>;

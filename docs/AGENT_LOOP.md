@@ -118,3 +118,57 @@ recovered so downstream behaves identically to native parsing.
   name resolves) to avoid eating legitimate JSON answers.
 - Adding a no-progress-style tool: give it `annotations.meta.family` of `reasoning`
   or `planning` rather than special-casing it in the loop.
+
+## Streaming timeout: inactivity, not an absolute deadline
+
+A single generation can legitimately stream for minutes. The original code passed
+`AbortSignal.timeout(timeoutMs)` to the streaming fetch, an **absolute** deadline
+measured from request start — so a healthy long stream was killed mid-token with
+undici's *"operation was aborted due to timeout."*
+
+The fix is an **idle timeout**. Each adapter creates a `createStreamGuard`
+(`src/core/lm/shared.ts`) whose timer resets on every received chunk (`guard.touch()`)
+and passes `guard.signal` to `fetchStream`; `http.ts` uses that signal instead of an
+absolute timeout for streaming. `fetchJson` (non-streaming) keeps the absolute
+`timeoutMs`. The idle window is `providers.<provider>.streamIdleTimeoutMs` (default
+60s) — abort fires only when **no tokens arrive** for that long, never while data
+flows.
+
+## In-generation repetition guard
+
+The no-progress guard above works *between* turns; it cannot stop a model that loops
+*inside one generation* (e.g. emitting "I'll use apply_patch" forever). `createStreamGuard`
+also watches the streamed text (`guard.observe(delta)` on content and reasoning) and
+aborts when the same non-trivial line repeats ≥6× consecutively. Combined with the
+`runtime.modelSettings.maxOutputTokens` cap (default 8192) and the idle timeout, a
+runaway generation is bounded three ways.
+
+Idle and repetition aborts surface as a `response.error` event; the LM queue throws on
+it (`queue.ts`), so the agent loop fails that turn with a clear message
+(`buildStreamAbortError`) rather than spinning.
+
+## Sampling controls
+
+`runtime.modelSettings` threads `maxOutputTokens`, `temperature`, `topP`, plus the
+anti-repetition controls `repetitionPenalty` (default 1.1, sent as `repeat_penalty`),
+`presencePenalty`, `frequencyPenalty`, `topK`, and `minP`. They flow through
+`languageModelSettingsSchema` → the loop's request builder → both adapters' `buildPayload`
+(LM Studio: OpenAI-compatible `presence_penalty`/`frequency_penalty` + llama.cpp
+`repeat_penalty`/`top_k`/`min_p`; Ollama: all under `options`). Unset fields are dropped
+by `compactRecord`, so a control you do not set never overrides a model's own preset.
+Per-model recommended values live in `docs/SMALL_MODELS.md`.
+
+## Reasoning persistence (`<think>`)
+
+Reasoning leaks into `content` for many local models. We strip `<think>`/analysis
+markup from the **persisted** assistant message **only on turns that also produced a
+tool call** (`stripReasoningMarkup`) — once the model has committed to an action, its
+deliberation is noise that, if replayed, reinforces indecision loops. Pure-text turns
+keep their reasoning, and live streaming display is never altered.
+
+## Status metrics
+
+`AgentLoop` emits `onStatus({ metrics })` after each model response with
+`{ contextWindowPercentage, tokensUsed, elapsedSeconds }` (context% requires
+`runtime.modelSettings.contextWindowTokens`). The gateway forwards them in the
+`gateway.status` event payload; the CLI renders them dimmed on stderr during the run.

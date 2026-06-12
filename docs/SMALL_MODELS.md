@@ -68,10 +68,14 @@ When the last model request's real `usage.inputTokens` reaches the threshold, th
   "maxTurnsPerRun": "unlimited",
   "maxConsecutiveNudges": 3,
   "modelSettings": {
-    "contextWindowTokens": 32768,  // drives compaction + Ollama num_ctx fallback
+    "contextWindowTokens": 32768,  // drives compaction, Ollama num_ctx fallback, and context% metric
     "temperature": 0.7,
     "topP": 0.8,
-    "maxOutputTokens": 4096
+    "maxOutputTokens": 8192,       // default 8192; caps a single generation so a loop can't stream unbounded
+    "repetitionPenalty": 1.1,      // default 1.1; sent as repeat_penalty to both adapters
+    "presencePenalty": 0.0,        // optional; e.g. 2.0 for Qwen3.5 non-thinking text
+    "topK": 20,                    // optional
+    "minP": 0.0                    // optional
   },
   "promptBudgets": {
     "instructionDocChars": 12000,  // per AGENTS.md document; truncated with a read_file pointer
@@ -79,12 +83,24 @@ When the last model request's real `usage.inputTokens` reaches the threshold, th
   }
 },
 "providers": {
+  "lmStudio": {
+    "streamIdleTimeoutMs": 60000   // abort a stream only after 60s with no new tokens (not an absolute deadline)
+  },
   "ollama": {
-    "contextLength": 32768,  // sent as options.num_ctx on every request
-    "keepAlive": "10m"       // keeps the model loaded between turns
+    "contextLength": 32768,        // sent as options.num_ctx on every request
+    "keepAlive": "10m",            // keeps the model loaded between turns
+    "streamIdleTimeoutMs": 60000
   }
 }
 ```
+
+Every `modelSettings` sampling control is threaded through both adapters' request
+payloads (LM Studio top-level OpenAI-compatible fields + llama.cpp `repeat_penalty`/
+`top_k`/`min_p`; Ollama under `options`). Fields you leave unset are omitted entirely,
+so they never override a model preset/Modelfile default. `streamIdleTimeoutMs` governs
+streaming aborts by **inactivity**; `timeoutMs` still bounds non-streaming requests. A
+generation is also aborted if the same line repeats ≥6× (a decode loop) — see
+`docs/AGENT_LOOP.md`.
 
 `modelSettings` are global request defaults (applied by the agent loop when set; provider/server defaults apply otherwise). `providers.ollama.contextLength` falls back to `runtime.modelSettings.contextWindowTokens` when unset. LM Studio's context length is configured in LM Studio itself.
 
@@ -95,7 +111,7 @@ linked sources before changing them if you upgrade model families.
 
 | Model | Suggested sampling | Notes |
 | --- | --- | --- |
-| Qwen3-Coder-30B-A3B (Instruct) | `temperature 0.7`, `topP 0.8` | Official Qwen recommendation: `temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.05`. Top-k and repetition penalty are not currently threaded through this runtime, but the LM Studio / Ollama presets and Modelfile defaults for the GGUF builds typically encode them — verify in your serving stack. ([Qwen3-Coder card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct), [Unsloth guide](https://unsloth.ai/docs/models/tutorials/qwen3-coder-how-to-run-locally), [LM Studio recommended preset](https://lmstudio.ai/wobondar/qwen3-coder-30b-a3b-recommended)) |
+| Qwen3-Coder-30B-A3B (Instruct) | `temperature 0.7`, `topP 0.8`, `topK 20`, `repetitionPenalty 1.05` | Official Qwen recommendation: `temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.05`. All of these are now threaded through `runtime.modelSettings` and sent to both adapters, so you can set them directly instead of relying on the serving-stack preset. Qwen3-Coder emits tool calls as `<function=NAME><parameter=k>v</parameter></function>` XML that LM Studio often leaves in `content` — recovered by the text fallback parser (see `docs/AGENT_LOOP.md`). ([Qwen3-Coder card](https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct), [Unsloth guide](https://unsloth.ai/docs/models/tutorials/qwen3-coder-how-to-run-locally), [LM Studio recommended preset](https://lmstudio.ai/wobondar/qwen3-coder-30b-a3b-recommended), [tool-call format bug](https://github.com/lmstudio-ai/lmstudio-bug-tracker/issues/825)) |
 | Qwen3.5 35B-A3B (non-thinking, text/code) | `temperature 1.0`, `topP 1.0` (or `0.7`/`0.8` for VL) | Official Qwen guidance: non-thinking text uses `temperature=1.0, top_p=1.0, top_k=20, presence_penalty=2.0`; non-thinking VL uses `temperature=0.7, top_p=0.8, top_k=20, presence_penalty=1.5`. Thinking-mode text uses `temperature=1.0, top_p=0.95, presence_penalty=1.5`; thinking-mode VL/precise-coding uses `temperature=0.6, top_p=0.95`. Avoid greedy decoding — Qwen3.5 reports infinite-loop issues with `temperature=0`. ([Qwen3.5 thinking-mode guide](https://docs.bswen.com/blog/2026-03-24-qwen35-thinking-mode-parameters/), [Qwen3.5 infinite-loop issue](https://github.com/QwenLM/Qwen3.6/issues/145), [vendor parameter reference](https://muxup.com/2025q2/recommended-llm-parameter-quick-reference)) |
 | Gemma 3 / Gemma 4 26B | leave unset or `temperature 1.0` | Native tool calling is supported in both LM Studio and Ollama; Gemma emits the call via a `<tool_call>{…JSON…}</tool_call>` block that Ollama parses into `message.tool_calls`. Tool-selection accuracy degrades once the catalog hits 15-22 tools — Gemma 3 starts falling back to JSON-in-markdown that the parser misses ([Ollama tool-calling tracking issue](https://github.com/ollama/ollama/issues/9941), [Function calling with Gemma 3](https://medium.com/google-cloud/function-calling-with-gemma3-using-ollama-120194577fa6)). This is one of the strongest empirical reasons to keep the lean profile small. |
 

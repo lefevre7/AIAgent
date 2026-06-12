@@ -7,11 +7,17 @@ import type {
   ProviderHealth
 } from "@/core/contracts";
 import { languageModelResponseSchema } from "@/core/contracts";
-import { fetchJson, fetchStream, normalizeUnknownProviderError } from "@/core/lm/http";
+import {
+  fetchJson,
+  fetchStream,
+  normalizeUnknownProviderError
+} from "@/core/lm/http";
 import {
   buildAssistantMessageText,
   buildRejectedToolCallMetadata,
+  buildStreamAbortError,
   compactRecord,
+  createStreamGuard,
   mapStopReason,
   resolveToolCallProposals,
   serializeOpenAICompatibleMessages,
@@ -24,8 +30,11 @@ type LMStudioAdapterOptions = {
   fetchImpl?: typeof fetch;
   headers?: Record<string, string>;
   providerId?: string;
+  streamIdleTimeoutMs?: number;
   timeoutMs: number;
 };
+
+const STREAM_REPETITION_THRESHOLD = 6;
 
 type LMStudioChatResponse = {
   choices?: Array<{
@@ -58,7 +67,9 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     this.providerId = options.providerId ?? "lm_studio";
   }
 
-  async generate(request: LanguageModelRequest): Promise<LanguageModelResponse> {
+  async generate(
+    request: LanguageModelRequest
+  ): Promise<LanguageModelResponse> {
     const payload = await this.buildPayload(request, false);
     const response = await fetchJson<LMStudioChatResponse>({
       body: payload,
@@ -112,12 +123,19 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     }));
   }
 
-  async *stream(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent> {
+  async *stream(
+    request: LanguageModelRequest
+  ): AsyncIterable<LanguageModelStreamEvent> {
+    const guard = createStreamGuard({
+      idleTimeoutMs: this.options.streamIdleTimeoutMs,
+      repetitionThreshold: STREAM_REPETITION_THRESHOLD
+    });
     const response = await fetchStream({
       body: await this.buildPayload(request, true),
       fetchImpl: this.options.fetchImpl,
       headers: this.options.headers,
-      maxAttempts: 2,
+      maxAttempts: 1,
+      signal: guard.signal,
       timeoutMs: this.options.timeoutMs,
       url: this.buildUrl("chat/completions")
     });
@@ -153,105 +171,145 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     // the first fragment for a given index, and `arguments` is concatenated across
     // later fragments. Accumulate by index before normalizing, otherwise the
     // argument JSON is split into separate incomplete calls and lost.
-    const toolCallAccumulator = new Map<number, { arguments: string; id?: string; name?: string }>();
+    const toolCallAccumulator = new Map<
+      number,
+      { arguments: string; id?: string; name?: string }
+    >();
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) {
-          continue;
+    try {
+      while (true) {
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (error) {
+          if (guard.abortReason()) {
+            break;
+          }
+          throw error;
         }
-
-        const payload = trimmed.slice(5).trim();
-        if (payload === "[DONE]") {
-          continue;
+        const { done, value } = chunk;
+        if (done) {
+          break;
         }
+        guard.touch();
 
-        const parsed = JSON.parse(payload) as {
-          choices?: Array<{
-            delta?: {
-              content?: string;
-              reasoning?: string;
-              reasoning_content?: string;
-              tool_calls?: Array<{
-                function?: { arguments?: string; name?: string };
-                id?: string;
-                index?: number;
-              }>;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) {
+            continue;
+          }
+
+          const payload = trimmed.slice(5).trim();
+          if (payload === "[DONE]") {
+            continue;
+          }
+
+          const parsed = JSON.parse(payload) as {
+            choices?: Array<{
+              delta?: {
+                content?: string;
+                reasoning?: string;
+                reasoning_content?: string;
+                tool_calls?: Array<{
+                  function?: { arguments?: string; name?: string };
+                  id?: string;
+                  index?: number;
+                }>;
+              };
+              finish_reason?: string | null;
+            }>;
+            id?: string;
+            model?: string;
+            usage?: {
+              completion_tokens?: number;
+              prompt_tokens?: number;
+              total_tokens?: number;
             };
-            finish_reason?: string | null;
-          }>;
-          id?: string;
-          model?: string;
-          usage?: {
-            completion_tokens?: number;
-            prompt_tokens?: number;
-            total_tokens?: number;
           };
-        };
 
-        responseId = parsed.id ?? responseId;
-        modelId = parsed.model ?? modelId;
-        if (parsed.usage) {
-          usage = {
-            inputTokens: parsed.usage.prompt_tokens ?? usage.inputTokens,
-            outputTokens: parsed.usage.completion_tokens ?? usage.outputTokens,
-            totalTokens:
-              parsed.usage.total_tokens ?? (parsed.usage.prompt_tokens ?? 0) + (parsed.usage.completion_tokens ?? 0)
-          };
-        }
+          responseId = parsed.id ?? responseId;
+          modelId = parsed.model ?? modelId;
+          if (parsed.usage) {
+            usage = {
+              inputTokens: parsed.usage.prompt_tokens ?? usage.inputTokens,
+              outputTokens:
+                parsed.usage.completion_tokens ?? usage.outputTokens,
+              totalTokens:
+                parsed.usage.total_tokens ??
+                (parsed.usage.prompt_tokens ?? 0) +
+                  (parsed.usage.completion_tokens ?? 0)
+            };
+          }
 
-        const choice = parsed.choices?.[0];
-        if (!choice) {
-          continue;
-        }
+          const choice = parsed.choices?.[0];
+          if (!choice) {
+            continue;
+          }
 
-        const reasoningDelta = choice.delta?.reasoning_content ?? choice.delta?.reasoning;
-        if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
-          yield {
-            delta: reasoningDelta,
-            kind: "response.reasoning"
-          };
-        }
+          const reasoningDelta =
+            choice.delta?.reasoning_content ?? choice.delta?.reasoning;
+          if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
+            guard.observe(reasoningDelta);
+            yield {
+              delta: reasoningDelta,
+              kind: "response.reasoning"
+            };
+          }
 
-        if (choice.delta?.content) {
-          content += choice.delta.content;
-          yield {
-            delta: choice.delta.content,
-            kind: "response.delta"
-          };
-        }
+          if (choice.delta?.content) {
+            content += choice.delta.content;
+            guard.observe(choice.delta.content);
+            yield {
+              delta: choice.delta.content,
+              kind: "response.delta"
+            };
+          }
 
-        if (choice.delta?.tool_calls) {
-          for (const fragment of choice.delta.tool_calls) {
-            const index = typeof fragment.index === "number" ? fragment.index : toolCallAccumulator.size;
-            const existing = toolCallAccumulator.get(index) ?? { arguments: "" };
-            if (typeof fragment.id === "string" && fragment.id.length > 0) {
-              existing.id = fragment.id;
+          if (choice.delta?.tool_calls) {
+            for (const fragment of choice.delta.tool_calls) {
+              const index =
+                typeof fragment.index === "number"
+                  ? fragment.index
+                  : toolCallAccumulator.size;
+              const existing = toolCallAccumulator.get(index) ?? {
+                arguments: ""
+              };
+              if (typeof fragment.id === "string" && fragment.id.length > 0) {
+                existing.id = fragment.id;
+              }
+              if (
+                typeof fragment.function?.name === "string" &&
+                fragment.function.name.length > 0
+              ) {
+                existing.name = fragment.function.name;
+              }
+              if (typeof fragment.function?.arguments === "string") {
+                existing.arguments += fragment.function.arguments;
+              }
+              toolCallAccumulator.set(index, existing);
             }
-            if (typeof fragment.function?.name === "string" && fragment.function.name.length > 0) {
-              existing.name = fragment.function.name;
-            }
-            if (typeof fragment.function?.arguments === "string") {
-              existing.arguments += fragment.function.arguments;
-            }
-            toolCallAccumulator.set(index, existing);
+          }
+
+          if (choice.finish_reason) {
+            stopReason = choice.finish_reason;
           }
         }
-
-        if (choice.finish_reason) {
-          stopReason = choice.finish_reason;
-        }
       }
+    } finally {
+      guard.dispose();
+    }
+
+    const abortReason = guard.abortReason();
+    if (abortReason) {
+      yield {
+        error: buildStreamAbortError(this.providerId, abortReason),
+        kind: "response.error"
+      };
+      return;
     }
 
     const assembledToolCalls = Array.from(toolCallAccumulator.entries())
@@ -280,7 +338,9 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
         id: responseId,
         metadata: {
           ...buildRejectedToolCallMetadata(resolved.rejected),
-          ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
+          ...(resolved.recoveredFromText
+            ? { toolCallsRecoveredFromText: true }
+            : {})
         },
         modelId,
         request,
@@ -291,7 +351,10 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     };
   }
 
-  private buildResponse(request: LanguageModelRequest, response: LMStudioChatResponse): LanguageModelResponse {
+  private buildResponse(
+    request: LanguageModelRequest,
+    response: LMStudioChatResponse
+  ): LanguageModelResponse {
     const choice = response.choices?.[0];
     const resolved = resolveToolCallProposals({
       content: buildAssistantMessageText(choice?.message?.content),
@@ -305,18 +368,24 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
       id: response.id ?? `lm-response.${request.id}`,
       metadata: {
         ...buildRejectedToolCallMetadata(resolved.rejected),
-        ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
+        ...(resolved.recoveredFromText
+          ? { toolCallsRecoveredFromText: true }
+          : {})
       },
       modelId: response.model ?? request.modelId,
       request,
-      stopReason: resolved.proposals.length > 0 ? "tool_calls" : choice?.finish_reason ?? "end_turn",
+      stopReason:
+        resolved.proposals.length > 0
+          ? "tool_calls"
+          : (choice?.finish_reason ?? "end_turn"),
       toolCalls: resolved.proposals,
       usage: {
         inputTokens: response.usage?.prompt_tokens ?? 0,
         outputTokens: response.usage?.completion_tokens ?? 0,
         totalTokens:
           response.usage?.total_tokens ??
-          (response.usage?.prompt_tokens ?? 0) + (response.usage?.completion_tokens ?? 0)
+          (response.usage?.prompt_tokens ?? 0) +
+            (response.usage?.completion_tokens ?? 0)
       }
     });
   }
@@ -357,18 +426,38 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     });
   }
 
-  private async buildPayload(request: LanguageModelRequest, stream: boolean): Promise<Record<string, unknown>> {
-    const tools = request.settings.toolChoice === "none" ? [] : serializeToolDefinitions(request.availableTools);
+  private async buildPayload(
+    request: LanguageModelRequest,
+    stream: boolean
+  ): Promise<Record<string, unknown>> {
+    const tools =
+      request.settings.toolChoice === "none"
+        ? []
+        : serializeToolDefinitions(request.availableTools);
     return compactRecord({
+      frequency_penalty: request.settings.frequencyPenalty,
       max_tokens: request.settings.maxOutputTokens,
       messages: await serializeOpenAICompatibleMessages(request),
+      min_p: request.settings.minP,
       model: request.modelId,
-      response_format: serializeOpenAICompatibleResponseFormat(request.responseFormat),
-      stop: request.settings.stopSequences.length > 0 ? request.settings.stopSequences : undefined,
+      presence_penalty: request.settings.presencePenalty,
+      // llama.cpp/LM Studio extra honored alongside the OpenAI-compatible fields.
+      repeat_penalty: request.settings.repetitionPenalty,
+      response_format: serializeOpenAICompatibleResponseFormat(
+        request.responseFormat
+      ),
+      stop:
+        request.settings.stopSequences.length > 0
+          ? request.settings.stopSequences
+          : undefined,
       stream,
       temperature: request.settings.temperature,
-      tool_choice: request.availableTools.length === 0 ? undefined : request.settings.toolChoice,
+      tool_choice:
+        request.availableTools.length === 0
+          ? undefined
+          : request.settings.toolChoice,
       tools: tools.length === 0 ? undefined : tools,
+      top_k: request.settings.topK,
       top_p: request.settings.topP
     });
   }

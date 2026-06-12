@@ -13,7 +13,9 @@ describe("config defaults and env overrides", () => {
       userStateDirectory: "/tmp/test-home/.aia"
     });
 
-    expect(appConfigSchema.parse(config).memory.userGlobalRoot).toBe("/tmp/test-home/.aia/memory");
+    expect(appConfigSchema.parse(config).memory.userGlobalRoot).toBe(
+      "/tmp/test-home/.aia/memory"
+    );
     expect(config.providers.lmStudio.model).toBe("google/gemma-4-26b-a4b-qat");
     expect(config.browser.artifactRoot).toBe("./.aia/browser");
     expect(config.browser.headless).toBe(true);
@@ -23,7 +25,9 @@ describe("config defaults and env overrides", () => {
     const claudeAgent = config.externalAgents.agents.claude;
     expect(claudeAgent.command).toBe("claude");
     expect(claudeAgent.enabled).toBe(true);
-    expect(claudeAgent.kind === "claude" ? claudeAgent.printFlag : null).toBe("--print");
+    expect(claudeAgent.kind === "claude" ? claudeAgent.printFlag : null).toBe(
+      "--print"
+    );
     expect(config.externalAgents.stateRoot).toBe("./.aia/external-agents");
     expect(config.image.artifactRoot).toBe("./.aia/images");
     expect(config.image.defaultProviderId).toBe("comfyui_local");
@@ -33,8 +37,16 @@ describe("config defaults and env overrides", () => {
     expect(config.providers.imageProviders.comfyui_local?.enabled).toBe(false);
     expect(config.runtime.maxTurnsPerRun).toBe("unlimited");
     expect(config.runtime.maxConsecutiveNudges).toBe(3);
-    expect(config.runtime.modelSettings).toEqual({});
-    expect(config.runtime.promptBudgets).toEqual({ instructionDocChars: 12_000, memorySummaryChars: 4_000 });
+    expect(config.runtime.modelSettings).toEqual({
+      maxOutputTokens: 8192,
+      repetitionPenalty: 1.1
+    });
+    expect(config.providers.lmStudio.streamIdleTimeoutMs).toBe(60_000);
+    expect(config.providers.ollama.streamIdleTimeoutMs).toBe(60_000);
+    expect(config.runtime.promptBudgets).toEqual({
+      instructionDocChars: 12_000,
+      memorySummaryChars: 4_000
+    });
     expect(config.tools.profile).toBe("lean");
     expect(config.tools.include).toEqual([]);
     expect(config.tools.exclude).toEqual([]);
@@ -59,7 +71,9 @@ describe("config defaults and env overrides", () => {
     expect(overrides.config.browser?.headless).toBe(false);
     expect(overrides.config.externalAgents?.enabled).toBe(true);
     expect(overrides.config.externalAgents?.pollIntervalMs).toBe(750);
-    expect(overrides.config.externalAgents?.stateRoot).toBe("./.aia/external-agent-tests");
+    expect(overrides.config.externalAgents?.stateRoot).toBe(
+      "./.aia/external-agent-tests"
+    );
     expect(overrides.config.memory?.mmrLambda).toBe(0.65);
     expect(overrides.config.runtime?.statusUpdates).toBe(true);
 
@@ -83,6 +97,8 @@ describe("config defaults and env overrides", () => {
       timeoutMs: 120_000
     };
 
-    expect(() => appConfigSchema.parse(config)).toThrow("image.defaultProviderId");
+    expect(() => appConfigSchema.parse(config)).toThrow(
+      "image.defaultProviderId"
+    );
   });
 });

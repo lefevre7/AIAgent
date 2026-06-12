@@ -13,7 +13,13 @@ import {
   channelRuntimeStatusSchema,
   channelSendRequestSchema
 } from "@/core/contracts/channels";
-import { entityIdSchema, isoTimestampSchema, jsonValueSchema, metadataSchema, structuredErrorSchema } from "@/core/contracts/common";
+import {
+  entityIdSchema,
+  isoTimestampSchema,
+  jsonValueSchema,
+  metadataSchema,
+  structuredErrorSchema
+} from "@/core/contracts/common";
 import {
   externalAgentDefinitionSchema,
   externalAgentJobCancelRequestSchema,
@@ -25,7 +31,10 @@ import {
 import { memoryHitSchema, memoryQuerySchema } from "@/core/contracts/memory";
 import { messagePartSchema, messageSchema } from "@/core/contracts/messages";
 import { taskStateSnapshotSchema } from "@/core/contracts/plans";
-import { providerHealthSchema, providerIdSchema } from "@/core/contracts/providers";
+import {
+  providerHealthSchema,
+  providerIdSchema
+} from "@/core/contracts/providers";
 import {
   sessionRecordSchema,
   sessionSnapshotSchema,
@@ -47,7 +56,13 @@ export const gatewayRunKindSchema = z.enum([
   "tool_execute"
 ]);
 
-export const gatewayRunStatusSchema = z.enum(["cancelled", "completed", "failed", "queued", "running"]);
+export const gatewayRunStatusSchema = z.enum([
+  "cancelled",
+  "completed",
+  "failed",
+  "queued",
+  "running"
+]);
 
 export const gatewayRunCompletionReasonSchema = z.enum([
   "session_awaiting_approval",
@@ -104,8 +119,8 @@ const gatewayMessageInputBaseSchema = z
   })
   .strict();
 
-export const gatewayMessageInputSchema = gatewayMessageInputBaseSchema
-  .superRefine((value, context) => {
+export const gatewayMessageInputSchema =
+  gatewayMessageInputBaseSchema.superRefine((value, context) => {
     if (value.text || value.parts?.length) {
       return;
     }
@@ -186,19 +201,39 @@ export const gatewayEventSchema = z.discriminatedUnion("topic", [
     .strict(),
   gatewayEventBaseSchema
     .extend({
-      payload: z.object({ ok: z.boolean(), status: z.string().min(1) }).strict(),
+      payload: z
+        .object({
+          metrics: z
+            .object({
+              contextWindowPercentage: z.number().min(0).optional(),
+              elapsedSeconds: z.number().min(0),
+              tokensUsed: z.number().int().min(0).optional()
+            })
+            .strict()
+            .optional(),
+          ok: z.boolean(),
+          status: z.string().min(1)
+        })
+        .strict(),
       topic: z.literal("gateway.status")
     })
     .strict(),
   gatewayEventBaseSchema
     .extend({
-      payload: z.object({ level: z.enum(["debug", "error", "info", "warn"]), message: z.string().min(1) }).strict(),
+      payload: z
+        .object({
+          level: z.enum(["debug", "error", "info", "warn"]),
+          message: z.string().min(1)
+        })
+        .strict(),
       topic: z.literal("log.emitted")
     })
     .strict(),
   gatewayEventBaseSchema
     .extend({
-      payload: z.object({ entryId: entityIdSchema, scope: z.string().min(1) }).strict(),
+      payload: z
+        .object({ entryId: entityIdSchema, scope: z.string().min(1) })
+        .strict(),
       topic: z.literal("memory.updated")
     })
     .strict(),
@@ -230,13 +265,25 @@ export const gatewayEventSchema = z.discriminatedUnion("topic", [
     .strict(),
   gatewayEventBaseSchema
     .extend({
-      payload: z.object({ delta: z.string(), sessionId: entityIdSchema, turnId: entityIdSchema }).strict(),
+      payload: z
+        .object({
+          delta: z.string(),
+          sessionId: entityIdSchema,
+          turnId: entityIdSchema
+        })
+        .strict(),
       topic: z.literal("message.delta")
     })
     .strict(),
   gatewayEventBaseSchema
     .extend({
-      payload: z.object({ delta: z.string(), sessionId: entityIdSchema, turnId: entityIdSchema }).strict(),
+      payload: z
+        .object({
+          delta: z.string(),
+          sessionId: entityIdSchema,
+          turnId: entityIdSchema
+        })
+        .strict(),
       topic: z.literal("message.reasoning")
     })
     .strict(),
@@ -425,15 +472,21 @@ export const gatewayRequestPayloadSchemas = {
 
 export const gatewayResponsePayloadSchemas = {
   "approval.get": gatewayApprovalRecordSchema,
-  "approval.list": z.object({ approvals: z.array(gatewayApprovalRecordSchema) }).strict(),
+  "approval.list": z
+    .object({ approvals: z.array(gatewayApprovalRecordSchema) })
+    .strict(),
   "approval.resolve": z
     .object({
       approval: gatewayApprovalRecordSchema,
       steeringInjection: steeringInjectionSchema.optional()
     })
     .strict(),
-  "channel.health": z.object({ channels: z.array(channelRuntimeStatusSchema) }).strict(),
-  "channel.list": z.object({ channels: z.array(channelRuntimeStatusSchema) }).strict(),
+  "channel.health": z
+    .object({ channels: z.array(channelRuntimeStatusSchema) })
+    .strict(),
+  "channel.list": z
+    .object({ channels: z.array(channelRuntimeStatusSchema) })
+    .strict(),
   "channel.send": channelMessageSchema,
   "external_agent.cancel": externalAgentJobRecordSchema,
   "external_agent.get": externalAgentJobRecordSchema,
@@ -445,7 +498,9 @@ export const gatewayResponsePayloadSchemas = {
     .strict(),
   "external_agent.resume": externalAgentJobRecordSchema,
   "external_agent.run": externalAgentJobRecordSchema,
-  "gateway.health": z.object({ ok: z.boolean(), status: z.string().min(1) }).strict(),
+  "gateway.health": z
+    .object({ ok: z.boolean(), status: z.string().min(1) })
+    .strict(),
   "gateway.subscribe": z
     .object({
       subscription: gatewaySubscriptionSchema
@@ -487,20 +542,28 @@ export const gatewayResponsePayloadSchemas = {
 
 export interface GatewayTransportClient {
   request(request: GatewayRequest): Promise<GatewayResponse>;
-  subscribe(listener: (event: GatewayEvent) => void): Promise<() => Promise<void> | void>;
+  subscribe(
+    listener: (event: GatewayEvent) => void
+  ): Promise<() => Promise<void> | void>;
 }
 
 export type GatewayApprovalRecord = z.infer<typeof gatewayApprovalRecordSchema>;
 export type GatewayEvent = z.infer<typeof gatewayEventSchema>;
 export type GatewayEventPage = z.infer<typeof gatewayEventPageSchema>;
-export type GatewayEventReplayQuery = z.infer<typeof gatewayEventReplayQuerySchema>;
+export type GatewayEventReplayQuery = z.infer<
+  typeof gatewayEventReplayQuerySchema
+>;
 export type GatewayEventTopic = z.infer<typeof gatewayEventTopicSchema>;
 export type GatewayRequest = z.infer<typeof gatewayRequestSchema>;
 export type GatewayRequestTopic = z.infer<typeof gatewayRequestTopicSchema>;
 export type GatewayResponse = z.infer<typeof gatewayResponseSchema>;
-export type GatewayRunCompletionReason = z.infer<typeof gatewayRunCompletionReasonSchema>;
+export type GatewayRunCompletionReason = z.infer<
+  typeof gatewayRunCompletionReasonSchema
+>;
 export type GatewayRunKind = z.infer<typeof gatewayRunKindSchema>;
 export type GatewayRunRecord = z.infer<typeof gatewayRunRecordSchema>;
 export type GatewayRunStatus = z.infer<typeof gatewayRunStatusSchema>;
-export type GatewaySessionSnapshot = z.infer<typeof gatewaySessionSnapshotSchema>;
+export type GatewaySessionSnapshot = z.infer<
+  typeof gatewaySessionSnapshotSchema
+>;
 export type GatewaySubscription = z.infer<typeof gatewaySubscriptionSchema>;

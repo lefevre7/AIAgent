@@ -17,8 +17,16 @@ import {
   type VoiceCaptureRecord,
   type VoiceService
 } from "@/core";
-import { createAIAgentSdkFromConfig, type AIAgentSdk, type AIAgentSessionHandle } from "@/sdk";
-import type { GatewayEvent, GatewaySessionSnapshot, Message } from "@/core/contracts";
+import {
+  createAIAgentSdkFromConfig,
+  type AIAgentSdk,
+  type AIAgentSessionHandle
+} from "@/sdk";
+import type {
+  GatewayEvent,
+  GatewaySessionSnapshot,
+  Message
+} from "@/core/contracts";
 
 type CliStream = Pick<NodeJS.WriteStream, "write">;
 
@@ -176,7 +184,10 @@ async function runChatCli(
   try {
     sdk = await resolveSdk(deps, input.cwd);
   } catch (error) {
-    writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
+    writeLine(
+      streams.stderr,
+      `Failed to start AIAgent: ${renderCliError(error)}`
+    );
     return 1;
   }
 
@@ -229,7 +240,10 @@ async function runChatCli(
           continue;
         }
         if (command === "unknown") {
-          writeLine(streams.stderr, `Unknown command "${line}". Type /help for options, or /exit to leave.`);
+          writeLine(
+            streams.stderr,
+            `Unknown command "${line}". Type /help for options, or /exit to leave.`
+          );
           continue;
         }
 
@@ -239,14 +253,39 @@ async function runChatCli(
       await iterator.return?.();
     }
   } catch (error) {
-    writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
+    writeLine(
+      streams.stderr,
+      `Failed to start AIAgent: ${renderCliError(error)}`
+    );
     return 1;
   } finally {
     await sdk.close().catch(() => undefined);
   }
 }
 
-async function probeModelHealth(sdk: AIAgentSdk): Promise<{ details: Record<string, unknown>; providerId: string; status: string }> {
+function formatStatusMetrics(metrics: {
+  contextWindowPercentage?: number;
+  elapsedSeconds: number;
+  tokensUsed?: number;
+}): string {
+  const parts: string[] = [];
+  if (typeof metrics.contextWindowPercentage === "number") {
+    parts.push(`context ${metrics.contextWindowPercentage}%`);
+  }
+  if (typeof metrics.tokensUsed === "number") {
+    parts.push(`${metrics.tokensUsed} tokens`);
+  }
+  parts.push(`${metrics.elapsedSeconds}s`);
+  return `· ${parts.join(" · ")}`;
+}
+
+async function probeModelHealth(
+  sdk: AIAgentSdk
+): Promise<{
+  details: Record<string, unknown>;
+  providerId: string;
+  status: string;
+}> {
   const health = await sdk.request("model.health", {});
   return {
     details: health.details,
@@ -255,8 +294,13 @@ async function probeModelHealth(sdk: AIAgentSdk): Promise<{ details: Record<stri
   };
 }
 
-function formatModelUnavailable(model: { details: Record<string, unknown>; providerId: string; status: string }): string {
-  const detail = typeof model.details.error === "string" ? ` (${model.details.error})` : "";
+function formatModelUnavailable(model: {
+  details: Record<string, unknown>;
+  providerId: string;
+  status: string;
+}): string {
+  const detail =
+    typeof model.details.error === "string" ? ` (${model.details.error})` : "";
   return [
     `Cannot start an interactive session: the chat model provider "${model.providerId}" is ${model.status}${detail}.`,
     'Start the provider (for example launch LM Studio or Ollama), then run `aia` again. For a one-shot run use `aia --prompt "…"`.'
@@ -297,14 +341,31 @@ async function runChatTurn(
       closeReasoning();
       const tool = event.payload;
       if (tool.status === "failed" && tool.error) {
-        writeLine(streams.stderr, `· ${tool.toolName}: failed — ${tool.error.message}`);
+        writeLine(
+          streams.stderr,
+          `· ${tool.toolName}: failed — ${tool.error.message}`
+        );
       } else {
         writeLine(streams.stderr, `· ${tool.toolName}: ${tool.status}`);
+      }
+    } else if (event.topic === "gateway.status") {
+      const metrics = event.payload.metrics;
+      if (metrics) {
+        closeReasoning();
+        writeLine(
+          streams.stderr,
+          `${DIM}${formatStatusMetrics(metrics)}${RESET}`
+        );
       }
     }
   };
   const unsubscribe = handle.subscribe(onEvent, {
-    topics: ["message.delta", "message.reasoning", "tool.updated"]
+    topics: [
+      "message.delta",
+      "message.reasoning",
+      "tool.updated",
+      "gateway.status"
+    ]
   });
 
   try {
@@ -320,7 +381,8 @@ async function runChatTurn(
 
     await resolvePendingApprovals(handle, streams, nextLine);
 
-    const errorMessage = (await handle.snapshot()).snapshot.session.lastError?.message;
+    const errorMessage = (await handle.snapshot()).snapshot.session.lastError
+      ?.message;
     if (errorMessage) {
       writeLine(streams.stderr, `Error: ${errorMessage}`);
     }
@@ -346,11 +408,17 @@ async function resolvePendingApprovals(
       const target = `${approval.request.target.label} → ${approval.request.target.value}`;
       streams.stdout.write(`Approve ${target}? [y/N] `);
       const answer = (await nextLine())?.trim().toLowerCase() ?? "";
-      const decision = answer === "y" || answer === "yes" ? "approved" : "denied";
-      await handle.resolveApproval({ decision, requestId: approval.request.id });
+      const decision =
+        answer === "y" || answer === "yes" ? "approved" : "denied";
+      await handle.resolveApproval({
+        decision,
+        requestId: approval.request.id
+      });
       writeLine(
         streams.stdout,
-        decision === "approved" ? `Approved ${approval.request.target.value}.` : `Denied ${approval.request.target.value}.`
+        decision === "approved"
+          ? `Approved ${approval.request.target.value}.`
+          : `Denied ${approval.request.target.value}.`
       );
     }
 
@@ -424,7 +492,11 @@ async function mainCli(): Promise<void> {
   }
 }
 
-async function runVoiceCli(args: string[], streams: CliStreams, deps: CliDependencies = {}): Promise<number> {
+async function runVoiceCli(
+  args: string[],
+  streams: CliStreams,
+  deps: CliDependencies = {}
+): Promise<number> {
   const subcommand = args[0];
   if (!subcommand || subcommand === "--help" || subcommand === "-h") {
     writeLine(streams.stdout, formatVoiceHelp());
@@ -583,11 +655,17 @@ async function runVoiceCli(args: string[], streams: CliStreams, deps: CliDepende
             id: `voice.capture.${crypto.randomUUID()}`,
             inputDevice: values["input-device"],
             locale: values.locale,
-            maxDurationMs: parseOptionalInteger(values["max-duration-ms"], "--max-duration-ms"),
+            maxDurationMs: parseOptionalInteger(
+              values["max-duration-ms"],
+              "--max-duration-ms"
+            ),
             metadata: {},
             providerId: values.provider,
             sessionId: values.session,
-            silenceTimeoutMs: parseOptionalInteger(values["silence-timeout-ms"], "--silence-timeout-ms")
+            silenceTimeoutMs: parseOptionalInteger(
+              values["silence-timeout-ms"],
+              "--silence-timeout-ms"
+            )
           });
 
           writeLine(
@@ -601,7 +679,9 @@ async function runVoiceCli(args: string[], streams: CliStreams, deps: CliDepende
               return;
             }
             stopping = true;
-            await context.voiceService.stopCapture(capture.id).catch(() => undefined);
+            await context.voiceService
+              .stopCapture(capture.id)
+              .catch(() => undefined);
           };
 
           const onSignal = () => {
@@ -612,8 +692,14 @@ async function runVoiceCli(args: string[], streams: CliStreams, deps: CliDepende
           process.on("SIGTERM", onSignal);
 
           try {
-            const result = await context.voiceService.waitForCapture(capture.id);
-            if (result.status !== "completed" || !result.text || !result.audio) {
+            const result = await context.voiceService.waitForCapture(
+              capture.id
+            );
+            if (
+              result.status !== "completed" ||
+              !result.text ||
+              !result.audio
+            ) {
               writeLine(streams.stderr, formatVoiceCaptureFailure(result));
               return 1;
             }
@@ -740,14 +826,22 @@ async function appendVoiceUserMessage(params: {
         {
           artifact: params.audio,
           durationMs:
-            typeof params.audio.metadata.durationMs === "number" ? Math.trunc(params.audio.metadata.durationMs) : undefined,
+            typeof params.audio.metadata.durationMs === "number"
+              ? Math.trunc(params.audio.metadata.durationMs)
+              : undefined,
           kind: "audio",
           transcript: params.text,
           uri: params.audio.uri,
-          voice: typeof params.audio.metadata.voice === "string" ? params.audio.metadata.voice : undefined,
+          voice:
+            typeof params.audio.metadata.voice === "string"
+              ? params.audio.metadata.voice
+              : undefined,
           waveform: Array.isArray(params.audio.metadata.waveform)
             ? params.audio.metadata.waveform
-                .filter((value): value is number => typeof value === "number" && value >= 0 && value <= 1)
+                .filter(
+                  (value): value is number =>
+                    typeof value === "number" && value >= 0 && value <= 1
+                )
                 .slice(0, 512)
             : undefined
         }
@@ -767,11 +861,18 @@ async function appendVoiceUserMessage(params: {
   });
 }
 
-async function resolveSdk(deps: CliDependencies, cwd: string): Promise<AIAgentSdk> {
-  return deps.createSdk ? deps.createSdk({ cwd }) : createAIAgentSdkFromConfig({ cwd });
+async function resolveSdk(
+  deps: CliDependencies,
+  cwd: string
+): Promise<AIAgentSdk> {
+  return deps.createSdk
+    ? deps.createSdk({ cwd })
+    : createAIAgentSdkFromConfig({ cwd });
 }
 
-function parseChatCommand(line: string): "exit" | "help" | "message" | "unknown" {
+function parseChatCommand(
+  line: string
+): "exit" | "help" | "message" | "unknown" {
   if (!line.startsWith("/")) {
     return "message";
   }
@@ -861,7 +962,8 @@ function renderCliError(error: unknown): string {
 }
 
 function formatVoiceCaptureFailure(record: VoiceCaptureRecord): string {
-  const message = record.error?.message ?? "Voice capture did not complete successfully.";
+  const message =
+    record.error?.message ?? "Voice capture did not complete successfully.";
   return `${record.status}: ${message}`;
 }
 
@@ -892,17 +994,24 @@ function isStructuredError(error: unknown): error is StructuredError {
   );
 }
 
-function parseDeviceKind(value: string | undefined): "input" | "output" | undefined {
+function parseDeviceKind(
+  value: string | undefined
+): "input" | "output" | undefined {
   if (!value) {
     return undefined;
   }
   if (value === "input" || value === "output") {
     return value;
   }
-  throw new Error(`Invalid device kind "${value}". Expected "input" or "output".`);
+  throw new Error(
+    `Invalid device kind "${value}". Expected "input" or "output".`
+  );
 }
 
-function parseOptionalInteger(value: string | undefined, label: string): number | undefined {
+function parseOptionalInteger(
+  value: string | undefined,
+  label: string
+): number | undefined {
   if (!value) {
     return undefined;
   }
@@ -914,7 +1023,10 @@ function parseOptionalInteger(value: string | undefined, label: string): number 
   return parsed;
 }
 
-async function requireSession(store: FileSessionStore, sessionId: string): Promise<SessionRecord> {
+async function requireSession(
+  store: FileSessionStore,
+  sessionId: string
+): Promise<SessionRecord> {
   const session = await store.getSession(sessionId);
   if (!session) {
     throw new Error(`Session "${sessionId}" was not found.`);
@@ -935,7 +1047,9 @@ async function withVoiceContext(
   }
 }
 
-async function buildVoiceContext(deps: CliDependencies): Promise<VoiceCliContext> {
+async function buildVoiceContext(
+  deps: CliDependencies
+): Promise<VoiceCliContext> {
   if (deps.createVoiceContext) {
     return deps.createVoiceContext();
   }
@@ -957,7 +1071,9 @@ function writeLine(stream: CliStream, value: string): void {
   stream.write(`${value}\n`);
 }
 
-function extractLatestAssistantSummary(snapshot: GatewaySessionSnapshot): string | null {
+function extractLatestAssistantSummary(
+  snapshot: GatewaySessionSnapshot
+): string | null {
   const assistantMessage = snapshot.snapshot.messages
     .slice()
     .reverse()

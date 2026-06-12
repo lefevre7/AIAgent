@@ -7,10 +7,16 @@ import type {
   ProviderHealth
 } from "@/core/contracts";
 import { languageModelResponseSchema } from "@/core/contracts";
-import { fetchJson, fetchStream, normalizeUnknownProviderError } from "@/core/lm/http";
+import {
+  fetchJson,
+  fetchStream,
+  normalizeUnknownProviderError
+} from "@/core/lm/http";
 import {
   buildRejectedToolCallMetadata,
+  buildStreamAbortError,
   compactRecord,
+  createStreamGuard,
   mapStopReason,
   resolveToolCallProposals,
   serializeOllamaMessages,
@@ -25,8 +31,11 @@ type OllamaAdapterOptions = {
   headers?: Record<string, string>;
   keepAlive?: string;
   providerId?: string;
+  streamIdleTimeoutMs?: number;
   timeoutMs: number;
 };
+
+const STREAM_REPETITION_THRESHOLD = 6;
 
 type OllamaChatResponse = {
   created_at?: string;
@@ -57,7 +66,9 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     this.providerId = options.providerId ?? "ollama";
   }
 
-  async generate(request: LanguageModelRequest): Promise<LanguageModelResponse> {
+  async generate(
+    request: LanguageModelRequest
+  ): Promise<LanguageModelResponse> {
     const response = await fetchJson<OllamaChatResponse>({
       body: await this.buildPayload(request, false),
       fetchImpl: this.options.fetchImpl,
@@ -110,12 +121,19 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     }));
   }
 
-  async *stream(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent> {
+  async *stream(
+    request: LanguageModelRequest
+  ): AsyncIterable<LanguageModelStreamEvent> {
+    const guard = createStreamGuard({
+      idleTimeoutMs: this.options.streamIdleTimeoutMs,
+      repetitionThreshold: STREAM_REPETITION_THRESHOLD
+    });
     const response = await fetchStream({
       body: await this.buildPayload(request, true),
       fetchImpl: this.options.fetchImpl,
       headers: this.options.headers,
-      maxAttempts: 2,
+      maxAttempts: 1,
+      signal: guard.signal,
       timeoutMs: this.options.timeoutMs,
       url: this.buildUrl("api/chat")
     });
@@ -148,49 +166,79 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     };
     const toolCalls: unknown[] = [];
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          continue;
+    try {
+      while (true) {
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (error) {
+          if (guard.abortReason()) {
+            break;
+          }
+          throw error;
         }
+        const { done, value } = chunk;
+        if (done) {
+          break;
+        }
+        guard.touch();
 
-        const parsed = JSON.parse(trimmed) as OllamaChatResponse;
-        modelId = parsed.model ?? modelId;
-        if (typeof parsed.message?.thinking === "string" && parsed.message.thinking.length > 0) {
-          yield {
-            delta: parsed.message.thinking,
-            kind: "response.reasoning"
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            continue;
+          }
+
+          const parsed = JSON.parse(trimmed) as OllamaChatResponse;
+          modelId = parsed.model ?? modelId;
+          if (
+            typeof parsed.message?.thinking === "string" &&
+            parsed.message.thinking.length > 0
+          ) {
+            guard.observe(parsed.message.thinking);
+            yield {
+              delta: parsed.message.thinking,
+              kind: "response.reasoning"
+            };
+          }
+          if (parsed.message?.content) {
+            content += parsed.message.content;
+            guard.observe(parsed.message.content);
+            yield {
+              delta: parsed.message.content,
+              kind: "response.delta"
+            };
+          }
+          if (parsed.message?.tool_calls) {
+            toolCalls.push(...parsed.message.tool_calls);
+          }
+          if (parsed.done_reason) {
+            stopReason = parsed.done_reason;
+          }
+          usage = {
+            inputTokens: parsed.prompt_eval_count ?? usage.inputTokens,
+            outputTokens: parsed.eval_count ?? usage.outputTokens,
+            totalTokens:
+              (parsed.prompt_eval_count ?? usage.inputTokens) +
+              (parsed.eval_count ?? usage.outputTokens)
           };
         }
-        if (parsed.message?.content) {
-          content += parsed.message.content;
-          yield {
-            delta: parsed.message.content,
-            kind: "response.delta"
-          };
-        }
-        if (parsed.message?.tool_calls) {
-          toolCalls.push(...parsed.message.tool_calls);
-        }
-        if (parsed.done_reason) {
-          stopReason = parsed.done_reason;
-        }
-        usage = {
-          inputTokens: parsed.prompt_eval_count ?? usage.inputTokens,
-          outputTokens: parsed.eval_count ?? usage.outputTokens,
-          totalTokens: (parsed.prompt_eval_count ?? usage.inputTokens) + (parsed.eval_count ?? usage.outputTokens)
-        };
       }
+    } finally {
+      guard.dispose();
+    }
+
+    const abortReason = guard.abortReason();
+    if (abortReason) {
+      yield {
+        error: buildStreamAbortError(this.providerId, abortReason),
+        kind: "response.error"
+      };
+      return;
     }
 
     const resolved = resolveToolCallProposals({
@@ -212,7 +260,9 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
         content: resolved.content,
         metadata: {
           ...buildRejectedToolCallMetadata(resolved.rejected),
-          ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
+          ...(resolved.recoveredFromText
+            ? { toolCallsRecoveredFromText: true }
+            : {})
         },
         modelId,
         request,
@@ -223,7 +273,10 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     };
   }
 
-  private buildResponse(request: LanguageModelRequest, response: OllamaChatResponse): LanguageModelResponse {
+  private buildResponse(
+    request: LanguageModelRequest,
+    response: OllamaChatResponse
+  ): LanguageModelResponse {
     const resolved = resolveToolCallProposals({
       content: response.message?.content ?? "",
       definitions: request.availableTools,
@@ -234,16 +287,22 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
       content: resolved.content,
       metadata: {
         ...buildRejectedToolCallMetadata(resolved.rejected),
-        ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
+        ...(resolved.recoveredFromText
+          ? { toolCallsRecoveredFromText: true }
+          : {})
       },
       modelId: response.model ?? request.modelId,
       request,
-      stopReason: resolved.proposals.length > 0 ? "tool_calls" : response.done_reason ?? "end_turn",
+      stopReason:
+        resolved.proposals.length > 0
+          ? "tool_calls"
+          : (response.done_reason ?? "end_turn"),
       toolCalls: resolved.proposals,
       usage: {
         inputTokens: response.prompt_eval_count ?? 0,
         outputTokens: response.eval_count ?? 0,
-        totalTokens: (response.prompt_eval_count ?? 0) + (response.eval_count ?? 0)
+        totalTokens:
+          (response.prompt_eval_count ?? 0) + (response.eval_count ?? 0)
       }
     });
   }
@@ -284,18 +343,32 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     });
   }
 
-  private async buildPayload(request: LanguageModelRequest, stream: boolean): Promise<Record<string, unknown>> {
-    const tools = request.settings.toolChoice === "none" ? [] : serializeToolDefinitions(request.availableTools);
+  private async buildPayload(
+    request: LanguageModelRequest,
+    stream: boolean
+  ): Promise<Record<string, unknown>> {
+    const tools =
+      request.settings.toolChoice === "none"
+        ? []
+        : serializeToolDefinitions(request.availableTools);
     return compactRecord({
       format: serializeOllamaResponseFormat(request.responseFormat),
       keep_alive: this.options.keepAlive,
       messages: await serializeOllamaMessages(request),
       model: request.modelId,
       options: compactRecord({
+        frequency_penalty: request.settings.frequencyPenalty,
+        min_p: request.settings.minP,
         num_ctx: this.options.contextLength,
         num_predict: request.settings.maxOutputTokens,
-        stop: request.settings.stopSequences.length > 0 ? request.settings.stopSequences : undefined,
+        presence_penalty: request.settings.presencePenalty,
+        repeat_penalty: request.settings.repetitionPenalty,
+        stop:
+          request.settings.stopSequences.length > 0
+            ? request.settings.stopSequences
+            : undefined,
         temperature: request.settings.temperature,
+        top_k: request.settings.topK,
         top_p: request.settings.topP
       }),
       stream,
