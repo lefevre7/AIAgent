@@ -274,6 +274,10 @@ export class AgentLoop {
           : "resume";
 
     let consecutiveNudges = 0;
+    // Running total of generated tokens across every turn in this run, so the
+    // status metric reports cumulative work (like context, which accumulates
+    // until compaction) rather than just the latest turn.
+    let cumulativeOutputTokens = 0;
     for (
       let sequence = 0;
       maxTurns === "unlimited" || sequence < maxTurns;
@@ -410,10 +414,11 @@ export class AgentLoop {
         };
       }
 
+      cumulativeOutputTokens += response.usage.outputTokens;
       await this.emitStatus(
         session,
         `Turn ${sequence + 1} model response received.`,
-        this.buildStatusMetrics(response, runStartTime)
+        this.buildStatusMetrics(response, runStartTime, cumulativeOutputTokens)
       );
 
       const assistantMessage = buildAssistantTurnMessage(
@@ -916,11 +921,13 @@ export class AgentLoop {
 
   private buildStatusMetrics(
     response: LanguageModelResponse,
-    runStartTime: number
+    runStartTime: number,
+    cumulativeOutputTokens: number
   ): AgentLoopStatusMetrics {
-    // "Tokens used" = generated tokens (completion/eval count), which already
-    // includes any reasoning tokens. Context % reflects how full the window is,
-    // so it uses the prompt (input) tokens against the resolved window size.
+    // "Tokens used" = cumulative generated tokens across the run (each turn's
+    // completion/eval count, which already includes reasoning tokens). Context %
+    // reflects how full the window is, so it uses the latest prompt (input)
+    // tokens against the resolved window size.
     const promptTokens = response.usage.inputTokens;
     const contextWindowTokens =
       this.resolveContextWindowTokens() ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
@@ -934,7 +941,7 @@ export class AgentLoop {
           }
         : {}),
       elapsedSeconds: Math.round((Date.now() - runStartTime) / 1000),
-      tokensUsed: response.usage.outputTokens
+      tokensUsed: cumulativeOutputTokens
     };
   }
 

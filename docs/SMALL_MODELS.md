@@ -103,10 +103,14 @@ so they never override a model preset/Modelfile default. `streamFirstTokenTimeou
 bounds prompt evaluation (time-to-first-token) and `streamIdleTimeoutMs` governs the
 **inter-token** idle once generation starts; `timeoutMs` still bounds non-streaming
 requests. A generation is also aborted if the same line repeats ≥6× (a decode loop).
-The status line shows generated tokens (incl. reasoning) and context-window % — the %
-auto-detects the model's context length from the provider (LM Studio `/api/v0/models`,
-Ollama `/api/show`) and falls back to 32768, or set `runtime.modelSettings.contextWindowTokens`
-for an exact value. See `docs/AGENT_LOOP.md`.
+The status line shows cumulative generated tokens (incl. reasoning) and context-window %.
+The % denominator auto-detects the model's context length from the provider — for LM Studio
+it uses **`loaded_context_length`** from the native `/api/v0/models` endpoint (the window the
+model is actually loaded with), for Ollama the `*.context_length` from `/api/show` — falling
+back to 32768, or set `runtime.modelSettings.contextWindowTokens` for an exact override. Note
+context-window % feeds threshold compaction; reading very large files into context (no
+tool-result size cap exists) can still overflow the window between compactions. See
+`docs/AGENT_LOOP.md`.
 
 `modelSettings` are global request defaults (applied by the agent loop when set; provider/server defaults apply otherwise). `providers.ollama.contextLength` falls back to `runtime.modelSettings.contextWindowTokens` when unset. LM Studio's context length is configured in LM Studio itself.
 

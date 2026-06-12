@@ -1077,6 +1077,71 @@ describe("agent loop", () => {
     expect(metricsSeen[0]).toHaveProperty("contextWindowPercentage");
     expect(metricsSeen[0]?.contextWindowPercentage).toBe(0);
   });
+
+  test("reports cumulative generated tokens across the turns in a run", async () => {
+    const root = await createTempRoot();
+    const store = new FileSessionStore(path.join(root, ".aia"));
+    const session = buildSession();
+    await store.saveSession(session);
+
+    const metricsSeen: AgentLoopStatusMetrics[] = [];
+    const loop = new AgentLoop({
+      model: new FakeModel([
+        buildModelResponse({
+          messageText: "Reading first.",
+          sessionId: session.id,
+          toolCalls: [
+            {
+              arguments: { path: "AGENTS.md" },
+              callId: "tool.read.cum",
+              toolName: "read_file"
+            }
+          ]
+        }),
+        buildModelResponse({
+          messageText: "Done.",
+          sessionId: session.id,
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.cum",
+              toolName: "attempt_complete"
+            }
+          ]
+        })
+      ]),
+      onStatus: ({ metrics }) => {
+        if (metrics) {
+          metricsSeen.push(metrics);
+        }
+      },
+      sessions: store,
+      toolExecutor: {
+        async execute(call): Promise<AgentLoopToolExecutionResult> {
+          return {
+            toolCall: {
+              ...call,
+              completedAt: new Date().toISOString(),
+              result: { content: "ok" },
+              status: "succeeded"
+            }
+          };
+        }
+      }
+    });
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool(), buildReadFileTool()],
+      maxTurns: 4,
+      session,
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+    // Each FakeModel response reports outputTokens=5, so the running total is 5
+    // after turn 1 and 10 after turn 2.
+    expect(metricsSeen.map((metric) => metric.tokensUsed)).toEqual([5, 10]);
+  });
 });
 
 async function createLoop(

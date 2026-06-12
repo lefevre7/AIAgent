@@ -85,6 +85,33 @@ describe("getModelContextWindow", () => {
     expect(requestedUrl).toBe("http://localhost:1234/api/v0/models");
   });
 
+  test("LM Studio falls back to the loaded model's loaded_context_length when the id does not match", async () => {
+    const adapter = new LMStudioLanguageModelAdapter({
+      baseUrl: "http://localhost:1234/v1",
+      fetchImpl: async () =>
+        jsonResponse({
+          data: [
+            {
+              id: "some-other-model",
+              max_context_length: 32768,
+              state: "not-loaded"
+            },
+            {
+              id: "actually-loaded",
+              loaded_context_length: 8192,
+              max_context_length: 131072,
+              state: "loaded"
+            }
+          ]
+        }),
+      timeoutMs: 1000
+    });
+
+    await expect(
+      adapter.getModelContextWindow("configured-name-that-differs")
+    ).resolves.toBe(8192);
+  });
+
   test("Ollama reads the arch-prefixed context_length from /api/show model_info", async () => {
     const adapter = new OllamaLanguageModelAdapter({
       baseUrl: "http://localhost:11434",

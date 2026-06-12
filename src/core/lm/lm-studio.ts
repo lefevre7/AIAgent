@@ -125,8 +125,10 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
   }
 
   // The OpenAI-compatible /v1/models endpoint does not report context length, but
-  // LM Studio's native REST API (/api/v0/models) exposes max/loaded context. Best
-  // effort: returns undefined (caller falls back) on any failure.
+  // LM Studio's native REST API (/api/v0/models) exposes `loaded_context_length`
+  // (the actual window the model is loaded with) and `max_context_length`. The
+  // context % is based on `loaded_context_length`. Best effort: returns undefined
+  // (caller falls back) on any failure.
   async getModelContextWindow(modelId: string): Promise<number | undefined> {
     try {
       const origin = this.options.baseUrl
@@ -137,6 +139,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
           id?: string;
           loaded_context_length?: number;
           max_context_length?: number;
+          state?: string;
         }>;
       }>({
         fetchImpl: this.options.fetchImpl,
@@ -145,10 +148,24 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
         timeoutMs: Math.min(this.options.timeoutMs, 5_000),
         url: `${origin}/api/v0/models`
       });
-      const match = (response.data.data ?? []).find(
-        (entry) => entry.id === modelId
+      const entries = response.data.data ?? [];
+      // Prefer the requested model's loaded window; otherwise the loaded model's
+      // window (its id may differ from the configured string). `loaded_context_length`
+      // always wins over `max_context_length`.
+      const byId = entries.find((entry) => entry.id === modelId);
+      const loaded = entries.find(
+        (entry) =>
+          typeof entry.loaded_context_length === "number" ||
+          entry.state === "loaded"
       );
-      return match?.loaded_context_length ?? match?.max_context_length;
+      return (
+        byId?.loaded_context_length ??
+        loaded?.loaded_context_length ??
+        byId?.max_context_length ??
+        loaded?.max_context_length ??
+        entries.find((entry) => typeof entry.max_context_length === "number")
+          ?.max_context_length
+      );
     } catch {
       return undefined;
     }

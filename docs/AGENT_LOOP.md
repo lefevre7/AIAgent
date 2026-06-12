@@ -181,17 +181,31 @@ keep their reasoning, and live streaming display is never altered.
 `{ contextWindowPercentage, tokensUsed, elapsedSeconds }`. The gateway forwards them in
 the `gateway.status` event payload; the CLI renders them dimmed on stderr during the run.
 
-- **`tokensUsed` = generated tokens** (`usage.outputTokens`, i.e. completion/eval count),
-  which already includes any reasoning tokens. **`contextWindowPercentage`** uses prompt
-  (input) tokens against the resolved window.
+- **`tokensUsed` = cumulative generated tokens across the run** (sum of each turn's
+  `usage.outputTokens`, i.e. completion/eval count, which already includes reasoning
+  tokens) — analogous to how the context grows until compaction. **`contextWindowPercentage`**
+  uses the latest prompt (input) tokens against the resolved window.
+- Metrics are **not persisted**: `gateway.status` is emitted with `persist=false`, so the
+  events log cannot be queried for e.g. the peak context of a past run. Persist the peak
+  onto the session record if that becomes necessary.
 - **Streaming usage must be requested.** LM Studio omits `usage` from streamed responses
   unless the payload sets `stream_options: { include_usage: true }` (the usage arrives in
   a final chunk with empty `choices`). Ollama returns `prompt_eval_count`/`eval_count`
   natively. Without this, every metric read 0.
 - **Context-window resolution** (for the %): configured
   `runtime.modelSettings.contextWindowTokens` → provider query
-  (`adapter.getModelContextWindow`; LM Studio `/api/v0/models`, Ollama `/api/show`
-  `*.context_length`; best-effort, resolved once in `GatewayRuntime.initialize`) →
-  default `32_768`. So the % renders even when nothing is configured. (The auto-compaction
-  threshold still falls back to 100k, not 32768, when no window is set — the 32768 default
-  is metric-only.)
+  (`adapter.getModelContextWindow`, resolved once in `GatewayRuntime.initialize`) →
+  default `32_768`. For LM Studio the query reads the native `/api/v0/models` endpoint
+  and the context % is based on **`loaded_context_length`** — the window the model is
+  actually loaded with (preferring the requested model, else the loaded model even if its
+  id differs from the configured string; `loaded_context_length` always wins over
+  `max_context_length`). Ollama reads `/api/show` `*.context_length`. So the % renders even
+  when nothing is configured. (The auto-compaction threshold still falls back to 100k, not
+  32768, when no window is set — the 32768 default is metric-only.)
+- **Compaction depends on usage.** Threshold compaction fires when `usage.inputTokens`
+  crosses the threshold. Before `include_usage`, streaming reported 0 input tokens, so
+  compaction never fired and a session's prompt history could grow without bound (a real
+  incident reached ~18M estimated tokens, dominated by a single multi-MB tool result).
+  With streaming usage now populated, compaction works during streaming. There are
+  intentionally no tool-result size caps, so a single huge `read_file` can still dominate
+  the window — compaction is the backstop.
