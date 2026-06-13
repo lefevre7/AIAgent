@@ -14,6 +14,7 @@ export * from "@/core/tools/builtins/memory-write";
 export * from "@/core/tools/builtins/mcp-read-resource";
 export * from "@/core/tools/builtins/mcp-read-resource-template";
 export * from "@/core/tools/builtins/mcp-search";
+export * from "@/core/tools/builtins/mcp-status";
 export * from "@/core/tools/builtins/notebook";
 export * from "@/core/tools/builtins/pdf-read";
 export * from "@/core/tools/builtins/sessions-search";

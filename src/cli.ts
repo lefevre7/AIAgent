@@ -239,6 +239,18 @@ async function runChatCli(
           writeLine(streams.stdout, formatChatHelp());
           continue;
         }
+        if (command === "mcp") {
+          try {
+            const { servers } = await sdk.request("mcp.list", {});
+            writeLine(streams.stdout, formatMcpServers(servers));
+          } catch (error) {
+            writeLine(
+              streams.stderr,
+              `Failed to list MCP servers: ${renderCliError(error)}`
+            );
+          }
+          continue;
+        }
         if (command === "unknown") {
           writeLine(
             streams.stderr,
@@ -279,9 +291,7 @@ function formatStatusMetrics(metrics: {
   return `· ${parts.join(" · ")}`;
 }
 
-async function probeModelHealth(
-  sdk: AIAgentSdk
-): Promise<{
+async function probeModelHealth(sdk: AIAgentSdk): Promise<{
   details: Record<string, unknown>;
   providerId: string;
   status: string;
@@ -872,7 +882,7 @@ async function resolveSdk(
 
 function parseChatCommand(
   line: string
-): "exit" | "help" | "message" | "unknown" {
+): "exit" | "help" | "mcp" | "message" | "unknown" {
   if (!line.startsWith("/")) {
     return "message";
   }
@@ -883,6 +893,8 @@ function parseChatCommand(
       return "exit";
     case "help":
       return "help";
+    case "mcp":
+      return "mcp";
     default:
       return "unknown";
   }
@@ -900,9 +912,45 @@ function formatChatHelp(): string {
   return [
     "Interactive commands:",
     "  /help          Show this help",
+    "  /mcp           List configured MCP servers, their state, and their tools",
     "  /exit, /quit   End the session and return to the shell",
     "Anything else is sent to the agent as a message."
   ].join("\n");
+}
+
+function formatMcpServers(
+  servers: {
+    capabilities: { tools: number };
+    error?: string;
+    serverName: string;
+    state: string;
+    tools: { description?: string; invocationName: string }[];
+    transport: string;
+  }[]
+): string {
+  if (servers.length === 0) {
+    return "No MCP servers are configured.";
+  }
+  return servers
+    .map((server) => {
+      const lines = [
+        `${server.serverName}  [${server.state}, ${server.transport}]`
+      ];
+      if (server.error) {
+        lines.push(`  error: ${server.error}`);
+      }
+      if (server.tools.length > 0) {
+        for (const tool of server.tools) {
+          lines.push(
+            `  - ${tool.invocationName}${tool.description ? `: ${tool.description}` : ""}`
+          );
+        }
+      } else {
+        lines.push("  (no tools exposed)");
+      }
+      return lines.join("\n");
+    })
+    .join("\n");
 }
 
 function createStdinLineSource(): AsyncIterable<string> {

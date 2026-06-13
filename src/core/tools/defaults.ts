@@ -28,6 +28,7 @@ import { createNotebookEditTool } from "@/core/tools/builtins/notebook";
 import { createMcpReadResourceTool } from "@/core/tools/builtins/mcp-read-resource";
 import { createMcpReadResourceTemplateTool } from "@/core/tools/builtins/mcp-read-resource-template";
 import { createMcpSearchTool } from "@/core/tools/builtins/mcp-search";
+import { createMcpStatusTool } from "@/core/tools/builtins/mcp-status";
 import { createPdfReadTool } from "@/core/tools/builtins/pdf-read";
 import { createSessionsSearchTool } from "@/core/tools/builtins/sessions-search";
 import { createThinkTool } from "@/core/tools/builtins/think";
@@ -38,7 +39,10 @@ import { createVoiceTools } from "@/core/tools/builtins/voice";
 import { createWebFetchTool } from "@/core/tools/builtins/web-fetch";
 import { createWebSearchTool } from "@/core/tools/builtins/web-search";
 import { createWorkspaceTools } from "@/core/tools/builtins/workspace";
-import { combineToolRegistries, ToolRegistryBuilder } from "@/core/tools/registry";
+import {
+  combineToolRegistries,
+  ToolRegistryBuilder
+} from "@/core/tools/registry";
 import { ToolRuntime } from "@/core/tools/runtime";
 import type { ChannelService } from "@/core/channels";
 import type { FileBackedMemoryService } from "@/core/memory";
@@ -71,6 +75,10 @@ export const LEAN_TOOL_PROFILE_INVOCATION_NAMES: readonly string[] = [
 ];
 
 export function resolveVisibleToolDefinitions(params: {
+  // Extra invocation names to make visible under the lean profile beyond the
+  // core set (e.g. "mcp_status" only when MCP servers are configured), so the
+  // lean catalog stays minimal otherwise.
+  alwaysInclude?: string[];
   registry: Pick<ToolRegistry, "listDefinitions">;
   toolsConfig: {
     exclude: string[];
@@ -85,8 +93,16 @@ export function resolveVisibleToolDefinitions(params: {
     return all.filter((definition) => !excluded.has(definition.invocationName));
   }
 
-  const allowed = new Set([...LEAN_TOOL_PROFILE_INVOCATION_NAMES, ...params.toolsConfig.include]);
-  return all.filter((definition) => allowed.has(definition.invocationName) && !excluded.has(definition.invocationName));
+  const allowed = new Set([
+    ...LEAN_TOOL_PROFILE_INVOCATION_NAMES,
+    ...params.toolsConfig.include,
+    ...(params.alwaysInclude ?? [])
+  ]);
+  return all.filter(
+    (definition) =>
+      allowed.has(definition.invocationName) &&
+      !excluded.has(definition.invocationName)
+  );
 }
 
 export function createDefaultToolRegistry(
@@ -160,7 +176,9 @@ export function createDefaultToolRegistry(
   }
 
   if (options.browserService) {
-    for (const tool of createBrowserTools({ browserService: options.browserService })) {
+    for (const tool of createBrowserTools({
+      browserService: options.browserService
+    })) {
       builder.register(tool);
     }
   }
@@ -214,11 +232,15 @@ export function createDefaultToolRegistry(
   }
 
   if (options.channelService) {
-    builder.register(createChannelSendTool({ channelService: options.channelService }));
+    builder.register(
+      createChannelSendTool({ channelService: options.channelService })
+    );
   }
 
   if (options.voiceService) {
-    for (const tool of createVoiceTools({ voiceService: options.voiceService })) {
+    for (const tool of createVoiceTools({
+      voiceService: options.voiceService
+    })) {
       builder.register(tool);
     }
   }
@@ -231,6 +253,11 @@ export function createDefaultToolRegistry(
     );
     builder.register(
       createMcpSearchTool({
+        mcpManager: options.mcpManager
+      })
+    );
+    builder.register(
+      createMcpStatusTool({
         mcpManager: options.mcpManager
       })
     );
@@ -252,7 +279,10 @@ export function createDefaultToolRegistry(
     return baseRegistry;
   }
 
-  return combineToolRegistries([baseRegistry, createMcpExecutableToolRegistry(options.mcpManager)]);
+  return combineToolRegistries([
+    baseRegistry,
+    createMcpExecutableToolRegistry(options.mcpManager)
+  ]);
 }
 
 export function createDefaultToolRuntime(

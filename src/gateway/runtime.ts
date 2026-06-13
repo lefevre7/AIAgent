@@ -706,6 +706,17 @@ export class GatewayRuntime
         return gatewayResponsePayloadSchemas["gateway.subscribe"].parse({
           subscription: gatewaySubscriptionSchema.parse(request.payload)
         });
+      case "mcp.list": {
+        const query = gatewayRequestPayloadSchemas["mcp.list"].parse(
+          request.payload
+        );
+        const filter = query.serverNames ? new Set(query.serverNames) : null;
+        return gatewayResponsePayloadSchemas["mcp.list"].parse({
+          servers: this.options.mcpManager
+            .summarizeServers()
+            .filter((server) => !filter || filter.has(server.serverName))
+        });
+      }
       case "memory.query":
         return gatewayResponsePayloadSchemas["memory.query"].parse({
           hits: await this.options.memoryService.query(
@@ -1068,6 +1079,13 @@ export class GatewayRuntime
 
     const result = await this.agentLoop.run({
       availableTools: resolveVisibleToolDefinitions({
+        // Surface the MCP status tool under the lean profile only when MCP
+        // servers are configured, so the agent can answer "what MCP servers do
+        // you have?" without bloating the lean catalog otherwise.
+        alwaysInclude:
+          Object.keys(this.options.config.mcp.servers).length > 0
+            ? ["mcp_status"]
+            : [],
         registry: this.options.toolRuntime,
         toolsConfig: this.options.config.tools
       }),

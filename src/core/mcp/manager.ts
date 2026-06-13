@@ -5,9 +5,18 @@ import { EventEmitter } from "node:events";
 
 import { applyEdits, format, modify } from "jsonc-parser";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js";
-import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  SSEClientTransport,
+  SseError
+} from "@modelcontextprotocol/sdk/client/sse.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport
+} from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { UriTemplate } from "@modelcontextprotocol/sdk/shared/uriTemplate.js";
 
 import type {
@@ -27,11 +36,18 @@ import type {
   MCPPromptResult,
   MCPResourceReadResult,
   MCPServerStatus,
+  MCPServerSummary,
   MCPToolCapability,
   JsonValue,
   StructuredError
 } from "@/core/contracts";
-import { mcpManagerHealthSchema, mcpPromptResultSchema, mcpResourceReadResultSchema, mcpServerStatusSchema } from "@/core/contracts";
+import {
+  mcpManagerHealthSchema,
+  mcpPromptResultSchema,
+  mcpResourceReadResultSchema,
+  mcpServerStatusSchema,
+  mcpServerSummarySchema
+} from "@/core/contracts";
 import { BUILT_IN_MCP_SERVER_TEMPLATES } from "@/core/mcp/templates";
 import { loadImportedMcpServers } from "@/core/mcp/imports";
 import { sanitizeMcpInvocationName } from "@/core/mcp/names";
@@ -67,7 +83,10 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
   private readonly reloadConfig?: () => Promise<LoadedAIAgentConfig>;
   private readonly connections = new Map<string, ManagedMCPServer>();
   private catalog = new MCPCapabilityCatalog();
-  private templateDefinitions: Record<string, AppConfig["mcp"]["templates"][string]> = {};
+  private templateDefinitions: Record<
+    string,
+    AppConfig["mcp"]["templates"][string]
+  > = {};
   private importedFiles: string[] = [];
   private readonly watchers = new Map<string, fs.FSWatcher>();
   private refreshTimer: NodeJS.Timeout | null = null;
@@ -112,7 +131,10 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
   getToolCapabilities(): MCPToolCapability[] {
     return this.catalog
       .list()
-      .filter((capability): capability is MCPToolCapability => capability.kind === "tool");
+      .filter(
+        (capability): capability is MCPToolCapability =>
+          capability.kind === "tool"
+      );
   }
 
   getCatalog(): MCPCapabilityCatalog {
@@ -139,6 +161,40 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     return this.catalog.search(query);
   }
 
+  // Per-server view used by the `mcp_status` tool, the `mcp.list` gateway request,
+  // and the CLI `/mcp` command. Includes disabled/failed servers (with their
+  // error) and groups each server's exposed tools, so "what MCP servers do you
+  // have and their tools?" is answerable even when a server never connected.
+  summarizeServers(): MCPServerSummary[] {
+    const toolsByServer = new Map<string, MCPToolCapability[]>();
+    for (const tool of this.getToolCapabilities()) {
+      const serverName = tool.serverName ?? "";
+      const existing = toolsByServer.get(serverName) ?? [];
+      existing.push(tool);
+      toolsByServer.set(serverName, existing);
+    }
+
+    return this.getServerStatuses().map((status) =>
+      mcpServerSummarySchema.parse({
+        capabilities: status.capabilities,
+        error: status.error?.message,
+        lastConnectedAt: status.lastConnectedAt,
+        serverName: status.serverName,
+        state: status.state,
+        tools: (toolsByServer.get(status.serverName) ?? [])
+          .map((tool) => ({
+            description: tool.description,
+            invocationName: tool.invocationName,
+            name: tool.name
+          }))
+          .sort((left, right) =>
+            left.invocationName.localeCompare(right.invocationName)
+          ),
+        transport: status.transport
+      })
+    );
+  }
+
   async refresh(nextConfig?: AppConfig): Promise<void> {
     if (nextConfig) {
       this.config = nextConfig;
@@ -155,7 +211,9 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     for (const [serverName, serverConfig] of Object.entries(resolved.servers)) {
       const previous = previousConnections.get(serverName);
       const configSignature = JSON.stringify(serverConfig);
-      const previousSignature = previous ? JSON.stringify(previous.config) : null;
+      const previousSignature = previous
+        ? JSON.stringify(previous.config)
+        : null;
 
       if (previous && previousSignature === configSignature) {
         nextConnections.set(serverName, previous);
@@ -171,7 +229,10 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       if (!serverConfig.enabled) {
         nextConnections.set(serverName, {
           capabilities: [],
-          client: new Client({ name: "AIAgent", version: "0.1.0" }, { capabilities: {} }),
+          client: new Client(
+            { name: "AIAgent", version: "0.1.0" },
+            { capabilities: {} }
+          ),
           config: serverConfig,
           rawToolNamesByInvocationName: new Map(),
           status: mcpServerStatusSchema.parse({
@@ -198,7 +259,10 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
         const structured = normalizeMcpError(error);
         const failedEntry: ManagedMCPServer = {
           capabilities: [],
-          client: new Client({ name: "AIAgent", version: "0.1.0" }, { capabilities: {} }),
+          client: new Client(
+            { name: "AIAgent", version: "0.1.0" },
+            { capabilities: {} }
+          ),
           config: serverConfig,
           rawToolNamesByInvocationName: new Map(),
           status: mcpServerStatusSchema.parse({
@@ -218,7 +282,9 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
         };
         nextConnections.set(serverName, failedEntry);
         if (serverConfig.required) {
-          requiredFailures.push(new Error(`${serverName}: ${structured.message}`));
+          requiredFailures.push(
+            new Error(`${serverName}: ${structured.message}`)
+          );
         }
       }
     }
@@ -235,7 +301,9 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     this.templateDefinitions = resolved.templates;
     this.importedFiles = resolved.importedFiles;
     this.catalog = new MCPCapabilityCatalog([
-      ...Array.from(this.connections.values()).flatMap((entry) => entry.capabilities),
+      ...Array.from(this.connections.values()).flatMap(
+        (entry) => entry.capabilities
+      ),
       ...buildTemplateCapabilities(this.templateDefinitions)
     ]);
     this.lastRefreshAt = new Date().toISOString();
@@ -249,20 +317,31 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     this.emit("refreshed", { health });
 
     if (requiredFailures.length > 0) {
-      throw new Error(`Required MCP servers failed to connect:\n${requiredFailures.map((item) => `- ${item.message}`).join("\n")}`);
+      throw new Error(
+        `Required MCP servers failed to connect:\n${requiredFailures.map((item) => `- ${item.message}`).join("\n")}`
+      );
     }
   }
 
-  async callTool(serverName: string, invocationOrRawToolName: string, args: Record<string, unknown> = {}) {
+  async callTool(
+    serverName: string,
+    invocationOrRawToolName: string,
+    args: Record<string, unknown> = {}
+  ) {
     const server = this.getConnectedServer(serverName);
-    const rawName = server.rawToolNamesByInvocationName.get(invocationOrRawToolName) ?? invocationOrRawToolName;
+    const rawName =
+      server.rawToolNamesByInvocationName.get(invocationOrRawToolName) ??
+      invocationOrRawToolName;
     return server.client.callTool({
       arguments: args,
       name: rawName
     });
   }
 
-  async readResource(serverName: string, uri: string): Promise<MCPResourceReadResult> {
+  async readResource(
+    serverName: string,
+    uri: string
+  ): Promise<MCPResourceReadResult> {
     const server = this.getConnectedServer(serverName);
     const result = await server.client.readResource({ uri });
     return mcpResourceReadResultSchema.parse({
@@ -271,17 +350,23 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     });
   }
 
-  async readResourceTemplate(serverName: string, uriTemplate: string, variables: Record<string, string | string[]> = {}) {
+  async readResourceTemplate(
+    serverName: string,
+    uriTemplate: string,
+    variables: Record<string, string | string[]> = {}
+  ) {
     const uri = new UriTemplate(uriTemplate).expand(variables);
     return this.readResource(serverName, uri);
   }
 
-  async listPrompts(
-    serverName?: string
-  ): Promise<
+  async listPrompts(serverName?: string): Promise<
     | Array<{
         _meta?: Record<string, unknown>;
-        arguments?: Array<{ description?: string; name: string; required?: boolean }>;
+        arguments?: Array<{
+          description?: string;
+          name: string;
+          required?: boolean;
+        }>;
         description?: string;
         name: string;
         title?: string;
@@ -289,7 +374,11 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     | Array<{
         prompts: Array<{
           _meta?: Record<string, unknown>;
-          arguments?: Array<{ description?: string; name: string; required?: boolean }>;
+          arguments?: Array<{
+            description?: string;
+            name: string;
+            required?: boolean;
+          }>;
           description?: string;
           name: string;
           title?: string;
@@ -299,14 +388,22 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
   > {
     if (serverName) {
       const server = this.getConnectedServer(serverName);
-      const prompts = await collectPaginated(async (cursor) => server.client.listPrompts(cursor ? { cursor } : undefined), "prompts");
+      const prompts = await collectPaginated(
+        async (cursor) =>
+          server.client.listPrompts(cursor ? { cursor } : undefined),
+        "prompts"
+      );
       return prompts;
     }
 
     const entries: Array<{
       prompts: Array<{
         _meta?: Record<string, unknown>;
-        arguments?: Array<{ description?: string; name: string; required?: boolean }>;
+        arguments?: Array<{
+          description?: string;
+          name: string;
+          required?: boolean;
+        }>;
         description?: string;
         name: string;
         title?: string;
@@ -316,7 +413,11 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       this.listConnectedServerNames().map(async (name) => ({
         prompts: (await this.listPrompts(name)) as Array<{
           _meta?: Record<string, unknown>;
-          arguments?: Array<{ description?: string; name: string; required?: boolean }>;
+          arguments?: Array<{
+            description?: string;
+            name: string;
+            required?: boolean;
+          }>;
           description?: string;
           name: string;
           title?: string;
@@ -327,7 +428,11 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     return entries;
   }
 
-  async getPrompt(serverName: string, name: string, args: Record<string, string> = {}): Promise<MCPPromptResult> {
+  async getPrompt(
+    serverName: string,
+    name: string,
+    args: Record<string, string> = {}
+  ): Promise<MCPPromptResult> {
     const server = this.getConnectedServer(serverName);
     const prompt = await server.client.getPrompt({
       arguments: args,
@@ -357,12 +462,17 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
 
     const targetPath =
       params.configPath ??
-      (params.destination === "user" ? this.configPaths?.globalConfigPath : this.configPaths?.workspaceConfigPath);
+      (params.destination === "user"
+        ? this.configPaths?.globalConfigPath
+        : this.configPaths?.workspaceConfigPath);
     if (!targetPath) {
-      throw new Error("Unable to resolve the MCP template install target path.");
+      throw new Error(
+        "Unable to resolve the MCP template install target path."
+      );
     }
 
-    const installedServerName = params.serverName ?? defaultInstalledServerName(params.templateId);
+    const installedServerName =
+      params.serverName ?? defaultInstalledServerName(params.templateId);
     const installedServer = deepMerge(template.server, params.overrides ?? {}, {
       provenance: {
         source: "template",
@@ -381,12 +491,24 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
         2
       );
     const parsed = parseJsoncText(baseDocument, targetPath);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
       throw new Error(`Config file at ${targetPath} must contain an object.`);
     }
 
-    let nextText = applyJsoncEdit(baseDocument, ["configVersion"], APP_CONFIG_VERSION);
-    nextText = applyJsoncEdit(nextText, ["mcp", "servers", installedServerName], installedServer);
+    let nextText = applyJsoncEdit(
+      baseDocument,
+      ["configVersion"],
+      APP_CONFIG_VERSION
+    );
+    nextText = applyJsoncEdit(
+      nextText,
+      ["mcp", "servers", installedServerName],
+      installedServer
+    );
     nextText = applyEdits(
       nextText,
       format(nextText, undefined, {
@@ -412,7 +534,10 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     return {
       importedFiles: imported.files,
       servers: deepMerge(imported.servers, this.config.mcp.servers),
-      templates: deepMerge(BUILT_IN_MCP_SERVER_TEMPLATES, this.config.mcp.templates)
+      templates: deepMerge(
+        BUILT_IN_MCP_SERVER_TEMPLATES,
+        this.config.mcp.templates
+      )
     };
   }
 
@@ -426,13 +551,23 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       serverName
     });
 
-    const tools = await collectPaginated(async (cursor) => client.listTools(cursor ? { cursor } : undefined), "tools");
-    const resources = await collectPaginated(async (cursor) => client.listResources(cursor ? { cursor } : undefined), "resources");
+    const tools = await collectPaginated(
+      async (cursor) => client.listTools(cursor ? { cursor } : undefined),
+      "tools"
+    );
+    const resources = await collectPaginated(
+      async (cursor) => client.listResources(cursor ? { cursor } : undefined),
+      "resources"
+    );
     const resourceTemplates = await collectPaginated(
-      async (cursor) => client.listResourceTemplates(cursor ? { cursor } : undefined),
+      async (cursor) =>
+        client.listResourceTemplates(cursor ? { cursor } : undefined),
       "resourceTemplates"
     );
-    const prompts = await collectPaginated(async (cursor) => client.listPrompts(cursor ? { cursor } : undefined), "prompts");
+    const prompts = await collectPaginated(
+      async (cursor) => client.listPrompts(cursor ? { cursor } : undefined),
+      "prompts"
+    );
 
     const rawToolNamesByInvocationName = new Map<string, string>();
     const capabilities: MCPCapability[] = [
@@ -448,7 +583,9 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
             taskSupport: normalizeTaskSupport(tool.execution?.taskSupport)
           },
           id: `mcp.tool.${serverName}.${tool.name}`,
-          inputSchema: toJsonRecord(tool.inputSchema as Record<string, unknown>),
+          inputSchema: toJsonRecord(
+            tool.inputSchema as Record<string, unknown>
+          ),
           invocationName,
           kind: "tool" as const,
           metadata: toJsonRecord(tool._meta),
@@ -461,50 +598,59 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
           tags: buildCapabilityTags(serverConfig.tags, "tool")
         } as MCPCapability;
       }),
-      ...resources.map((resource) => ({
-        access: "model_and_api" as const,
-        annotations: extractAnnotations(resource.annotations),
-        description: resource.description,
-        displayName: resource.title ?? resource.name,
-        id: `mcp.resource.${serverName}.${resource.uri}`,
-        kind: "resource" as const,
-        metadata: toJsonRecord(resource._meta),
-        mimeType: resource.mimeType,
-        name: resource.name,
-        serverName,
-        tags: buildCapabilityTags(serverConfig.tags, "resource"),
-        title: resource.title,
-        uri: resource.uri
-      }) as MCPCapability),
-      ...resourceTemplates.map((resourceTemplate) => ({
-        access: "model_and_api" as const,
-        annotations: extractAnnotations(resourceTemplate.annotations),
-        description: resourceTemplate.description,
-        displayName: resourceTemplate.title ?? resourceTemplate.name,
-        id: `mcp.resource-template.${serverName}.${resourceTemplate.uriTemplate}`,
-        kind: "resource_template" as const,
-        metadata: toJsonRecord(resourceTemplate._meta),
-        mimeType: resourceTemplate.mimeType,
-        name: resourceTemplate.name,
-        serverName,
-        tags: buildCapabilityTags(serverConfig.tags, "resource_template"),
-        title: resourceTemplate.title,
-        uriTemplate: resourceTemplate.uriTemplate
-      }) as MCPCapability),
-      ...prompts.map((prompt) => ({
-        access: "api_only" as const,
-        annotations: {},
-        arguments: prompt.arguments ?? [],
-        description: prompt.description,
-        displayName: prompt.title ?? prompt.name,
-        id: `mcp.prompt.${serverName}.${prompt.name}`,
-        kind: "prompt" as const,
-        metadata: toJsonRecord(prompt._meta),
-        name: prompt.name,
-        serverName,
-        tags: buildCapabilityTags(serverConfig.tags, "prompt"),
-        title: prompt.title
-      }) as MCPCapability)
+      ...resources.map(
+        (resource) =>
+          ({
+            access: "model_and_api" as const,
+            annotations: extractAnnotations(resource.annotations),
+            description: resource.description,
+            displayName: resource.title ?? resource.name,
+            id: `mcp.resource.${serverName}.${resource.uri}`,
+            kind: "resource" as const,
+            metadata: toJsonRecord(resource._meta),
+            mimeType: resource.mimeType,
+            name: resource.name,
+            serverName,
+            tags: buildCapabilityTags(serverConfig.tags, "resource"),
+            title: resource.title,
+            uri: resource.uri
+          }) as MCPCapability
+      ),
+      ...resourceTemplates.map(
+        (resourceTemplate) =>
+          ({
+            access: "model_and_api" as const,
+            annotations: extractAnnotations(resourceTemplate.annotations),
+            description: resourceTemplate.description,
+            displayName: resourceTemplate.title ?? resourceTemplate.name,
+            id: `mcp.resource-template.${serverName}.${resourceTemplate.uriTemplate}`,
+            kind: "resource_template" as const,
+            metadata: toJsonRecord(resourceTemplate._meta),
+            mimeType: resourceTemplate.mimeType,
+            name: resourceTemplate.name,
+            serverName,
+            tags: buildCapabilityTags(serverConfig.tags, "resource_template"),
+            title: resourceTemplate.title,
+            uriTemplate: resourceTemplate.uriTemplate
+          }) as MCPCapability
+      ),
+      ...prompts.map(
+        (prompt) =>
+          ({
+            access: "api_only" as const,
+            annotations: {},
+            arguments: prompt.arguments ?? [],
+            description: prompt.description,
+            displayName: prompt.title ?? prompt.name,
+            id: `mcp.prompt.${serverName}.${prompt.name}`,
+            kind: "prompt" as const,
+            metadata: toJsonRecord(prompt._meta),
+            name: prompt.name,
+            serverName,
+            tags: buildCapabilityTags(serverConfig.tags, "prompt"),
+            title: prompt.title
+          }) as MCPCapability
+      )
     ];
 
     return {
@@ -535,7 +681,9 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       throw new Error(`No MCP server named "${serverName}" is registered.`);
     }
     if (server.status.state !== "connected") {
-      throw new Error(`MCP server "${serverName}" is not connected (state: ${server.status.state}).`);
+      throw new Error(
+        `MCP server "${serverName}" is not connected (state: ${server.status.state}).`
+      );
     }
     return server;
   }
@@ -574,12 +722,16 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
 
       const directory = path.dirname(target);
       const basename = path.basename(target);
-      const watcher = fs.watch(directory, { persistent: false }, (_eventType, fileName) => {
-        if (fileName && fileName.toString() !== basename) {
-          return;
+      const watcher = fs.watch(
+        directory,
+        { persistent: false },
+        (_eventType, fileName) => {
+          if (fileName && fileName.toString() !== basename) {
+            return;
+          }
+          this.scheduleReload();
         }
-        this.scheduleReload();
-      });
+      );
       this.watchers.set(target, watcher);
     }
   }
@@ -624,7 +776,10 @@ async function connectClient(params: {
   fetchImpl: typeof fetch;
   serverConfig: AppConfig["mcp"]["servers"][string];
   serverName: string;
-}): Promise<{ client: Client; transport: AppConfig["mcp"]["servers"][string]["type"] }> {
+}): Promise<{
+  client: Client;
+  transport: AppConfig["mcp"]["servers"][string]["type"];
+}> {
   if (params.serverConfig.type === "stdio") {
     const transport = new StdioClientTransport({
       args: params.serverConfig.args,
@@ -636,7 +791,10 @@ async function connectClient(params: {
       },
       stderr: params.serverConfig.stderr
     });
-    const client = new Client({ name: "AIAgent", version: "0.1.0" }, { capabilities: {} });
+    const client = new Client(
+      { name: "AIAgent", version: "0.1.0" },
+      { capabilities: {} }
+    );
     await client.connect(transport);
     return {
       client,
@@ -645,11 +803,18 @@ async function connectClient(params: {
   }
 
   if (params.serverConfig.type === "sse") {
-    const client = new Client({ name: "AIAgent", version: "0.1.0" }, { capabilities: {} });
+    const client = new Client(
+      { name: "AIAgent", version: "0.1.0" },
+      { capabilities: {} }
+    );
     const transport = new SSEClientTransport(new URL(params.serverConfig.url), {
       fetch: params.fetchImpl,
       requestInit: {
-        headers: materializeSecrets(params.serverConfig.headers, params.serverName, "headers")
+        headers: materializeSecrets(
+          params.serverConfig.headers,
+          params.serverName,
+          "headers"
+        )
       }
     });
     await client.connect(transport);
@@ -660,15 +825,25 @@ async function connectClient(params: {
   }
 
   const httpConfig = params.serverConfig;
-  const requestHeaders = materializeSecrets(httpConfig.headers, params.serverName, "headers");
+  const requestHeaders = materializeSecrets(
+    httpConfig.headers,
+    params.serverName,
+    "headers"
+  );
   const connectStreamable = async () => {
-    const client = new Client({ name: "AIAgent", version: "0.1.0" }, { capabilities: {} });
-    const transport = new StreamableHTTPClientTransport(new URL(httpConfig.url), {
-      fetch: params.fetchImpl,
-      requestInit: {
-        headers: requestHeaders
+    const client = new Client(
+      { name: "AIAgent", version: "0.1.0" },
+      { capabilities: {} }
+    );
+    const transport = new StreamableHTTPClientTransport(
+      new URL(httpConfig.url),
+      {
+        fetch: params.fetchImpl,
+        requestInit: {
+          headers: requestHeaders
+        }
       }
-    });
+    );
     await client.connect(transport);
     return client;
   };
@@ -692,7 +867,10 @@ async function connectClient(params: {
       throw error;
     }
 
-    const client = new Client({ name: "AIAgent", version: "0.1.0" }, { capabilities: {} });
+    const client = new Client(
+      { name: "AIAgent", version: "0.1.0" },
+      { capabilities: {} }
+    );
     const transport = new SSEClientTransport(new URL(httpConfig.url), {
       fetch: params.fetchImpl,
       requestInit: {
@@ -707,7 +885,10 @@ async function connectClient(params: {
   }
 }
 
-async function collectPaginated<T extends Record<string, unknown>, K extends keyof T & string>(
+async function collectPaginated<
+  T extends Record<string, unknown>,
+  K extends keyof T & string
+>(
   request: (cursor?: string) => Promise<T>,
   key: K
 ): Promise<NonNullable<T[K]> extends Array<infer Item> ? Item[] : never> {
@@ -740,14 +921,17 @@ function buildTemplateCapabilities(
       prerequisites: template.prerequisites
     },
     name: templateId,
-    source: template.server.provenance?.source === "template" ? "built_in" : "config",
+    source:
+      template.server.provenance?.source === "template" ? "built_in" : "config",
     tags: template.tags,
     title: template.title,
     transport: template.server.type
   }));
 }
 
-function extractAnnotations(value: Record<string, unknown> | undefined): Record<string, JsonValue> {
+function extractAnnotations(
+  value: Record<string, unknown> | undefined
+): Record<string, JsonValue> {
   if (!value) {
     return {};
   }
@@ -762,7 +946,9 @@ function extractAnnotations(value: Record<string, unknown> | undefined): Record<
   ) as Record<string, JsonValue>;
 }
 
-function toJsonRecord(value: Record<string, unknown> | undefined): Record<string, JsonValue> {
+function toJsonRecord(
+  value: Record<string, unknown> | undefined
+): Record<string, JsonValue> {
   if (!value) {
     return {};
   }
@@ -773,8 +959,12 @@ function buildCapabilityTags(tags: string[], kind: string) {
   return Array.from(new Set([...tags, "mcp", kind]));
 }
 
-function normalizeTaskSupport(value: unknown): "forbidden" | "optional" | "required" | undefined {
-  return value === "forbidden" || value === "optional" || value === "required" ? value : undefined;
+function normalizeTaskSupport(
+  value: unknown
+): "forbidden" | "optional" | "required" | undefined {
+  return value === "forbidden" || value === "optional" || value === "required"
+    ? value
+    : undefined;
 }
 
 function materializeSecrets(
@@ -785,7 +975,9 @@ function materializeSecrets(
   return Object.fromEntries(
     Object.entries(values).map(([key, value]) => {
       if (typeof value !== "string") {
-        throw new Error(`MCP server "${serverName}" has unresolved secret-backed ${label} value "${key}". Use resolvedConfig.`);
+        throw new Error(
+          `MCP server "${serverName}" has unresolved secret-backed ${label} value "${key}". Use resolvedConfig.`
+        );
       }
       return [key, value];
     })
@@ -793,7 +985,11 @@ function materializeSecrets(
 }
 
 function shouldFallbackToSse(error: unknown): boolean {
-  return error instanceof StreamableHTTPError || error instanceof SseError || error instanceof Error;
+  return (
+    error instanceof StreamableHTTPError ||
+    error instanceof SseError ||
+    error instanceof Error
+  );
 }
 
 function normalizeMcpError(error: unknown): StructuredError {
@@ -831,7 +1027,11 @@ async function readFileTextIfExists(filePath: string): Promise<string | null> {
   }
 }
 
-function applyJsoncEdit(document: string, pathSegments: (string | number)[], value: unknown): string {
+function applyJsoncEdit(
+  document: string,
+  pathSegments: (string | number)[],
+  value: unknown
+): string {
   const edits = modify(document, pathSegments, value, {
     formattingOptions: {
       insertSpaces: true,

@@ -28,6 +28,7 @@ import {
   externalAgentJobRequestSchema,
   externalAgentJobResumeRequestSchema
 } from "@/core/contracts/external-agents";
+import { mcpServerSummarySchema } from "@/core/contracts/mcp";
 import { memoryHitSchema, memoryQuerySchema } from "@/core/contracts/memory";
 import { messagePartSchema, messageSchema } from "@/core/contracts/messages";
 import { taskStateSnapshotSchema } from "@/core/contracts/plans";
@@ -401,6 +402,7 @@ export const gatewayRequestTopicSchema = z.enum([
   "external_agent.run",
   "gateway.health",
   "gateway.subscribe",
+  "mcp.list",
   "memory.query",
   "model.health",
   "run.cancel",
@@ -456,6 +458,9 @@ export const gatewayRequestPayloadSchemas = {
   "external_agent.run": externalAgentJobRequestSchema,
   "gateway.health": z.object({}).strict(),
   "gateway.subscribe": gatewaySubscriptionSchema,
+  "mcp.list": z
+    .object({ serverNames: z.array(z.string().min(1)).max(64).optional() })
+    .strict(),
   "memory.query": memoryQuerySchema,
   "model.health": z.object({ provider: providerIdSchema.optional() }).strict(),
   "run.cancel": gatewayRunCancelRequestSchema,
@@ -506,6 +511,7 @@ export const gatewayResponsePayloadSchemas = {
       subscription: gatewaySubscriptionSchema
     })
     .strict(),
+  "mcp.list": z.object({ servers: z.array(mcpServerSummarySchema) }).strict(),
   "memory.query": z.object({ hits: z.array(memoryHitSchema) }).strict(),
   "model.health": providerHealthSchema,
   "run.cancel": z.object({ run: gatewayRunRecordSchema }).strict(),
