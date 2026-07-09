@@ -116,6 +116,38 @@ export function createToolApprovalDecider(params: {
   };
 }
 
+// Synthesize mcp_server "allow" rules for servers configured as trusted and
+// append them AFTER the operator's rules. A trusted server's tools are
+// auto-approved, while an explicit operator deny rule still takes precedence —
+// a server-level (mcp_server) deny because it is matched before the appended
+// trust rule on the same target, and a tool-level (mcp_tool/tool) deny because
+// extractApprovalTargets evaluates the mcp_tool target before mcp_server.
+// Untrusted servers are unaffected and flow through the normal approval policy.
+export function withMcpTrustRules(
+  settings: ApprovalSettings,
+  servers: Record<string, { trust?: "prompt" | "trusted" }>
+): ApprovalSettings {
+  const trustRules: ApprovalPolicyRule[] = Object.entries(servers)
+    .filter(([, config]) => config.trust === "trusted")
+    .map(([serverName]) => ({
+      id: `rule.mcp.trust.${serverName.replace(/[^A-Za-z0-9._:-]+/g, "-")}`,
+      mode: "allow",
+      notes: `Auto-approved: MCP server "${serverName}" is configured as trusted.`,
+      pattern: `^${escapeRegExpLiteral(serverName)}$`,
+      targetKind: "mcp_server"
+    }));
+
+  if (trustRules.length === 0) {
+    return settings;
+  }
+
+  return { ...settings, rules: [...settings.rules, ...trustRules] };
+}
+
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function isQuestionInteraction(definition: ToolDefinition): boolean {
   return definition.annotations.meta.interaction === "question";
 }
@@ -180,15 +212,18 @@ export function extractApprovalTargets(call: ToolCallRecord, definition: ToolDef
   }
 
   if (definition.kind === "mcp" && definition.source.serverName) {
-    pushUnique({
-      kind: "mcp_server",
-      label: definition.source.serverName,
-      value: definition.source.serverName
-    });
+    // Evaluate the more specific mcp_tool target BEFORE the coarse mcp_server
+    // target so a tool-granularity operator rule (e.g. denying a single tool on
+    // an otherwise-trusted server) is honored ahead of a server-level allow.
     pushUnique({
       kind: "mcp_tool",
       label: definition.displayName,
       value: definition.name
+    });
+    pushUnique({
+      kind: "mcp_server",
+      label: definition.source.serverName,
+      value: definition.source.serverName
     });
   }
 

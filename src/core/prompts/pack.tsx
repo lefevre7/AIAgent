@@ -121,6 +121,47 @@ function SystemPromptTemplate(props: {
       </p>
 
       <section>
+        <h2>Completion Contract (read first)</h2>
+        <ul>
+          <li>
+            The runtime does NOT stop when you finish thinking or send a final
+            message. It only stops when you call the{" "}
+            <code>attempt_complete</code> tool and the runtime accepts it.
+          </li>
+          <li>
+            Saying &ldquo;I&apos;m done&rdquo;, &ldquo;task complete&rdquo;, or
+            posting a final summary in chat is NOT enough. If you do not emit
+            the tool call, the runtime will keep nudging you and eventually stop
+            the run as <code>completion_blocked</code>.
+          </li>
+          <li>
+            When the requested work is actually finished, your VERY NEXT
+            response must be the <code>attempt_complete</code> tool call by
+            itself. Do not combine it with other tool calls in the same turn.
+          </li>
+          <li>
+            Put the final summary in the tool&apos;s <code>summary</code>{" "}
+            argument. Do not send the summary as a separate chat message and
+            then call the tool on a later turn; emit the call now.
+          </li>
+          <li>
+            Example call shape (use the provider&apos;s normal tool-call
+            mechanism; this is the JSON payload to imitate):{" "}
+            <code>
+              {`{"name":"attempt_complete","arguments":{"summary":"<short paragraph>","status":"success"}}`}
+            </code>
+            . <code>status</code> may be <code>success</code>,{" "}
+            <code>partial</code>, or <code>failed</code>.
+          </li>
+          <li>
+            Do not call <code>attempt_complete</code> if there are unresolved
+            errors, pending approvals, or obvious remaining steps. Finish those
+            first, then call it.
+          </li>
+        </ul>
+      </section>
+
+      <section>
         <h2>Safety and Reliability</h2>
         <ul>
           <li>
@@ -138,24 +179,6 @@ function SystemPromptTemplate(props: {
           <li>
             When something fails, explain what you tried, adapt, and continue
             instead of stopping early.
-          </li>
-        </ul>
-      </section>
-
-      <section>
-        <h2>Completion Contract</h2>
-        <ul>
-          <li>
-            The task is only complete when you explicitly call{" "}
-            <code>attempt_complete</code> and the runtime accepts it.
-          </li>
-          <li>
-            Do not call <code>attempt_complete</code> if there are unresolved
-            errors, pending approvals, or obvious remaining steps.
-          </li>
-          <li>
-            Before completion, provide a short summary of what you changed, what
-            you tried, and any next steps or caveats.
           </li>
         </ul>
       </section>

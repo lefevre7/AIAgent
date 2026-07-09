@@ -23,3 +23,27 @@ export function slugify(value: string): string {
 
   return normalized.length > 0 ? normalized : "mcp";
 }
+
+// slugify is lossy (case-folding + punctuation collapse), so two distinct
+// tool/server names can produce the same invocation name. Left unhandled this
+// is fatal: the tool registry throws on a duplicate invocation name, and since
+// the MCP registry is rebuilt on every lookup that throw takes down the whole
+// catalog (built-ins included). This disambiguator makes assignment injective
+// by appending "-2", "-3", … to later collisions (staying within the 64-char
+// invocation-name cap), and records the winner in `used`.
+export function disambiguateInvocationName(base: string, used: Set<string>): string {
+  if (!used.has(base)) {
+    used.add(base);
+    return base;
+  }
+
+  for (let suffix = 2; ; suffix += 1) {
+    const marker = `-${suffix}`;
+    const trimmed = base.slice(0, Math.max(1, 64 - marker.length));
+    const candidate = `${trimmed}${marker}`;
+    if (!used.has(candidate)) {
+      used.add(candidate);
+      return candidate;
+    }
+  }
+}

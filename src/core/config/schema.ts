@@ -276,6 +276,12 @@ const runtimeModelSettingsSchema = z
     // Anti-repetition penalty (llama.cpp/Ollama repeat_penalty). Sent to both
     // adapters so it applies even when a model preset did not set it.
     repetitionPenalty: z.number().min(0).max(2).optional(),
+    // Whether the active model can accept image input. When omitted it is
+    // treated as true (opt-out): image content returned by MCP tools is
+    // forwarded to the model. Set false for text-only local models so such
+    // content is summarized as a text placeholder instead. See docs/MCP.md and
+    // docs/SMALL_MODELS.md.
+    supportsVision: z.boolean().optional(),
     temperature: z.number().min(0).max(2).optional(),
     topK: z.number().int().min(0).max(1000).optional(),
     topP: z.number().min(0).max(1).optional()
@@ -445,7 +451,12 @@ const mcpServerBaseConfigSchema = z
     provenance: mcpServerProvenanceSchema.optional(),
     required: z.boolean(),
     tags: z.array(z.string().min(1).max(128)).max(64),
-    timeoutMs: positiveTimeoutSchema.optional()
+    timeoutMs: positiveTimeoutSchema.optional(),
+    // Approval trust for this server's tools. "trusted" auto-approves them via a
+    // synthesized mcp_server allow rule (an explicit operator deny rule still
+    // wins); omitted/"prompt" means every tool call is gated by the approval
+    // policy. MCP tools never carry the "never" approval mode regardless.
+    trust: z.enum(["prompt", "trusted"]).optional()
   })
   .strict();
 
@@ -512,7 +523,11 @@ const mcpConfigSchema = z
   .object({
     imports: z.record(z.string(), mcpImportConfigSchema),
     servers: z.record(z.string(), mcpServerConfigSchema),
-    templates: z.record(z.string(), mcpServerTemplateSchema)
+    templates: z.record(z.string(), mcpServerTemplateSchema),
+    // Hot-reload MCP servers when a config/import file changes. Omitted is
+    // treated as true. Disable for long-lived server processes that should not
+    // reconnect mid-session on unrelated config edits.
+    watch: z.boolean().optional()
   })
   .strict();
 

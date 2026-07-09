@@ -75,7 +75,10 @@ When the last model request's real `usage.inputTokens` reaches the threshold, th
     "repetitionPenalty": 1.1,      // default 1.1; sent as repeat_penalty to both adapters
     "presencePenalty": 0.0,        // optional; e.g. 2.0 for Qwen3.5 non-thinking text
     "topK": 20,                    // optional
-    "minP": 0.0                    // optional
+    "minP": 0.0,                   // optional
+    "supportsVision": false        // set false for text-only models: MCP image output
+                                   // becomes a "[image: …]" text placeholder instead of
+                                   // being forwarded as image input (omitted → true)
   },
   "promptBudgets": {
     "instructionDocChars": 12000,  // per AGENTS.md document; truncated with a read_file pointer

@@ -1,6 +1,6 @@
 # MCP: discovery, status, and how the agent answers "what servers/tools do you have?"
 
-Last updated: 2026-06-12
+Last updated: 2026-07-09
 
 ## How MCP is wired
 
@@ -70,13 +70,102 @@ server like `context7` (`npx -y @upstash/context7-mcp@latest`):
 way to see the exact reason (the connection error is recorded in
 `getServerStatuses().error` but is otherwise not displayed anywhere).
 
+## Config knobs
+
+Per-server (`mcp.servers.<name>`):
+
+- **`timeoutMs`** — request timeout (ms) applied to *every* SDK call for the server
+  (connect handshake, `callTool`, `list*`, `getPrompt`, `readResource`). Omitted →
+  the SDK default (`DEFAULT_REQUEST_TIMEOUT_MSEC`, 60s). Progress notifications reset
+  the timer (`resetTimeoutOnProgress`), so long, progress-reporting tools are not
+  killed mid-stream.
+- **`trust`** — `"prompt"` (default when omitted) or `"trusted"`. See "Approval &
+  trust" below.
+
+Top-level (`mcp`):
+
+- **`watch`** — hot-reload MCP servers when a config/import file changes. Omitted →
+  `true`. Set `false` for long-lived server processes that should not reconnect
+  mid-session on unrelated config edits.
+
+Runtime (`runtime.modelSettings`):
+
+- **`supportsVision`** — whether the active model accepts image input. Omitted →
+  `true` (opt-out). When true, image content returned by an MCP tool is forwarded to
+  the model; when false, it is summarized as a `[image: …]` text placeholder instead.
+  Set `false` for text-only local models. Also documented in `docs/CONFIG.md` and
+  `docs/SMALL_MODELS.md`.
+
+## Approval & trust
+
+MCP tools are **always** `approvalMode: "ask"` — the server-reported `readOnlyHint` is
+an advisory, untrusted annotation (per the MCP spec) and never grants silent execution
+or bypasses operator deny rules. Each MCP tool call is evaluated by the approval policy,
+which sees `mcp_server` and `mcp_tool` targets (`extractApprovalTargets`).
+
+To auto-approve a server you trust, set `trust: "trusted"` on it. The gateway
+synthesizes an `mcp_server` **allow** rule for each trusted server and appends it *after*
+your configured rules (`withMcpTrustRules` in `src/core/approvals/policy.ts`). An explicit
+operator **deny** rule still wins — a server-level (`mcp_server`) deny because it precedes
+the appended trust rule, and a tool-level (`mcp_tool`/`tool`) deny because the `mcp_tool`
+target is evaluated before `mcp_server`. So you can trust a server yet still deny one of
+its tools.
+
+## Transport selection & fallback
+
+`connectClient` (`src/core/mcp/manager.ts`) picks the transport from `type`:
+
+- `stdio` — spawns the command; env is the SDK allowlist (`getDefaultEnvironment`) merged
+  with the server's `env`.
+- `sse` — legacy SSE. Custom `headers` are injected via a `fetch` wrapper so they reach
+  **both** the SSE stream open (GET) and the message POSTs (`eventSourceInit` alone would
+  miss the GET).
+- `streamable-http` — modern HTTP; no fallback.
+- `auto` — try Streamable HTTP, and fall back to SSE **only** on a `StreamableHTTPError`
+  with a 4xx status that is not `401`/`403` (`shouldFallbackToSse`). Network/TLS/5xx/auth
+  failures surface as-is rather than being masked by a second, misleading SSE error.
+
+## Reliability
+
+- **Tools-only servers connect.** `list*` calls are gated on the server's advertised
+  capabilities (`getServerCapabilities()`) and each is wrapped so a failure yields `[]`.
+  A tools-only server no longer fails wholesale on `resources/list` → `MethodNotFound`.
+- **Failed servers are retried.** A `failed` (or `disabled`) entry is not reused across
+  `refresh()`; only a `connected` entry with an unchanged config signature is kept. A
+  transiently-failed server reconnects on the next refresh once it recovers.
+- **`refresh()` is serialized** (`refreshQueue`) so overlapping reloads cannot orphan
+  clients or spawn duplicate stdio processes. A connect/enumeration failure closes the
+  client so no transport/child process leaks.
+- **Injective invocation names.** Names are de-duplicated per server and across servers
+  with a `-2`/`-3` suffix (`disambiguateInvocationName`), and the MCP registry skips (and
+  logs) a duplicate rather than throwing — one misbehaving server can't take down the
+  whole tool catalog.
+- **Registry memoization.** The dynamic MCP registry rebuilds only when the manager's
+  generation changes (`getGeneration()`), not on every lookup.
+
+## Non-text tool output
+
+`createMcpRuntimeTool.execute` lifts text and embedded-resource *text* into the display,
+emits `[image|audio|resource …]` placeholders for binary content, and — when an artifact
+root is configured — persists image/audio/blob blocks as artifacts. Images are forwarded
+to the model as a follow-up user message when `supportsVision` is not false (see above);
+otherwise only the placeholder text reaches the model.
+
 ## Where things live
 
-- `src/core/mcp/manager.ts` — `summarizeServers()`, statuses, catalog, connect/refresh.
+- `src/core/mcp/manager.ts` — `summarizeServers()`, statuses, catalog, connect/refresh,
+  transport selection, `shouldFallbackToSse`, timeout wiring, capability-gated enumeration.
+- `src/core/mcp/names.ts` — `sanitizeMcpInvocationName`, `disambiguateInvocationName`.
+- `src/core/mcp/runtime-tools.ts` — MCP tool definitions/execution, content→display/artifacts, registry memoization.
+- `src/core/approvals/policy.ts` — `withMcpTrustRules` (trusted-server allow rules).
 - `src/core/tools/builtins/mcp-status.ts` — the `mcp_status` tool.
 - `src/core/tools/defaults.ts` — MCP tool registration + `resolveVisibleToolDefinitions`.
 - `src/core/contracts/mcp.ts` — `mcpServerSummarySchema` / `MCPServerSummary`.
 - `src/core/contracts/gateway.ts` + `src/gateway/runtime.ts` — the `mcp.list` request.
 - `src/cli.ts` — the `/mcp` command.
-- Tests: `tests/integration/mcp-manager.test.ts` (summarize + `mcp_status` via runtime),
+- Tests: `tests/integration/mcp-manager.test.ts` (summarize + `mcp_status` via runtime,
+  tools-only server, failed-server retry, raw-name routing, trust round-trip),
+  `tests/unit/mcp-names.test.ts`, `tests/unit/mcp-transport.test.ts` (fallback predicate),
+  `tests/unit/mcp-catalog.test.ts`, `tests/unit/mcp-runtime-tools.test.ts` (approval,
+  content/artifacts, de-dup, memoization), `tests/unit/mcp-trust-rules.test.ts`,
   `tests/unit/tool-profile.test.ts` (lean `alwaysInclude`).

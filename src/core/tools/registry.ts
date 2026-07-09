@@ -18,33 +18,48 @@ export class ToolRegistryBuilder {
   private readonly invocationNames = new Map<string, string>();
   private readonly names = new Map<string, string>();
 
-  register(tool: RuntimeTool): this {
+  register(tool: RuntimeTool, options?: { onDuplicate?: "skip" | "throw" }): this {
+    const onDuplicate = options?.onDuplicate ?? "throw";
     const toolId = tool.definition.toolId;
-    if (this.entries.has(toolId)) {
-      throw new Error(`Tool id "${toolId}" is already registered.`);
-    }
-
     const invocationName = tool.definition.invocationName;
-    if (this.invocationNames.has(invocationName)) {
-      throw new Error(`Tool invocation name "${invocationName}" is already registered.`);
-    }
-
     const normalizedName = normalizeLookupKey(tool.definition.name);
-    if (this.names.has(normalizedName) || this.aliases.has(normalizedName)) {
-      throw new Error(`Tool name "${tool.definition.name}" conflicts with an existing tool or alias.`);
+
+    const conflict = this.entries.has(toolId)
+      ? `Tool id "${toolId}" is already registered.`
+      : this.invocationNames.has(invocationName)
+        ? `Tool invocation name "${invocationName}" is already registered.`
+        : this.names.has(normalizedName) || this.aliases.has(normalizedName)
+          ? `Tool name "${tool.definition.name}" conflicts with an existing tool or alias.`
+          : null;
+
+    // A single misbehaving source (e.g. an MCP server exposing two tools that
+    // collapse to the same identity) must not throw and take down the entire
+    // registry — including built-in tools — when built with onDuplicate "skip".
+    if (conflict) {
+      if (onDuplicate === "skip") {
+        console.warn(`Skipping duplicate tool registration: ${conflict}`);
+        return this;
+      }
+      throw new Error(conflict);
     }
 
-    const normalizedAliases = tool.definition.aliases.map((alias) => {
+    const normalizedAliases: string[] = [];
+    for (const alias of tool.definition.aliases) {
       const normalizedAlias = normalizeLookupKey(alias);
       if (normalizedAlias === normalizedName) {
-        return normalizedAlias;
+        normalizedAliases.push(normalizedAlias);
+        continue;
       }
       if (this.names.has(normalizedAlias) || this.aliases.has(normalizedAlias)) {
+        if (onDuplicate === "skip") {
+          console.warn(`Skipping conflicting tool alias "${alias}".`);
+          continue;
+        }
         throw new Error(`Tool alias "${alias}" conflicts with an existing tool or alias.`);
       }
       this.aliases.set(normalizedAlias, toolId);
-      return normalizedAlias;
-    });
+      normalizedAliases.push(normalizedAlias);
+    }
 
     this.entries.set(toolId, {
       normalizedAliases,
@@ -62,10 +77,13 @@ export class ToolRegistryBuilder {
   }
 }
 
-export function createExecutableToolRegistry(tools: RuntimeTool[]): ExecutableToolRegistry {
+export function createExecutableToolRegistry(
+  tools: RuntimeTool[],
+  options?: { onDuplicate?: "skip" | "throw" }
+): ExecutableToolRegistry {
   const builder = new ToolRegistryBuilder();
   for (const tool of tools) {
-    builder.register(tool);
+    builder.register(tool, options);
   }
   return builder.build();
 }

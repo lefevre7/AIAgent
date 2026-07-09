@@ -23,6 +23,7 @@ import {
   createMemoryServiceFromConfig,
   createPlaywrightBrowserAutomationService,
   createToolApprovalDecider,
+  withMcpTrustRules,
   CommandRuntime,
   loadAIAgentConfig,
   type ApprovalSettings,
@@ -189,6 +190,7 @@ export class GatewayRuntime
         presencePenalty: options.config.runtime.modelSettings.presencePenalty,
         repetitionPenalty:
           options.config.runtime.modelSettings.repetitionPenalty,
+        supportsVision: options.config.runtime.modelSettings.supportsVision,
         temperature: options.config.runtime.modelSettings.temperature,
         topK: options.config.runtime.modelSettings.topK,
         topP: options.config.runtime.modelSettings.topP
@@ -2397,7 +2399,8 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     fetchImpl: params.fetchImpl,
     loaded: params.loaded,
     userHomeDirectory: params.userHomeDirectory,
-    watch: false
+    // Hot-reload MCP servers on config/import file changes unless disabled.
+    watch: params.loaded.resolvedConfig.mcp.watch ?? true
   });
   await mcpManager.initialize();
 
@@ -2441,6 +2444,12 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
         fetchImpl: params.fetchImpl
       })
     : undefined;
+  // Auto-approve tools from MCP servers configured as trusted, while keeping
+  // explicit operator deny rules authoritative.
+  const approvals = withMcpTrustRules(
+    params.loaded.approvals,
+    params.loaded.resolvedConfig.mcp.servers
+  );
   const toolRuntime = new ToolRuntime({
     approvalDecider: createToolApprovalDecider({
       resolveAdditionalTargets: params.externalAgentService
@@ -2448,7 +2457,7 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
             service: params.externalAgentService
           })
         : undefined,
-      settings: params.loaded.approvals
+      settings: approvals
     }),
     registry: createDefaultToolRegistry({
       browserService,
@@ -2457,6 +2466,10 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
       externalAgentService: params.externalAgentService,
       fetchImpl: params.fetchImpl,
       imageService,
+      mcpArtifactRoot: path.join(
+        params.loaded.resolvedConfig.memory.stateRoot,
+        "mcp-tool-artifacts"
+      ),
       mcpManager,
       memoryService,
       sessions,
@@ -2470,7 +2483,7 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     fetchImpl: params.fetchImpl
   });
   const runtime = new GatewayRuntime({
-    approvals: params.loaded.approvals,
+    approvals,
     browserService,
     channelService: params.channelService,
     config: params.loaded.resolvedConfig,

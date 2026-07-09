@@ -179,6 +179,43 @@ Package-local workflow.`,
     expect(pack.nudges.taskContinuation).toContain("attempt_complete");
   });
 
+  test("renders the strengthened Completion Contract directly under the intro", async () => {
+    const root = await createTempRoot();
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
+
+    const pack = await buildPromptPack({
+      availableTools: [],
+      cwd: workspace,
+      userHomeDirectory: root
+    });
+
+    // The section heading wording (and "read first" cue) signals the prompt
+    // change to future maintainers; the contract must be visible enough that a
+    // small local model treats completion as an explicit tool call rather than
+    // a chat-only sign-off.
+    expect(pack.systemPrompt).toContain("Completion Contract (read first)");
+    // "Saying I'm done is not enough" — the literal anti-prose sentence is the
+    // headline behavior change. If this string is renamed, update both the
+    // section and the docs in docs/AGENT_LOOP.md.
+    expect(pack.systemPrompt).toMatch(/Saying .*I.?m done/u);
+    expect(pack.systemPrompt).toContain("completion_blocked");
+    // The literal JSON example must be present so the model can imitate the
+    // tool-call shape verbatim. We assert the call name and the required
+    // argument together to defend against accidental schema drift.
+    expect(pack.systemPrompt).toContain(
+      `{"name":"attempt_complete","arguments":{"summary":"`
+    );
+    // The Completion Contract section must appear before the Safety section so
+    // the model reads it first.
+    const completionIndex = pack.systemPrompt.indexOf(
+      "Completion Contract (read first)"
+    );
+    const safetyIndex = pack.systemPrompt.indexOf("Safety and Reliability");
+    expect(completionIndex).toBeGreaterThan(-1);
+    expect(safetyIndex).toBeGreaterThan(completionIndex);
+  });
+
   test("truncates oversized instruction documents and memory summaries with a read_file pointer", async () => {
     const root = await createTempRoot();
     const workspace = path.join(root, "workspace");

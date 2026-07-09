@@ -17,6 +17,8 @@ This document compares how the following repos implement agent behavior:
 - `voltagent`
 - `vscode-copilot-chat`
 
+todo: Add Cline, OpenCode, and Hermes Agent for next iteration of AIA
+
 The comparison focuses on:
 
 - Agent loop structure

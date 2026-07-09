@@ -113,6 +113,7 @@ export function createDefaultToolRegistry(
     externalAgentService?: ExternalAgentService;
     fetchImpl?: typeof fetch;
     imageService?: ImageService;
+    mcpArtifactRoot?: string;
     mcpManager?: MCPManager;
     memoryService?: FileBackedMemoryService;
     sessions?: FileSessionStore;
@@ -281,7 +282,9 @@ export function createDefaultToolRegistry(
 
   return combineToolRegistries([
     baseRegistry,
-    createMcpExecutableToolRegistry(options.mcpManager)
+    createMcpExecutableToolRegistry(options.mcpManager, {
+      artifactRoot: options.mcpArtifactRoot
+    })
   ]);
 }
 
@@ -293,6 +296,7 @@ export function createDefaultToolRuntime(
     externalAgentService?: ExternalAgentService;
     fetchImpl?: typeof fetch;
     imageService?: ImageService;
+    mcpArtifactRoot?: string;
     mcpManager?: MCPManager;
     memoryService?: FileBackedMemoryService;
     sessions?: FileSessionStore;

@@ -1,6 +1,6 @@
 # Agent Loop: completion, no-progress safety, and tool-call recovery
 
-Last updated: 2026-06-12
+Last updated: 2026-06-15
 
 This document explains how the agent loop decides to keep going, nudge, or stop —
 and how the LM layer recovers tool calls that local models emit as plain text.
@@ -118,6 +118,58 @@ recovered so downstream behaves identically to native parsing.
   name resolves) to avoid eating legitimate JSON answers.
 - Adding a no-progress-style tool: give it `annotations.meta.family` of `reasoning`
   or `planning` rather than special-casing it in the loop.
+
+## Completion-contract emphasis (2026-06-15)
+
+Symptom this addresses: a small local model (observed with Gemma 4 26B on LM Studio
+in the interactive REPL) finishes the requested work, posts a final-summary chat
+message, and never emits `attempt_complete`. The loop's `taskContinuation` nudge
+then fires repeatedly, the model emits empty responses, and the run ends with
+`stopReason: "completion_blocked"` after `maxConsecutiveNudges`.
+
+The fix is prompt + tool guidance, not a runtime behavior change. The existing
+nudge text already mentions `attempt_complete`; the missing pressure was upfront
+in the system prompt and in the tool's own `usageGuidance`.
+
+- **`src/core/prompts/pack.tsx`** — the "Completion Contract" section now sits
+  directly under the intro paragraph (above "Safety and Reliability"), is titled
+  "Completion Contract (read first)", states explicitly that prose like "I'm
+  done" or a final summary message does NOT end the task, and inlines the
+  literal JSON shape the model should imitate:
+  `{"name":"attempt_complete","arguments":{"summary":"<short paragraph>","status":"success"}}`.
+  The "put the summary in the `summary` argument, do not send it as a separate
+  chat message" sentence specifically addresses the two-step failure mode where
+  the model produces a summary message and then expects to call the tool on a
+  later turn.
+- **`src/core/tools/builtins/attempt-complete.ts`** — `usageGuidance` now leads
+  with "This tool is the ONLY way to end the task" and repeats the
+  "summary-as-argument" cue. `usageGuidance` is not duplicated into the system
+  prompt (lean profile keeps it in the provider tools array only), so this
+  matters for providers that surface tool descriptions to the model.
+
+What deliberately did NOT change:
+- The nudge text itself (`promptPack.nudges.taskContinuation`) is unchanged.
+  The existing nudge already says "call `attempt_complete`"; reworking it was
+  optional per the user's direction.
+- No runtime auto-detection or auto-synthesis of "I'm done" prose into an
+  `attempt_complete` call. The explicit-tool-call requirement is non-negotiable
+  per `AGENTS.md`; the fix is to make the model emit it, not to fake it.
+- `maxConsecutiveNudges` defaults and the no-progress guard semantics are
+  unchanged.
+
+The `prompt-payload.test.ts` budget for the base system prompt was raised from
+8,000 to 8,700 chars to cover the new section. If a future pass shrinks the
+contract section back below the old budget, lower the constant again.
+
+Tests covering this:
+- `tests/integration/prompt-pack.test.ts` — asserts the section heading, the
+  anti-prose sentence, the literal JSON template, and the section ordering
+  (Completion Contract before Safety).
+- `tests/unit/attempt-complete-tool.test.ts` — pins the strengthened
+  `usageGuidance` wording so it is not softened by accident.
+- The existing `tests/integration/agent-loop.test.ts` round-trip ("nudges the
+  model when it replies without attempt_complete, and the model sees the
+  nudge") already covers the loop behavior after the prompt change.
 
 ## Streaming timeout: inactivity, not an absolute deadline
 

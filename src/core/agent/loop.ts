@@ -110,6 +110,7 @@ type AgentLoopOptions = {
     minP?: number;
     presencePenalty?: number;
     repetitionPenalty?: number;
+    supportsVision?: boolean;
     temperature?: number;
     topK?: number;
     topP?: number;
@@ -357,6 +358,9 @@ export class AgentLoop {
               }
             : {}),
           stopSequences: [],
+          ...(this.options.modelSettings?.supportsVision !== undefined
+            ? { supportsVision: this.options.modelSettings.supportsVision }
+            : {}),
           ...(this.options.modelSettings?.temperature !== undefined
             ? { temperature: this.options.modelSettings.temperature }
             : {}),

@@ -15,20 +15,31 @@ import { z } from "zod";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
+  DEFAULT_APPROVAL_SETTINGS,
   MCPManager,
+  ToolRuntime,
   createDefaultAppConfig,
+  createDefaultToolRegistry,
   createDefaultToolRuntime,
   createMcpManagerFromLoadedConfig,
+  createToolApprovalDecider,
   loadAIAgentConfig,
   sanitizeMcpInvocationName,
   sessionRecordSchema,
   toolCallRecordSchema,
-  turnRecordSchema
+  turnRecordSchema,
+  withMcpTrustRules
 } from "@/core";
 
 const tempRoots: string[] = [];
 const cleanups: Array<() => Promise<void>> = [];
 const STDIO_FIXTURE_PATH = path.resolve("tests/fixtures/mcp/stdio-server.mjs");
+const TOOLS_ONLY_FIXTURE_PATH = path.resolve(
+  "tests/fixtures/mcp/stdio-tools-only-server.mjs"
+);
+const FLAKY_FIXTURE_PATH = path.resolve(
+  "tests/fixtures/mcp/stdio-flaky-server.mjs"
+);
 const CAN_BIND_LOOPBACK = await canBindLoopback();
 const httpTransportTest = CAN_BIND_LOOPBACK ? test : test.skip;
 
@@ -90,6 +101,16 @@ describe("MCP manager", () => {
     expect(toolResult.structuredContent).toMatchObject({
       summary: "Documentation for mcp",
       topic: "mcp"
+    });
+
+    // callTool also accepts the raw server-side tool name (not just the
+    // sanitized invocation name), routing it through unchanged.
+    const rawNameResult = await manager.callTool("docs", "docs.lookup", {
+      topic: "raw"
+    });
+    expect(rawNameResult.structuredContent).toMatchObject({
+      summary: "Documentation for raw",
+      topic: "raw"
     });
 
     const fixedResource = await manager.readResource(
@@ -234,6 +255,111 @@ describe("MCP manager", () => {
     expect(status?.state).toBe("failed");
   });
 
+  test("keeps a tools-only server connected instead of failing on missing resources/prompts", async () => {
+    const config = createDefaultAppConfig({
+      userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
+    });
+    config.mcp.servers.toolsOnly = {
+      args: [TOOLS_ONLY_FIXTURE_PATH],
+      command: process.execPath,
+      description: "Tools-only stdio server",
+      enabled: true,
+      env: {},
+      // Required so a regression (server discarded as failed) throws here.
+      required: true,
+      stderr: "pipe",
+      tags: ["tools-only"],
+      type: "stdio"
+    };
+
+    const manager = new MCPManager({ config, watch: false });
+    cleanups.push(() => manager.close());
+    await manager.initialize();
+
+    const status = manager
+      .getServerStatuses()
+      .find((entry) => entry.serverName === "toolsOnly");
+    expect(status?.state).toBe("connected");
+    expect(status?.capabilities).toMatchObject({
+      prompts: 0,
+      resourceTemplates: 0,
+      resources: 0,
+      tools: 1
+    });
+
+    const echo = sanitizeMcpInvocationName("toolsOnly", "echo");
+    const result = await manager.callTool("toolsOnly", echo, { text: "hi" });
+    expect(result.structuredContent).toMatchObject({ echoed: "hi" });
+  });
+
+  test("rejects tool calls for unregistered and non-connected servers", async () => {
+    const config = createDefaultAppConfig({
+      userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
+    });
+    config.mcp.servers.dormant = {
+      args: [STDIO_FIXTURE_PATH],
+      command: process.execPath,
+      description: "Disabled stdio server",
+      enabled: false,
+      env: {},
+      required: false,
+      stderr: "pipe",
+      tags: [],
+      type: "stdio"
+    };
+
+    const manager = new MCPManager({ config, watch: false });
+    cleanups.push(() => manager.close());
+    await manager.initialize();
+
+    await expect(manager.callTool("missing", "whatever")).rejects.toThrow(
+      /is registered/u
+    );
+    await expect(manager.callTool("dormant", "whatever")).rejects.toThrow(
+      /not connected/u
+    );
+  });
+
+  test("retries a previously failed server on refresh once it can connect", async () => {
+    const root = await createTempRoot();
+    const readyFile = path.join(root, "ready.marker");
+    const config = createDefaultAppConfig({
+      userStateDirectory: path.join(root, "home", ".aia")
+    });
+    config.mcp.servers.flaky = {
+      args: [FLAKY_FIXTURE_PATH],
+      command: process.execPath,
+      description: "Flaky stdio server",
+      enabled: true,
+      env: { MCP_READY_FILE: readyFile },
+      required: false,
+      stderr: "pipe",
+      tags: ["flaky"],
+      // Bounds the failing connect attempt (also exercises timeout wiring).
+      timeoutMs: 5000,
+      type: "stdio"
+    };
+
+    const manager = new MCPManager({ config, watch: false });
+    cleanups.push(() => manager.close());
+
+    await manager.initialize();
+    expect(
+      manager.getServerStatuses().find((entry) => entry.serverName === "flaky")
+        ?.state
+    ).toBe("failed");
+
+    // The remote becomes connectable without any config change (same signature).
+    await fs.writeFile(readyFile, "ready");
+    await manager.refresh(config);
+
+    const status = manager
+      .getServerStatuses()
+      .find((entry) => entry.serverName === "flaky");
+    expect(status?.state).toBe("connected");
+    expect(status?.capabilities.tools).toBe(1);
+  });
+
   httpTransportTest(
     "supports streamable HTTP and auto-fallback to SSE",
     async () => {
@@ -258,6 +384,9 @@ describe("MCP manager", () => {
         headers: {},
         required: true,
         tags: ["legacy", "remote"],
+        // Trusted so the read-only tool round-trip below auto-approves; MCP
+        // tools otherwise require approval (see the dedicated approval test).
+        trust: "trusted",
         type: "auto",
         url: sse.url
       };
@@ -276,8 +405,13 @@ describe("MCP manager", () => {
       expect(statusByName.streamable?.transport).toBe("streamable-http");
       expect(statusByName.legacy?.transport).toBe("sse");
 
-      const runtime = createDefaultToolRuntime({
-        mcpManager: manager
+      const runtime = new ToolRuntime({
+        approvalDecider: createToolApprovalDecider({
+          settings: withMcpTrustRules(DEFAULT_APPROVAL_SETTINGS, {
+            legacy: { trust: "trusted" }
+          })
+        }),
+        registry: createDefaultToolRegistry({ mcpManager: manager })
       });
 
       const legacyInvocation = sanitizeMcpInvocationName(

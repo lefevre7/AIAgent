@@ -74,6 +74,9 @@ export const languageModelSettingsSchema = z
     presencePenalty: z.number().min(-2).max(2).optional(),
     repetitionPenalty: z.number().min(0).max(2).optional(),
     stopSequences: z.array(z.string().min(1)).default([]),
+    // Whether the target model accepts image input. Omitted is treated as true
+    // (opt-out); set false to keep image parts out of the provider payload.
+    supportsVision: z.boolean().optional(),
     temperature: z.number().min(0).max(2).optional(),
     toolChoice: z.enum(["auto", "none", "required"]).default("auto"),
     topK: z.number().int().min(0).max(1000).optional(),

@@ -5,10 +5,7 @@ import { EventEmitter } from "node:events";
 
 import { applyEdits, format, modify } from "jsonc-parser";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import {
-  SSEClientTransport,
-  SseError
-} from "@modelcontextprotocol/sdk/client/sse.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import {
   getDefaultEnvironment,
   StdioClientTransport
@@ -50,7 +47,10 @@ import {
 } from "@/core/contracts";
 import { BUILT_IN_MCP_SERVER_TEMPLATES } from "@/core/mcp/templates";
 import { loadImportedMcpServers } from "@/core/mcp/imports";
-import { sanitizeMcpInvocationName } from "@/core/mcp/names";
+import {
+  disambiguateInvocationName,
+  sanitizeMcpInvocationName
+} from "@/core/mcp/names";
 import { MCPCapabilityCatalog } from "@/core/mcp/catalog";
 
 type ManagedMCPServer = {
@@ -59,6 +59,9 @@ type ManagedMCPServer = {
   config: AppConfig["mcp"]["servers"][string];
   rawToolNamesByInvocationName: Map<string, string>;
   status: MCPServerStatus;
+  // Per-server request timeout (ms) applied to every SDK call for this server.
+  // Undefined preserves the SDK default (DEFAULT_REQUEST_TIMEOUT_MSEC).
+  timeoutMs?: number;
   transport: AppConfig["mcp"]["servers"][string]["type"];
 };
 
@@ -92,6 +95,15 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
   private refreshTimer: NodeJS.Timeout | null = null;
   private initialized = false;
   private lastRefreshAt: string | undefined;
+  // Serializes concurrent refresh() calls. Without this, an initialize() and a
+  // watcher-triggered reload (or two rapid reloads) could each snapshot the
+  // same previous connections, both reconnect the changed servers, and the
+  // loser's freshly-connected clients/child-processes would be dropped without
+  // close() — a transport/process leak.
+  private refreshQueue: Promise<void> = Promise.resolve();
+  // Bumped on every successful reconcile so cached tool-registry snapshots can
+  // cheaply detect staleness instead of rebuilding on every lookup.
+  private generation = 0;
 
   constructor(options: MCPManagerOptions) {
     super();
@@ -139,6 +151,13 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
 
   getCatalog(): MCPCapabilityCatalog {
     return this.catalog;
+  }
+
+  // Monotonic counter incremented on each successful reconcile. Consumers (e.g.
+  // the dynamic MCP tool registry) use it to memoize derived state and only
+  // rebuild when the connected capability set may have changed.
+  getGeneration(): number {
+    return this.generation;
   }
 
   getServerStatuses(): MCPServerStatus[] {
@@ -196,6 +215,21 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
   }
 
   async refresh(nextConfig?: AppConfig): Promise<void> {
+    // Chain onto any in-flight refresh so only one reconcile mutates
+    // this.connections at a time (see refreshQueue). The second callback of
+    // each .then runs refreshOnce even if the prior refresh rejected.
+    const run = this.refreshQueue.then(
+      () => this.refreshOnce(nextConfig),
+      () => this.refreshOnce(nextConfig)
+    );
+    this.refreshQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async refreshOnce(nextConfig?: AppConfig): Promise<void> {
     if (nextConfig) {
       this.config = nextConfig;
     } else if (this.reloadConfig && this.initialized) {
@@ -215,7 +249,15 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
         ? JSON.stringify(previous.config)
         : null;
 
-      if (previous && previousSignature === configSignature) {
+      // Reuse an existing connection only when it is actually connected and the
+      // config is unchanged. Failed entries are intentionally NOT reused so a
+      // transient failure (server not yet up, brief network/5xx) is retried on
+      // the next refresh instead of being pinned as "failed" until restart.
+      if (
+        previous &&
+        previousSignature === configSignature &&
+        previous.status.state === "connected"
+      ) {
         nextConnections.set(serverName, previous);
         previousConnections.delete(serverName);
         continue;
@@ -229,10 +271,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       if (!serverConfig.enabled) {
         nextConnections.set(serverName, {
           capabilities: [],
-          client: new Client(
-            { name: "AIAgent", version: "0.1.0" },
-            { capabilities: {} }
-          ),
+          client: newMcpClient(),
           config: serverConfig,
           rawToolNamesByInvocationName: new Map(),
           status: mcpServerStatusSchema.parse({
@@ -259,10 +298,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
         const structured = normalizeMcpError(error);
         const failedEntry: ManagedMCPServer = {
           capabilities: [],
-          client: new Client(
-            { name: "AIAgent", version: "0.1.0" },
-            { capabilities: {} }
-          ),
+          client: newMcpClient(),
           config: serverConfig,
           rawToolNamesByInvocationName: new Map(),
           status: mcpServerStatusSchema.parse({
@@ -307,6 +343,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       ...buildTemplateCapabilities(this.templateDefinitions)
     ]);
     this.lastRefreshAt = new Date().toISOString();
+    this.generation += 1;
 
     if (this.watchEnabled && this.reloadConfig) {
       await this.syncWatchers();
@@ -332,10 +369,14 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     const rawName =
       server.rawToolNamesByInvocationName.get(invocationOrRawToolName) ??
       invocationOrRawToolName;
-    return server.client.callTool({
-      arguments: args,
-      name: rawName
-    });
+    return server.client.callTool(
+      {
+        arguments: args,
+        name: rawName
+      },
+      undefined,
+      requestOptions(server.timeoutMs)
+    );
   }
 
   async readResource(
@@ -343,7 +384,10 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     uri: string
   ): Promise<MCPResourceReadResult> {
     const server = this.getConnectedServer(serverName);
-    const result = await server.client.readResource({ uri });
+    const result = await server.client.readResource(
+      { uri },
+      requestOptions(server.timeoutMs)
+    );
     return mcpResourceReadResultSchema.parse({
       contents: result.contents,
       uri
@@ -390,7 +434,10 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       const server = this.getConnectedServer(serverName);
       const prompts = await collectPaginated(
         async (cursor) =>
-          server.client.listPrompts(cursor ? { cursor } : undefined),
+          server.client.listPrompts(
+            cursor ? { cursor } : undefined,
+            requestOptions(server.timeoutMs)
+          ),
         "prompts"
       );
       return prompts;
@@ -434,10 +481,13 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     args: Record<string, string> = {}
   ): Promise<MCPPromptResult> {
     const server = this.getConnectedServer(serverName);
-    const prompt = await server.client.getPrompt({
-      arguments: args,
-      name
-    });
+    const prompt = await server.client.getPrompt(
+      {
+        arguments: args,
+        name
+      },
+      requestOptions(server.timeoutMs)
+    );
     return mcpPromptResultSchema.parse({
       description: prompt.description,
       messages: prompt.messages
@@ -551,28 +601,77 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       serverName
     });
 
-    const tools = await collectPaginated(
-      async (cursor) => client.listTools(cursor ? { cursor } : undefined),
-      "tools"
-    );
-    const resources = await collectPaginated(
-      async (cursor) => client.listResources(cursor ? { cursor } : undefined),
+    try {
+      return await this.enumerateConnectedServer(
+        client,
+        serverName,
+        serverConfig,
+        transport
+      );
+    } catch (error) {
+      // Tear down the already-connected transport (and, for stdio, the spawned
+      // child process) so a failure during capability enumeration does not leak
+      // it for the lifetime of the process.
+      await client.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async enumerateConnectedServer(
+    client: Client,
+    serverName: string,
+    serverConfig: AppConfig["mcp"]["servers"][string],
+    transport: AppConfig["mcp"]["servers"][string]["type"]
+  ): Promise<ManagedMCPServer> {
+    const serverCapabilities = client.getServerCapabilities();
+    const reqOpts = requestOptions(serverConfig.timeoutMs);
+
+    // Gate each list call on the capability the server advertised at initialize.
+    // The PRIMARY tools list must succeed for a "connected" state, so its errors
+    // propagate (server -> failed -> retried next refresh) rather than being
+    // swallowed into a "connected with zero tools" state that is never retried.
+    // Secondary lists (resources/templates/prompts) are best-effort: a tools-only
+    // server (very common for stdio) advertises no resources capability, so those
+    // calls are skipped, and an advertised-but-faulting one returns [] instead of
+    // discarding the whole server.
+    const tools = serverCapabilities?.tools
+      ? await collectPaginated(
+          async (cursor) =>
+            client.listTools(cursor ? { cursor } : undefined, reqOpts),
+          "tools"
+        )
+      : [];
+    const resources = await collectPaginatedGated(
+      Boolean(serverCapabilities?.resources),
+      async (cursor) =>
+        client.listResources(cursor ? { cursor } : undefined, reqOpts),
       "resources"
     );
-    const resourceTemplates = await collectPaginated(
+    const resourceTemplates = await collectPaginatedGated(
+      Boolean(serverCapabilities?.resources),
       async (cursor) =>
-        client.listResourceTemplates(cursor ? { cursor } : undefined),
+        client.listResourceTemplates(cursor ? { cursor } : undefined, reqOpts),
       "resourceTemplates"
     );
-    const prompts = await collectPaginated(
-      async (cursor) => client.listPrompts(cursor ? { cursor } : undefined),
+    const prompts = await collectPaginatedGated(
+      Boolean(serverCapabilities?.prompts),
+      async (cursor) =>
+        client.listPrompts(cursor ? { cursor } : undefined, reqOpts),
       "prompts"
     );
 
     const rawToolNamesByInvocationName = new Map<string, string>();
+    // slugify is lossy, so keep invocation names injective within this server
+    // (e.g. "GetUser"/"getuser" -> mcp_x_getuser, mcp_x_getuser-2). A duplicate
+    // would otherwise overwrite the raw-name mapping and later crash the shared
+    // tool registry on a duplicate invocation name.
+    const usedInvocationNames = new Set<string>();
     const capabilities: MCPCapability[] = [
       ...tools.map((tool) => {
-        const invocationName = sanitizeMcpInvocationName(serverName, tool.name);
+        const invocationName = disambiguateInvocationName(
+          sanitizeMcpInvocationName(serverName, tool.name),
+          usedInvocationNames
+        );
         rawToolNamesByInvocationName.set(invocationName, tool.name);
         return {
           access: "model_and_api" as const,
@@ -671,6 +770,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
         state: "connected",
         transport
       }),
+      timeoutMs: serverConfig.timeoutMs,
       transport
     };
   }
@@ -722,17 +822,23 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
 
       const directory = path.dirname(target);
       const basename = path.basename(target);
-      const watcher = fs.watch(
-        directory,
-        { persistent: false },
-        (_eventType, fileName) => {
-          if (fileName && fileName.toString() !== basename) {
-            return;
+      try {
+        const watcher = fs.watch(
+          directory,
+          { persistent: false },
+          (_eventType, fileName) => {
+            if (fileName && fileName.toString() !== basename) {
+              return;
+            }
+            this.scheduleReload();
           }
-          this.scheduleReload();
-        }
-      );
-      this.watchers.set(target, watcher);
+        );
+        this.watchers.set(target, watcher);
+      } catch {
+        // The target's directory may not exist yet (e.g. a not-yet-created
+        // workspace or user config dir). Watching is best-effort, so skip this
+        // target rather than failing initialization; a later refresh re-attempts.
+      }
     }
   }
 
@@ -780,6 +886,8 @@ async function connectClient(params: {
   client: Client;
   transport: AppConfig["mcp"]["servers"][string]["type"];
 }> {
+  const connectOptions = requestOptions(params.serverConfig.timeoutMs);
+
   if (params.serverConfig.type === "stdio") {
     const transport = new StdioClientTransport({
       args: params.serverConfig.args,
@@ -791,11 +899,8 @@ async function connectClient(params: {
       },
       stderr: params.serverConfig.stderr
     });
-    const client = new Client(
-      { name: "AIAgent", version: "0.1.0" },
-      { capabilities: {} }
-    );
-    await client.connect(transport);
+    const client = newMcpClient();
+    await connectOrClose(client, transport, connectOptions);
     return {
       client,
       transport: "stdio"
@@ -803,21 +908,19 @@ async function connectClient(params: {
   }
 
   if (params.serverConfig.type === "sse") {
-    const client = new Client(
-      { name: "AIAgent", version: "0.1.0" },
-      { capabilities: {} }
-    );
-    const transport = new SSEClientTransport(new URL(params.serverConfig.url), {
-      fetch: params.fetchImpl,
-      requestInit: {
-        headers: materializeSecrets(
+    const client = newMcpClient();
+    const transport = new SSEClientTransport(
+      new URL(params.serverConfig.url),
+      sseTransportOptions(
+        params.fetchImpl,
+        materializeSecrets(
           params.serverConfig.headers,
           params.serverName,
           "headers"
         )
-      }
-    });
-    await client.connect(transport);
+      )
+    );
+    await connectOrClose(client, transport, connectOptions);
     return {
       client,
       transport: "sse"
@@ -831,10 +934,7 @@ async function connectClient(params: {
     "headers"
   );
   const connectStreamable = async () => {
-    const client = new Client(
-      { name: "AIAgent", version: "0.1.0" },
-      { capabilities: {} }
-    );
+    const client = newMcpClient();
     const transport = new StreamableHTTPClientTransport(
       new URL(httpConfig.url),
       {
@@ -844,7 +944,7 @@ async function connectClient(params: {
         }
       }
     );
-    await client.connect(transport);
+    await connectOrClose(client, transport, connectOptions);
     return client;
   };
 
@@ -867,17 +967,12 @@ async function connectClient(params: {
       throw error;
     }
 
-    const client = new Client(
-      { name: "AIAgent", version: "0.1.0" },
-      { capabilities: {} }
+    const client = newMcpClient();
+    const transport = new SSEClientTransport(
+      new URL(httpConfig.url),
+      sseTransportOptions(params.fetchImpl, requestHeaders)
     );
-    const transport = new SSEClientTransport(new URL(httpConfig.url), {
-      fetch: params.fetchImpl,
-      requestInit: {
-        headers: requestHeaders
-      }
-    });
-    await client.connect(transport);
+    await connectOrClose(client, transport, connectOptions);
     return {
       client,
       transport: "sse"
@@ -903,6 +998,30 @@ async function collectPaginated<
   } while (cursor);
 
   return items as NonNullable<T[K]> extends Array<infer Item> ? Item[] : never;
+}
+
+// collectPaginated gated on a capability flag with per-call error isolation:
+// returns [] when the server did not advertise the capability, or when the
+// list request fails, so one unsupported/faulting capability never fails the
+// whole server connection.
+async function collectPaginatedGated<
+  T extends Record<string, unknown>,
+  K extends keyof T & string
+>(
+  enabled: boolean,
+  request: (cursor?: string) => Promise<T>,
+  key: K
+): Promise<NonNullable<T[K]> extends Array<infer Item> ? Item[] : never> {
+  if (enabled) {
+    try {
+      return await collectPaginated(request, key);
+    } catch {
+      // Advertised-but-faulting capability: fall through to an empty list.
+    }
+  }
+  return [] as unknown as NonNullable<T[K]> extends Array<infer Item>
+    ? Item[]
+    : never;
 }
 
 function buildTemplateCapabilities(
@@ -984,12 +1103,85 @@ function materializeSecrets(
   );
 }
 
-function shouldFallbackToSse(error: unknown): boolean {
+export function shouldFallbackToSse(error: unknown): boolean {
+  // Per the MCP Streamable-HTTP backwards-compatibility flow, only fall back to
+  // the legacy SSE transport when the server rejects the initialize POST with a
+  // 4xx (i.e. it does not speak Streamable HTTP) — excluding auth failures
+  // (401/403), which mean bad credentials rather than the wrong transport. Any
+  // other failure (network, TLS, timeout, 5xx) surfaces as-is instead of being
+  // masked by a second, misleading SSE connection error.
   return (
-    error instanceof StreamableHTTPError ||
-    error instanceof SseError ||
-    error instanceof Error
+    error instanceof StreamableHTTPError &&
+    typeof error.code === "number" &&
+    error.code >= 400 &&
+    error.code < 500 &&
+    error.code !== 401 &&
+    error.code !== 403
   );
+}
+
+// Per-request options for MCP SDK calls. Returns undefined (SDK default 60s)
+// when no per-server timeout is configured; otherwise applies the timeout and
+// resets it on progress notifications so long, progress-reporting tools are not
+// killed mid-stream.
+function requestOptions(
+  timeoutMs: number | undefined
+): { resetTimeoutOnProgress: true; timeout: number } | undefined {
+  return typeof timeoutMs === "number"
+    ? { resetTimeoutOnProgress: true, timeout: timeoutMs }
+    : undefined;
+}
+
+function newMcpClient(): Client {
+  return new Client({ name: "AIAgent", version: "0.1.0" }, { capabilities: {} });
+}
+
+async function connectOrClose(
+  client: Client,
+  transport: Parameters<Client["connect"]>[0],
+  options: ReturnType<typeof requestOptions>
+): Promise<void> {
+  try {
+    await client.connect(transport, options);
+  } catch (error) {
+    // Close the transport (and any spawned child process) so a failed connect
+    // does not leak resources; then surface the original error.
+    await client.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+// Custom request headers (e.g. an API key) must reach BOTH the SSE stream open
+// (GET) and the message POSTs. The SDK derives the EventSource fetch from the
+// transport's `fetch` option, so injecting headers via a fetch wrapper covers
+// the GET stream too — `requestInit.headers` alone only reaches the POSTs.
+function sseTransportOptions(
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>
+): { fetch: typeof fetch } {
+  return { fetch: withHeaders(fetchImpl, headers) };
+}
+
+function withHeaders(
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>
+): typeof fetch {
+  const entries = Object.entries(headers);
+  if (entries.length === 0) {
+    return fetchImpl;
+  }
+  return (
+    input: Parameters<typeof fetch>[0],
+    init?: Parameters<typeof fetch>[1]
+  ) => {
+    const merged = new Headers(init?.headers);
+    for (const [key, value] of entries) {
+      if (!merged.has(key)) {
+        merged.set(key, value);
+      }
+    }
+    return fetchImpl(input, { ...init, headers: merged });
+  };
 }
 
 function normalizeMcpError(error: unknown): StructuredError {

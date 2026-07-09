@@ -91,8 +91,23 @@ function scoreCapability(
     matchText(capability.uriTemplate, normalizedQuery, "uriTemplate", 88, 72, 52, add);
   }
 
+  // Score tags once at their best tier rather than accumulating per matching
+  // tag. Every capability carries injected tags ("mcp", the kind, plus the
+  // server's configured tags), so summing per-tag matches let tag-heavy
+  // capabilities outrank an exact name/displayName match on another capability.
+  let bestTagScore = 0;
   for (const tag of capability.tags) {
-    matchText(tag, normalizedQuery, "tags", 80, 65, 55, add);
+    const normalizedTag = tag.toLowerCase();
+    if (normalizedTag === normalizedQuery) {
+      bestTagScore = Math.max(bestTagScore, 80);
+    } else if (normalizedTag.startsWith(normalizedQuery)) {
+      bestTagScore = Math.max(bestTagScore, 65);
+    } else if (normalizedTag.includes(normalizedQuery)) {
+      bestTagScore = Math.max(bestTagScore, 55);
+    }
+  }
+  if (bestTagScore > 0) {
+    add("tags", bestTagScore);
   }
 
   if (capability.kind.includes(normalizedQuery)) {

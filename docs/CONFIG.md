@@ -80,9 +80,25 @@ HTTP server (`type` is one of `auto`, `sse`, `streamable-http`):
 }
 ```
 
+Optional per-server fields:
+
+- `timeoutMs` — request timeout (ms) applied to every SDK call to the server (connect,
+  tool calls, listings). Omitted → the SDK default (60s).
+- `trust` — `"prompt"` (default) or `"trusted"`. A trusted server's tools are
+  auto-approved via a synthesized `mcp_server` allow rule; an explicit operator deny rule
+  still wins, whether it targets the server (`mcp_server`) or a specific tool
+  (`mcp_tool`/`tool`), so you can trust a server yet deny one of its tools. Otherwise every
+  MCP tool call is gated by the approval policy — MCP tools are never silently executed on
+  the strength of a server's `readOnlyHint`. See `docs/MCP.md`.
+
 Servers can also be pulled in via `mcp.imports` (formats: `claude_desktop`,
 `generic_mcp_servers_json`, `roo_project`) or injected for a single run with the
 `AIA_MCP_CONFIG_JSON` environment variable.
 
 The MCP manager watches every global and workspace config file (plus imported
-files) and hot-reloads when they change.
+files) and hot-reloads when they change, unless `mcp.watch` is set to `false`
+(useful for long-lived server processes that should not reconnect on unrelated edits).
+
+Vision note: image content returned by MCP tools is forwarded to the model unless
+`runtime.modelSettings.supportsVision` is `false` (see `docs/SMALL_MODELS.md`); set it
+false for text-only local models so such content becomes a text placeholder instead.

@@ -16,7 +16,9 @@
     //   "contextWindowTokens": 32768,     // drives compaction + Ollama num_ctx fallback
     //   "temperature": 0.7,
     //   "topP": 0.8,
-    //   "maxOutputTokens": 4096
+    //   "maxOutputTokens": 4096,
+    //   "supportsVision": false           // text-only models: MCP image output becomes a
+    //                                     // "[image: …]" placeholder (default true; see docs/MCP.md)
     // },
     // "promptBudgets": { "instructionDocChars": 12000, "memorySummaryChars": 4000 }
   },
@@ -65,6 +67,7 @@
   // type "streamable-http" (or "sse"/"auto") with a url and headers.
   // Omitted "imports"/"templates" fall back to built-in defaults.
   "mcp": {
+    // "watch": true,   // hot-reload servers on config changes (default true; see docs/MCP.md)
     "servers": {
       "context7": {
         "type": "stdio",
@@ -73,6 +76,9 @@
         "tags": [],
         "command": "npx",
         "args": ["-y", "@upstash/context7-mcp@latest"]
+        // Optional per-server knobs:
+        // "timeoutMs": 60000,   // request timeout for all SDK calls (default 60s)
+        // "trust": "trusted"    // auto-approve this server's tools (operator deny rules still win)
       }
     }
   },

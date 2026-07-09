@@ -110,6 +110,6 @@ export const attemptCompleteToolDefinition: ToolDefinition = {
   streamingMode: "none",
   toolId: "tool.builtin.attempt_complete",
   usageGuidance:
-    "Use only when the task is actually done. Do not call this tool together with other tool calls. Before calling it, make sure you can explain what you accomplished, what you tried, and any remaining caveats.",
+    "This tool is the ONLY way to end the task. Saying you are done in chat does not end it — the runtime only stops when you call this tool and the gate accepts it. If you are about to send a final summary message, send that paragraph as the `summary` argument of this tool call instead of as chat text. Call it by itself; do not combine it with other tool calls in the same turn. Before calling, make sure you can explain what you accomplished, what you tried, and any remaining caveats.",
   version: "1.0.0"
 };

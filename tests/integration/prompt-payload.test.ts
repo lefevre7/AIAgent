@@ -20,7 +20,11 @@ import { serializeToolDefinitions } from "@/core/lm/shared";
 // model-visible payload — shrink it or consciously raise the budget here.
 const MAX_LEAN_TOOL_COUNT = 20;
 const MAX_LEAN_TOOLS_JSON_CHARS = 40_000;
-const MAX_BASE_SYSTEM_PROMPT_CHARS = 8_000;
+// Bumped from 8_000 in the 2026-06-15 completion-contract pass: the strengthened
+// "Completion Contract" section adds ~700 chars of imperative guidance and a
+// literal JSON example, which is cheap insurance against models that stop with
+// a final-summary message instead of calling `attempt_complete`.
+const MAX_BASE_SYSTEM_PROMPT_CHARS = 8_700;
 
 const tempRoots: string[] = [];
 

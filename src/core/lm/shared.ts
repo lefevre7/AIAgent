@@ -116,10 +116,33 @@ export async function serializeOpenAICompatibleMessages(
     { content: request.instructions, role: "system" }
   ];
   const emittedToolCallIds = new Set<string>();
+  // Tool-role messages cannot carry images in the OpenAI-compatible schema, so
+  // image output is forwarded (when the model supports vision) as a follow-up
+  // user message. Buffer it and flush only once the run of tool-result messages
+  // ends, so the inserted user message never splits a parallel tool_calls/tool
+  // sequence (which the schema rejects with a 400).
+  const pendingToolImages: Array<Extract<MessagePart, { kind: "image" }>> = [];
+  const flushPendingToolImages = async () => {
+    if (pendingToolImages.length === 0) {
+      return;
+    }
+    const parts: OpenAIContentPart[] = [
+      { text: "Image output from the preceding tool result(s).", type: "text" }
+    ];
+    for (const imagePart of pendingToolImages) {
+      parts.push({
+        image_url: { url: await resolveImageDataUrl(imagePart.uri) },
+        type: "image_url"
+      });
+    }
+    messages.push({ content: parts, role: "user" });
+    pendingToolImages.length = 0;
+  };
 
   for (const message of request.messages) {
     const toolCallParts = extractToolCallParts(message);
     if (message.role === "assistant" && toolCallParts.length > 0) {
+      await flushPendingToolImages();
       for (const part of toolCallParts) {
         emittedToolCallIds.add(part.callId);
       }
@@ -152,9 +175,13 @@ export async function serializeOpenAICompatibleMessages(
         role: "tool",
         tool_call_id: pairedToolCallId
       });
+      if (shouldForwardImages(request)) {
+        pendingToolImages.push(...extractImageParts(message.parts));
+      }
       continue;
     }
 
+    await flushPendingToolImages();
     const role = resolveProviderRole(message);
     const text = renderMessagePartsToText(message.parts).trim();
     const imageUris = message.parts.filter(
@@ -195,7 +222,24 @@ export async function serializeOpenAICompatibleMessages(
     });
   }
 
+  await flushPendingToolImages();
   return messages;
+}
+
+function extractImageParts(
+  parts: MessagePart[]
+): Array<Extract<MessagePart, { kind: "image" }>> {
+  return parts.filter(
+    (part): part is Extract<MessagePart, { kind: "image" }> =>
+      part.kind === "image"
+  );
+}
+
+// Forward image content to the model unless the operator explicitly marked the
+// model as non-vision (runtime.modelSettings.supportsVision === false). Omitted
+// means true (opt-out), matching the config default.
+function shouldForwardImages(request: LanguageModelRequest): boolean {
+  return request.settings.supportsVision !== false;
 }
 
 export async function serializeOllamaMessages(
@@ -205,10 +249,28 @@ export async function serializeOllamaMessages(
     { content: request.instructions, role: "system" }
   ];
   const emittedToolCallIds = new Map<string, string>();
+  // Buffer tool-result image output and flush it as a follow-up user message
+  // only once the run of tool-result messages ends, keeping the tool-call/tool
+  // sequence intact (see the OpenAI serializer for the rationale).
+  const pendingToolImages: Array<Extract<MessagePart, { kind: "image" }>> = [];
+  const flushPendingToolImages = async () => {
+    if (pendingToolImages.length === 0) {
+      return;
+    }
+    messages.push({
+      content: "Image output from the preceding tool result(s).",
+      images: await Promise.all(
+        pendingToolImages.map((imagePart) => resolveOllamaImage(imagePart.uri))
+      ),
+      role: "user"
+    });
+    pendingToolImages.length = 0;
+  };
 
   for (const message of request.messages) {
     const toolCallParts = extractToolCallParts(message);
     if (message.role === "assistant" && toolCallParts.length > 0) {
+      await flushPendingToolImages();
       for (const part of toolCallParts) {
         emittedToolCallIds.set(part.callId, part.toolName);
       }
@@ -240,9 +302,13 @@ export async function serializeOllamaMessages(
         tool_call_id: pairedToolCallId,
         tool_name: emittedToolCallIds.get(pairedToolCallId)
       });
+      if (shouldForwardImages(request)) {
+        pendingToolImages.push(...extractImageParts(message.parts));
+      }
       continue;
     }
 
+    await flushPendingToolImages();
     const imageParts = message.parts.filter(
       (part): part is Extract<MessagePart, { kind: "image" }> =>
         part.kind === "image"
@@ -265,6 +331,7 @@ export async function serializeOllamaMessages(
     });
   }
 
+  await flushPendingToolImages();
   return messages;
 }
 

@@ -134,6 +134,81 @@ describe("language-model message serialization", () => {
     expect(toolEntry.content).not.toContain("\n  ");
   });
 
+  test("forwards tool-result images after the whole tool-call run, not between tool results", async () => {
+    const uri = await pngUri();
+    const assistant: Message = {
+      ...message(
+        [
+          { arguments: {}, callId: "call.1", kind: "tool_call", toolName: "shot" },
+          { arguments: {}, callId: "call.2", kind: "tool_call", toolName: "note" }
+        ],
+        "assistant"
+      ),
+      id: "message.assistant.multi"
+    };
+    const toolResult1: Message = {
+      ...message([{ kind: "text", text: "first" }, { alt: "img", kind: "image", uri }], "tool"),
+      id: "message.tool.1",
+      metadata: { toolCallId: "call.1" }
+    };
+    const toolResult2: Message = {
+      ...message([{ kind: "text", text: "second" }], "tool"),
+      id: "message.tool.2",
+      metadata: { toolCallId: "call.2" }
+    };
+    const request = buildRequest([assistant, toolResult1, toolResult2]);
+
+    // The two tool messages must stay consecutive (OpenAI rejects a user message
+    // splitting a tool_calls/tool run); the image is forwarded after the run.
+    const openai = await serializeOpenAICompatibleMessages(request);
+    expect(openai.map((m) => m.role)).toEqual([
+      "system",
+      "assistant",
+      "tool",
+      "tool",
+      "user"
+    ]);
+    expect(JSON.stringify(openai[openai.length - 1])).toContain(
+      "data:image/png;base64,"
+    );
+
+    const ollama = await serializeOllamaMessages(request);
+    expect(ollama.map((m) => m.role)).toEqual([
+      "system",
+      "assistant",
+      "tool",
+      "tool",
+      "user"
+    ]);
+    expect(
+      Array.isArray((ollama[ollama.length - 1] as { images?: unknown[] }).images)
+    ).toBe(true);
+  });
+
+  test("does not forward tool-result images when supportsVision is false", async () => {
+    const uri = await pngUri();
+    const assistant: Message = {
+      ...message(
+        [{ arguments: {}, callId: "call.1", kind: "tool_call", toolName: "shot" }],
+        "assistant"
+      ),
+      id: "message.assistant.novision"
+    };
+    const toolResult: Message = {
+      ...message([{ alt: "img", kind: "image", uri }], "tool"),
+      id: "message.tool.novision",
+      metadata: { toolCallId: "call.1" }
+    };
+    const request: LanguageModelRequest = {
+      ...buildRequest([assistant, toolResult]),
+      settings: { stopSequences: [], supportsVision: false, toolChoice: "auto" }
+    };
+
+    const messages = await serializeOpenAICompatibleMessages(request);
+    expect(messages.map((m) => m.role)).toEqual(["system", "assistant", "tool"]);
+    expect(JSON.stringify(messages)).not.toContain("data:image");
+  });
+
   test("falls back to flattened text for orphan tool results with no matching assistant tool call", async () => {
     const orphanResult: Message = {
       ...message([{ kind: "json", value: { status: "succeeded" } }], "tool"),

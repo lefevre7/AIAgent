@@ -47,14 +47,14 @@ describe("approval policy", () => {
         value: "src/core/approvals/policy.ts"
       },
       {
-        kind: "mcp_server",
-        label: "context7",
-        value: "context7"
-      },
-      {
         kind: "mcp_tool",
         label: "Fixture Tool",
         value: "context7.read-docs"
+      },
+      {
+        kind: "mcp_server",
+        label: "context7",
+        value: "context7"
       },
       {
         kind: "tool",
