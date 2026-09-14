@@ -261,3 +261,48 @@ the `gateway.status` event payload; the CLI renders them dimmed on stderr during
   With streaming usage now populated, compaction works during streaming. There are
   intentionally no tool-result size caps, so a single huge `read_file` can still dominate
   the window — compaction is the backstop.
+
+## Manual compaction (`/compact`, gateway `session.compact`) — 2026-09-14
+
+Threshold compaction only fires when a model response reports enough input tokens,
+so an operator watching the context-window percentage climb had no way to compact
+early. The gateway now exposes a `session.compact` request topic
+(`compactSessionNow` in `src/gateway/runtime.ts`), surfaced in the CLI as `/compact`
+and in the SDK as `session.compact(...)` / `AIAgentSessionHandle.compact()`.
+
+It reuses the exact pipeline the automatic triggers use
+(`FileBackedMemoryService.compactSessionDetailed`, trigger `"manual"`, phase
+`"manual"` in `.aia/memory/compactions/<session-id>.jsonl`), writes the
+`chat-session-memory/<session-id>.md` summary, then sets the session's
+`compactedThroughMessageId` metadata (the exported `COMPACTION_WATERMARK_METADATA_KEY`)
+to the newest persisted message so `filterModelVisibleMessages` replays nothing
+older on the next turn. The summary reaches the model through the Durable Memory
+prompt section, exactly as after a threshold compaction.
+
+Rules: the session must have no active gateway run and no pending approvals (the
+resume metadata that tracks pending tool calls is deliberately left untouched), the
+session status is preserved, and `session.updated` plus `memory.updated` events are
+emitted (the latter carries `metadata.sessionId` so session-scoped subscriptions
+receive it). The response reports `hiddenMessageCount`, `compactedThroughMessageId`,
+the summary text, and `summaryPath`.
+
+Tests: `tests/integration/gateway-runtime.test.ts` ("session.compact …"),
+`tests/integration/memory-service.test.ts` (manual phase), and
+`tests/integration/cli-interactive.test.ts` (`/compact` flows).
+
+## CLI approval answers: y / a / deny-with-note — 2026-09-14
+
+`resolvePendingApprovals` in `src/cli.ts` now accepts `y` (approve once), `a`
+(approve and auto-approve the same `${target.kind}:${target.value}` for the rest of
+that CLI process, tracked in an in-memory `CliApprovalState`; every request is still
+recorded as its own resolution), or anything else to deny. A denial offers an
+optional free-text note that is sent as the resolution `comment`; the gateway's
+`ApprovalCoordinator` (`autoQueueDeniedCommentAsSteering: true`) turns it into a
+queued `SteeringInjection`, so the "no, but do this instead" path designed in
+`INITIAL_DESIGN.md` is finally reachable from the terminal. The request's
+`justification` is printed (dimmed) above the prompt.
+
+`question`-kind approvals (`ask_user_question`) are no longer answered with y/N:
+the CLI prints the question and its options and sends the typed reply as the
+resolution comment, which the resumed tool call returns to the model as the answer
+(previously the CLI approved with no comment, so the tool saw an empty answer).

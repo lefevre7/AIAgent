@@ -137,3 +137,13 @@ The Next.js custom server and gateway share one HTTP server.
 - non-gateway upgrade traffic falls back to Next's upgrade handler so dev/server WebSocket behavior is preserved
 
 This keeps the local web surface and local gateway on the same port and process while still reusing the same core runtime seam planned for the future SDK.
+
+## `session.compact` (added 2026-09-14)
+
+Request payload: `{ sessionId }`. Response: `{ compactedThroughMessageId?, hiddenMessageCount, session, summary, summaryPath? }`.
+
+Summarizes the session transcript into chat-session memory through the shared memory
+lifecycle (trigger `manual`) and sets the session's compaction watermark so later model
+requests no longer replay the summarized messages. Rejected with `busy` while the session
+has an active run or pending approvals. Emits `session.updated` and `memory.updated`
+(with `metadata.sessionId`). See `docs/AGENT_LOOP.md` → "Manual compaction".

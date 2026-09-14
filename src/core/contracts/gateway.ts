@@ -349,6 +349,25 @@ export const gatewaySessionCancelRequestSchema = z
   })
   .strict();
 
+export const gatewaySessionCompactRequestSchema = z
+  .object({
+    sessionId: entityIdSchema
+  })
+  .strict();
+
+// Result of an operator-triggered compaction: the transcript up to
+// `compactedThroughMessageId` is summarized into the session's chat-session
+// memory file and hidden from later model requests.
+export const gatewaySessionCompactResultSchema = z
+  .object({
+    compactedThroughMessageId: entityIdSchema.optional(),
+    hiddenMessageCount: z.number().int().nonnegative(),
+    session: sessionRecordSchema,
+    summary: z.string().min(1),
+    summaryPath: z.string().min(1).optional()
+  })
+  .strict();
+
 export const gatewayRunCancelRequestSchema = z
   .object({
     runId: entityIdSchema
@@ -407,6 +426,7 @@ export const gatewayRequestTopicSchema = z.enum([
   "model.health",
   "run.cancel",
   "session.cancel",
+  "session.compact",
   "session.create",
   "session.list",
   "session.message",
@@ -465,6 +485,7 @@ export const gatewayRequestPayloadSchemas = {
   "model.health": z.object({ provider: providerIdSchema.optional() }).strict(),
   "run.cancel": gatewayRunCancelRequestSchema,
   "session.cancel": gatewaySessionCancelRequestSchema,
+  "session.compact": gatewaySessionCompactRequestSchema,
   "session.create": gatewaySessionCreateRequestSchema,
   "session.list": gatewaySessionListQuerySchema,
   "session.message": gatewaySessionMessageRequestSchema,
@@ -516,6 +537,7 @@ export const gatewayResponsePayloadSchemas = {
   "model.health": providerHealthSchema,
   "run.cancel": z.object({ run: gatewayRunRecordSchema }).strict(),
   "session.cancel": z.object({ run: gatewayRunRecordSchema }).strict(),
+  "session.compact": gatewaySessionCompactResultSchema,
   "session.create": z
     .object({
       run: gatewayRunRecordSchema.optional(),
@@ -569,6 +591,9 @@ export type GatewayRunCompletionReason = z.infer<
 export type GatewayRunKind = z.infer<typeof gatewayRunKindSchema>;
 export type GatewayRunRecord = z.infer<typeof gatewayRunRecordSchema>;
 export type GatewayRunStatus = z.infer<typeof gatewayRunStatusSchema>;
+export type GatewaySessionCompactResult = z.infer<
+  typeof gatewaySessionCompactResultSchema
+>;
 export type GatewaySessionSnapshot = z.infer<
   typeof gatewaySessionSnapshotSchema
 >;

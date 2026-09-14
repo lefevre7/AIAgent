@@ -1,7 +1,12 @@
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, test } from "vitest";
 
 import {
+  DEFAULT_APPROVAL_SETTINGS,
   RegexApprovalPolicy,
+  approvalPolicyRuleSchema,
   createToolApprovalDecider,
   createDefaultToolRegistry,
   createExternalAgentApprovalTargetResolver,
@@ -11,6 +16,7 @@ import {
   toolDefinitionSchema,
   turnRecordSchema,
   sessionRecordSchema,
+  validateApprovalPattern,
   type ApprovalSettings
 } from "@/core";
 
@@ -125,6 +131,177 @@ describe("approval policy", () => {
         value: "voice_play_audio"
       }
     ]);
+  });
+
+  test("a deny rule on any target wins even when an allow rule matches an earlier target", () => {
+    // Security review H7: precedence used to be first-match-wins in target
+    // order, so a broad tool allow could shadow a command deny.
+    const policy = new RegexApprovalPolicy({
+      configVersion: 1,
+      defaultMode: "ask",
+      rules: [
+        {
+          id: "rule.command.read.allow",
+          mode: "allow",
+          pattern: "^git\\b",
+          targetKind: "command"
+        },
+        {
+          id: "rule.command.force-push.deny",
+          mode: "deny",
+          pattern: "git\\s+push\\s+.*--force",
+          targetKind: "command"
+        }
+      ]
+    });
+
+    const match = policy.evaluateTargets([
+      {
+        kind: "command",
+        label: "command",
+        value: "git push origin main --force"
+      },
+      {
+        kind: "tool",
+        label: "Shell Command",
+        value: "shell_command"
+      }
+    ]);
+
+    expect(match.mode).toBe("deny");
+    expect(match.rule?.id).toBe("rule.command.force-push.deny");
+
+    const allowed = policy.evaluateTargets([
+      {
+        kind: "command",
+        label: "command",
+        value: "git status"
+      }
+    ]);
+    expect(allowed.mode).toBe("allow");
+    expect(allowed.rule?.id).toBe("rule.command.read.allow");
+  });
+
+  test("never allows an oversized model-controlled value on the strength of a prefix match", () => {
+    const policy = new RegexApprovalPolicy({
+      configVersion: 1,
+      defaultMode: "allow",
+      rules: [
+        {
+          id: "rule.command.read.allow",
+          mode: "allow",
+          pattern: "^ls\\b",
+          targetKind: "command"
+        }
+      ]
+    });
+
+    const oversized = policy.evaluateTargets([
+      {
+        kind: "command",
+        label: "command",
+        value: `ls ${"a".repeat(9_000)}`
+      }
+    ]);
+    expect(oversized.mode).toBe("ask");
+
+    const normal = policy.evaluateTargets([
+      {
+        kind: "command",
+        label: "command",
+        value: "ls -la"
+      }
+    ]);
+    expect(normal.mode).toBe("allow");
+  });
+
+  test("rejects invalid or backtracking-prone patterns when the policy is built", () => {
+    expect(
+      () =>
+        new RegexApprovalPolicy({
+          configVersion: 1,
+          defaultMode: "ask",
+          rules: [
+            {
+              id: "rule.bad.nested",
+              mode: "deny",
+              pattern: "^(a+)+$",
+              targetKind: "command"
+            }
+          ]
+        })
+    ).toThrow(/rule.bad.nested.*catastrophic backtracking/u);
+
+    expect(
+      () =>
+        new RegexApprovalPolicy({
+          configVersion: 1,
+          defaultMode: "ask",
+          rules: [
+            {
+              id: "rule.bad.syntax",
+              mode: "deny",
+              pattern: "(unclosed",
+              targetKind: "command"
+            }
+          ]
+        })
+    ).toThrow(/rule.bad.syntax.*not a valid regular expression/u);
+
+    expect(validateApprovalPattern("^(\\w*\\s+)*$")).toMatch(/catastrophic/u);
+    expect(validateApprovalPattern(`^${"a".repeat(600)}$`)).toMatch(/at most/u);
+    expect(validateApprovalPattern("(^|[\\s;&|])(sudo\\s+)?rm\\s+-rf\\s+/(\\s|$)")).toBeNull();
+    // The shipped defaults must all pass the guard they are protected by.
+    for (const rule of DEFAULT_APPROVAL_SETTINGS.rules) {
+      expect(validateApprovalPattern(rule.pattern)).toBeNull();
+    }
+    expect(() => approvalPolicyRuleSchema.parse({ id: "rule.x", mode: "deny", pattern: "^(a+)+$", targetKind: "command" })).toThrow(
+      /catastrophic backtracking/u
+    );
+  });
+
+  test("canonicalizes path targets against the session cwd so file://, ~, and .. cannot dodge a path rule", () => {
+    const definition = createDefinition({
+      invocationName: "read_file",
+      name: "read_file",
+      toolId: "tool.builtin.read_file"
+    });
+    const cwd = "/workspace/app";
+
+    const relative = extractApprovalTargets(createCall({ arguments: { path: "../secrets/token" } }), definition, { cwd });
+    expect(relative.find((target) => target.kind === "path")?.value).toBe("/workspace/secrets/token");
+
+    const fileUri = extractApprovalTargets(
+      createCall({ arguments: { path: "file:///workspace/secrets/token" } }),
+      definition,
+      { cwd }
+    );
+    expect(fileUri.find((target) => target.kind === "path")?.value).toBe("/workspace/secrets/token");
+
+    const home = extractApprovalTargets(createCall({ arguments: { path: "~/secrets/token" } }), definition, { cwd });
+    expect(home.find((target) => target.kind === "path")?.value).toBe(path.join(os.homedir(), "secrets", "token"));
+
+    // Remote URLs are not local paths and must not become path targets.
+    const remote = extractApprovalTargets(createCall({ arguments: { uri: "https://example.com/x" } }), definition, { cwd });
+    expect(remote.some((target) => target.kind === "path")).toBe(false);
+
+    // Without a cwd the raw value is kept (compatibility for direct callers).
+    const raw = extractApprovalTargets(createCall({ arguments: { path: "../secrets/token" } }), definition);
+    expect(raw.find((target) => target.kind === "path")?.value).toBe("../secrets/token");
+  });
+
+  test("includes exec_command argv in the command target so allowlists see the whole command line", () => {
+    const definition = createDefinition({
+      invocationName: "exec_command",
+      name: "exec_command",
+      toolId: "tool.builtin.exec_command"
+    });
+
+    const targets = extractApprovalTargets(
+      createCall({ arguments: { args: ["push", "--force", "my branch"], command: "git" } }),
+      definition
+    );
+    expect(targets.find((target) => target.kind === "command")?.value).toBe("git push --force 'my branch'");
   });
 
   test("evaluates the first matching rule using target order", () => {

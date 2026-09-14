@@ -28,6 +28,7 @@ import {
   type GatewayResponse,
   type GatewayRunRecord,
   type GatewayRunStatus,
+  type GatewaySessionCompactResult,
   type GatewaySessionSnapshot,
   type GatewaySubscription,
   type GatewayTransportClient,
@@ -230,6 +231,10 @@ export class AIAgentSessionHandle {
     return (await this.sdk.request("session.cancel", { sessionId: this.sessionId }, options)).run;
   }
 
+  async compact(options: AIAgentGatewayRequestOptions = {}): Promise<GatewaySessionCompactResult> {
+    return this.sdk.sessions.compact(this.sessionId, options);
+  }
+
   events(options: Omit<AIAgentEventStreamOptions, "sessionId"> = {}): AsyncIterable<GatewayEvent> {
     return this.sdk.events({
       ...options,
@@ -422,6 +427,13 @@ class AIAgentSessions {
       run: result.run ? new AIAgentRunHandle(this.sdk, result.run) : undefined,
       session: result.session
     };
+  }
+
+  // Summarize the session transcript so far into chat-session memory and hide
+  // it from later model requests. Fails while a run is active or approvals
+  // are pending.
+  async compact(sessionId: string, options: AIAgentGatewayRequestOptions = {}): Promise<GatewaySessionCompactResult> {
+    return this.sdk.request("session.compact", { sessionId }, options);
   }
 
   async list(

@@ -1,7 +1,8 @@
 # Security Review — 2026-07-09
 
-Status: **findings only, no code changed yet.** This document is the shared record of a
-full-repo defensive security audit. It exists so the remediation work (and any future
+Status: **partially remediated (2026-09-14)** — see "Remediation status" below for what
+landed; the rest of this document is the original audit record. This document is the
+shared record of a full-repo defensive security audit. It exists so the remediation work (and any future
 audit) starts from a written baseline instead of re-deriving everything.
 
 Method: seven parallel focused reviews (auth/network, command execution, filesystem,
@@ -9,6 +10,23 @@ approvals policy, MCP/SSRF/browser, web/channels, secrets/config/deps), with the
 highest-severity claims re-verified by hand (regex behavior executed, containment flags
 grepped, data flows traced). Line references were accurate at time of writing; re-confirm
 before editing.
+
+## Remediation status (2026-09-14)
+
+Fixed in this repo, each with regression tests:
+
+| # | Fix | Where |
+|---|-----|-------|
+| H1 | Default rule patterns use single-escaped `\s`/`\b` again, so the destructive-command deny actually fires; the deny set was broadened into separate `rule.command.destructive.{rm,disk,system,permissions,forkbomb}.deny` rules (root/home/cwd/glob recursive deletes, `--no-preserve-root`, `mkfs`, `dd`/`shred` to `/dev`, redirects onto disk devices, shutdown/reboot/halt/poweroff as the command, recursive chmod/chown of `/`, fork bomb). The read-allow rule matches flagged commands like `ls -la` again. | `src/core/config/schema.ts`, `tests/unit/approval-defaults.test.ts` |
+| H5 | `web_fetch` follows redirects manually and re-validates every hop against the public-host rules; hostnames are resolved and refused when any address is loopback/private/link-local/CGNAT/multicast (including IPv4-mapped IPv6); IPv6 literals are bracket-stripped so `[::1]` is caught. Redirect chains are capped (5). | `src/core/research/fetch.ts`, `tests/unit/research-fetch.test.ts` |
+| H7 | Policy precedence is now deny-wins: every deny rule is evaluated on every target before any allow/ask rule, regardless of rule/target order. Allow vs ask still follows target order (specific `command`/`path` before generic `tool`). | `src/core/approvals/policy.ts` (`RegexApprovalPolicy.evaluateTargets`), `tests/unit/approval-policy.test.ts` |
+| H8 | Patterns are validated at parse time and at policy construction (max 512 chars, must compile, no quantified group containing a quantifier), compiled once and cached, and model-controlled values longer than 8,192 chars are matched on their prefix with `allow` downgraded to `ask`. | `src/core/contracts/approvals.ts` (`validateApprovalPattern`, `approvalPatternSchema`), `src/core/approvals/policy.ts` |
+| H9 | Path targets are canonicalized with the same `resolveLocalPath` the file tools use (`file://`, `~`, relative, `..`) against the session cwd before matching, `file://` values are included, and path rules match case-insensitively on macOS/Windows. | `src/core/approvals/policy.ts` (`extractApprovalTargets` + `cwd` option), `tests/unit/approval-policy.test.ts` |
+| M6 | `exec_command` argv is appended to the `command` target (`git push --force 'my branch'`) so command allow/deny rules see the whole command line. | `src/core/approvals/policy.ts` (`stringifyArgv`) |
+
+Still open (unchanged from the audit): H2, H3, H4, H6, M1–M5, M7–M13, and the low-severity
+items. The Kotlin port (`AIAgentCompact-Kotlin`) drops the gateway/web/channel/browser
+surfaces, which removes H2, H6, M1–M3, M7–M10, and M13 from that codebase by construction.
 
 ## Threat model (assumed, pending confirmation)
 

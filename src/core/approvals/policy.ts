@@ -7,7 +7,9 @@ import type {
   ToolCallRecord,
   ToolDefinition
 } from "@/core/contracts";
+import { validateApprovalPattern } from "@/core/contracts";
 import type { ApprovalSettings } from "@/core/config";
+import { resolveLocalPath } from "@/core/tools/builtins/local-paths";
 import type { ToolApprovalDecider, ToolApprovalDeciderParams } from "@/core/tools/runtime";
 
 export type ApprovalEvaluationTarget = {
@@ -22,31 +24,85 @@ export type ApprovalPolicyMatch = {
   target: ApprovalEvaluationTarget;
 };
 
+export type ApprovalTargetExtractionOptions = {
+  // When provided, path-like argument values are canonicalized against this
+  // directory with the same resolution the file tools use (file:// URIs, `~`,
+  // relative segments, `..`), so a path rule sees the path that will actually
+  // be touched. Security review H9.
+  cwd?: string;
+};
+
+// Model-influenced strings longer than this are matched on their prefix only,
+// and a policy result of "allow" is downgraded to "ask" so an oversized value
+// can never sneak past a rule by pushing the interesting part out of range.
+export const MAX_APPROVAL_TARGET_VALUE_LENGTH = 8_192;
+
+export class ApprovalPolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApprovalPolicyError";
+  }
+}
+
+type CompiledApprovalRule = {
+  matcher: RegExp;
+  rule: ApprovalPolicyRule;
+};
+
 export class RegexApprovalPolicy {
-  constructor(private readonly settings: ApprovalSettings) {}
+  private readonly compiledRules: CompiledApprovalRule[];
 
+  constructor(private readonly settings: ApprovalSettings) {
+    // Compile once (security review H8: patterns were recompiled on every
+    // evaluation) and fail fast on an invalid or backtracking-prone pattern
+    // instead of discovering it mid-run on a model-controlled string.
+    this.compiledRules = settings.rules.map((rule) => ({
+      matcher: compileApprovalPattern(rule),
+      rule
+    }));
+  }
+
+  // Precedence (security review H7): a matching deny rule on ANY target wins
+  // regardless of rule or target order, so a broad allow can never shadow a
+  // deny. When nothing denies, the first allow/ask match in target order (the
+  // more specific command/path targets come first) decides, and the default
+  // mode applies when nothing matches at all.
   evaluateTargets(targets: ApprovalEvaluationTarget[]): ApprovalPolicyMatch {
-    for (const target of targets) {
-      for (const rule of this.settings.rules) {
-        if (rule.targetKind !== target.kind) {
-          continue;
-        }
+    const evaluations = targets.map((target) => ({
+      target,
+      truncated: target.value.length > MAX_APPROVAL_TARGET_VALUE_LENGTH,
+      value: target.value.slice(0, MAX_APPROVAL_TARGET_VALUE_LENGTH)
+    }));
+    const anyTruncated = evaluations.some((entry) => entry.truncated);
 
-        const matcher = new RegExp(rule.pattern, "u");
-        if (!matcher.test(target.value)) {
+    for (const evaluation of evaluations) {
+      for (const compiled of this.compiledRules) {
+        if (compiled.rule.mode === "deny" && this.matches(compiled, evaluation)) {
+          return {
+            mode: "deny",
+            rule: compiled.rule,
+            target: evaluation.target
+          };
+        }
+      }
+    }
+
+    for (const evaluation of evaluations) {
+      for (const compiled of this.compiledRules) {
+        if (compiled.rule.mode === "deny" || !this.matches(compiled, evaluation)) {
           continue;
         }
 
         return {
-          mode: rule.mode,
-          rule,
-          target
+          mode: compiled.rule.mode === "allow" && anyTruncated ? "ask" : compiled.rule.mode,
+          rule: compiled.rule,
+          target: evaluation.target
         };
       }
     }
 
     return {
-      mode: this.settings.defaultMode,
+      mode: this.settings.defaultMode === "allow" && anyTruncated ? "ask" : this.settings.defaultMode,
       target: targets[0] ?? {
         kind: "tool",
         label: "tool",
@@ -54,6 +110,34 @@ export class RegexApprovalPolicy {
       }
     };
   }
+
+  private matches(
+    compiled: CompiledApprovalRule,
+    evaluation: { target: ApprovalEvaluationTarget; value: string }
+  ): boolean {
+    if (compiled.rule.targetKind !== evaluation.target.kind) {
+      return false;
+    }
+    compiled.matcher.lastIndex = 0;
+    return compiled.matcher.test(evaluation.value);
+  }
+}
+
+function compileApprovalPattern(rule: ApprovalPolicyRule): RegExp {
+  const problem = validateApprovalPattern(rule.pattern);
+  if (problem) {
+    throw new ApprovalPolicyError(`Approval rule "${rule.id}" pattern ${problem}.`);
+  }
+
+  // Path targets are matched case-insensitively on case-insensitive
+  // filesystems so `/Workspace/Secrets/...` cannot dodge a `/workspace/secrets/`
+  // deny (security review H9).
+  const flags = rule.targetKind === "path" && hasCaseInsensitiveFileSystem() ? "iu" : "u";
+  return new RegExp(rule.pattern, flags);
+}
+
+function hasCaseInsensitiveFileSystem(): boolean {
+  return process.platform === "darwin" || process.platform === "win32";
 }
 
 export function createToolApprovalDecider(params: {
@@ -76,7 +160,10 @@ export function createToolApprovalDecider(params: {
     }
 
     const additionalTargets = (await params.resolveAdditionalTargets?.(input)) ?? [];
-    const match = policy.evaluateTargets([...additionalTargets, ...extractApprovalTargets(input.call, input.definition)]);
+    const match = policy.evaluateTargets([
+      ...additionalTargets,
+      ...extractApprovalTargets(input.call, input.definition, { cwd: input.session.cwd })
+    ]);
     const resolvedMode = resolveApprovalMode(input.definition.approvalMode, match.mode);
 
     if (resolvedMode === "allow") {
@@ -118,11 +205,10 @@ export function createToolApprovalDecider(params: {
 
 // Synthesize mcp_server "allow" rules for servers configured as trusted and
 // append them AFTER the operator's rules. A trusted server's tools are
-// auto-approved, while an explicit operator deny rule still takes precedence —
-// a server-level (mcp_server) deny because it is matched before the appended
-// trust rule on the same target, and a tool-level (mcp_tool/tool) deny because
-// extractApprovalTargets evaluates the mcp_tool target before mcp_server.
-// Untrusted servers are unaffected and flow through the normal approval policy.
+// auto-approved, while an explicit operator deny rule (server-level mcp_server
+// or tool-level mcp_tool/tool) always takes precedence because the policy
+// evaluates deny rules on every target before any allow/ask rule. Untrusted
+// servers are unaffected and flow through the normal approval policy.
 export function withMcpTrustRules(
   settings: ApprovalSettings,
   servers: Record<string, { trust?: "prompt" | "trusted" }>
@@ -180,13 +266,23 @@ function buildQuestionApprovalRequest(params: ToolApprovalDeciderParams): Approv
   };
 }
 
-export function extractApprovalTargets(call: ToolCallRecord, definition: ToolDefinition): ApprovalEvaluationTarget[] {
+export function extractApprovalTargets(
+  call: ToolCallRecord,
+  definition: ToolDefinition,
+  options: ApprovalTargetExtractionOptions = {}
+): ApprovalEvaluationTarget[] {
   const targets: ApprovalEvaluationTarget[] = [];
   const pushUnique = (target: ApprovalEvaluationTarget) => {
     if (!targets.some((entry) => entry.kind === target.kind && entry.value === target.value)) {
       targets.push(target);
     }
   };
+
+  // Executable-plus-argv tools (exec_command) split the command line across
+  // `command` and `args`. The command target must see the full line, otherwise
+  // an allow rule for `git status` would also cover `git push --force`
+  // (security review M6).
+  const argvSuffix = stringifyArgv(call.arguments.args);
 
   for (const [key, value] of Object.entries(call.arguments)) {
     if (looksLikeCommandKey(key)) {
@@ -195,7 +291,7 @@ export function extractApprovalTargets(call: ToolCallRecord, definition: ToolDef
         pushUnique({
           kind: "command",
           label: key,
-          value: commandValue
+          value: argvSuffix ? `${commandValue} ${argvSuffix}` : commandValue
         });
       }
     }
@@ -205,7 +301,7 @@ export function extractApprovalTargets(call: ToolCallRecord, definition: ToolDef
         pushUnique({
           kind: "path",
           label: key,
-          value: pathValue
+          value: options.cwd ? canonicalizePathTarget(pathValue, options.cwd) : pathValue
         });
       }
     }
@@ -360,6 +456,13 @@ function stringifyCommandValue(value: unknown): string | null {
   return null;
 }
 
+function stringifyArgv(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0 || !value.every((entry) => typeof entry === "string")) {
+    return null;
+  }
+  return value.map((entry) => (/\s/u.test(entry) ? `'${entry.replace(/'/gu, "'\\''")}'` : entry)).join(" ");
+}
+
 function stringifyPathValues(value: unknown): string[] {
   if (typeof value === "string") {
     return isLikelyLocalPath(value) ? [value] : [];
@@ -371,6 +474,18 @@ function stringifyPathValues(value: unknown): string[] {
   return [];
 }
 
+// file:// URIs are local paths in disguise (the file tools resolve them), so
+// they must reach the path rules; any other URL scheme is not a local path.
 function isLikelyLocalPath(value: string): boolean {
-  return !/^[a-z]+:\/\//iu.test(value);
+  return /^file:\/\//iu.test(value) || !/^[a-z]+:\/\//iu.test(value);
+}
+
+function canonicalizePathTarget(value: string, cwd: string): string {
+  try {
+    return resolveLocalPath(value, cwd);
+  } catch {
+    // An unparseable file:// URI still goes through the policy as-is rather
+    // than vanishing from the target list.
+    return value;
+  }
 }

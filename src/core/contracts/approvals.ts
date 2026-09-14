@@ -59,12 +59,54 @@ export const approvalResolutionSchema = z
   })
   .strict();
 
+// Approval patterns come from operator config (including a cloned repo's
+// workspace approvals file) and are matched against model-influenced strings,
+// so they are validated up front: bounded length, must compile, and no
+// quantified group that itself contains a quantifier (the classic catastrophic
+// backtracking shape such as `(a+)+` or `(\w*\s+)*`). Security review H8.
+export const APPROVAL_PATTERN_MAX_LENGTH = 512;
+
+const NESTED_QUANTIFIER_PATTERN =
+  /\((?:[^()\\]|\\.)*(?:[+*]|\{\d+(?:,\d*)?\})(?:[^()\\]|\\.)*\)(?:[+*]|\{\d)/u;
+
+export function validateApprovalPattern(pattern: string): string | null {
+  if (pattern.length === 0) {
+    return "must not be empty";
+  }
+  if (pattern.length > APPROVAL_PATTERN_MAX_LENGTH) {
+    return `must be at most ${APPROVAL_PATTERN_MAX_LENGTH} characters long`;
+  }
+  if (NESTED_QUANTIFIER_PATTERN.test(pattern)) {
+    return "must not nest a quantifier inside a quantified group (catastrophic backtracking risk)";
+  }
+  try {
+    new RegExp(pattern, "u");
+  } catch (error) {
+    return `is not a valid regular expression: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return null;
+}
+
+export const approvalPatternSchema = z
+  .string()
+  .min(1)
+  .max(APPROVAL_PATTERN_MAX_LENGTH)
+  .superRefine((value, context) => {
+    const problem = validateApprovalPattern(value);
+    if (problem) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Approval pattern ${problem}.`
+      });
+    }
+  });
+
 export const approvalPolicyRuleSchema = z
   .object({
     id: entityIdSchema,
     mode: approvalPolicyModeSchema,
     notes: z.string().min(1).max(1000).optional(),
-    pattern: z.string().min(1),
+    pattern: approvalPatternSchema,
     targetKind: approvalTargetKindSchema
   })
   .strict();

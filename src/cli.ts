@@ -23,7 +23,9 @@ import {
   type AIAgentSessionHandle
 } from "@/sdk";
 import type {
+  GatewayApprovalRecord,
   GatewayEvent,
+  GatewaySessionCompactResult,
   GatewaySessionSnapshot,
   Message
 } from "@/core/contracts";
@@ -49,6 +51,22 @@ type CliDependencies = {
 };
 
 const CHAT_PROMPT = "› ";
+const ANSI_DIM = "[2m";
+const ANSI_RESET = "[0m";
+
+// Per-REPL-session approval memory. `alwaysApprove` holds `${kind}:${value}`
+// keys of approval targets the operator answered "a" (always) for; matching
+// requests are auto-approved for the rest of this CLI session only. Nothing is
+// persisted: every approval is still recorded as its own resolution.
+type CliApprovalState = {
+  alwaysApprove: Set<string>;
+};
+
+function createCliApprovalState(): CliApprovalState {
+  return {
+    alwaysApprove: new Set<string>()
+  };
+}
 
 type VoiceCliContext = {
   sessions: FileSessionStore;
@@ -210,6 +228,7 @@ async function runChatCli(
     });
 
     writeLine(streams.stdout, formatChatWelcome(created.session.id));
+    const approvalState = createCliApprovalState();
 
     // Manual iteration so approval prompts can pull the next line on demand.
     const iterator = lineSource[Symbol.asyncIterator]();
@@ -251,6 +270,10 @@ async function runChatCli(
           }
           continue;
         }
+        if (command === "compact") {
+          await runCompactCommand(created.handle, streams);
+          continue;
+        }
         if (command === "unknown") {
           writeLine(
             streams.stderr,
@@ -259,7 +282,13 @@ async function runChatCli(
           continue;
         }
 
-        await runChatTurn(created.handle, line, streams, nextLine);
+        await runChatTurn(
+          created.handle,
+          line,
+          streams,
+          nextLine,
+          approvalState
+        );
       }
     } finally {
       await iterator.return?.();
@@ -321,7 +350,8 @@ async function runChatTurn(
   handle: AIAgentSessionHandle,
   text: string,
   streams: CliStreams,
-  nextLine: () => Promise<string | null>
+  nextLine: () => Promise<string | null>,
+  approvalState: CliApprovalState = createCliApprovalState()
 ): Promise<void> {
   const DIM = "[2m";
   const RESET = "[0m";
@@ -389,7 +419,7 @@ async function runChatTurn(
       streams.stdout.write("\n");
     }
 
-    await resolvePendingApprovals(handle, streams, nextLine);
+    await resolvePendingApprovals(handle, streams, nextLine, approvalState);
 
     const errorMessage = (await handle.snapshot()).snapshot.session.lastError
       ?.message;
@@ -403,10 +433,18 @@ async function runChatTurn(
   }
 }
 
+// Interactive approval loop. Answers: `y` approves once, `a` approves and
+// auto-approves the same target for the rest of this CLI session, anything
+// else denies. A denial then offers an optional free-text note; when given,
+// it is sent as the resolution comment, which the gateway queues as steering
+// so the agent hears "no, but do this instead" on the resumed turn.
+// `question`-kind approvals (ask_user_question) are answered directly: the
+// typed reply is the resolution comment the tool returns to the model.
 async function resolvePendingApprovals(
   handle: AIAgentSessionHandle,
   streams: CliStreams,
-  nextLine: () => Promise<string | null>
+  nextLine: () => Promise<string | null>,
+  state: CliApprovalState
 ): Promise<void> {
   for (let round = 0; round < 50; round += 1) {
     const pending = await handle.listPendingApprovals();
@@ -415,26 +453,115 @@ async function resolvePendingApprovals(
     }
 
     for (const approval of pending) {
-      const target = `${approval.request.target.label} → ${approval.request.target.value}`;
-      streams.stdout.write(`Approve ${target}? [y/N] `);
+      const target = approval.request.target;
+
+      if (target.kind === "question") {
+        await answerAgentQuestion(handle, approval, streams, nextLine);
+        continue;
+      }
+
+      const alwaysKey = `${target.kind}:${target.value}`;
+      if (state.alwaysApprove.has(alwaysKey)) {
+        await handle.resolveApproval({
+          comment:
+            'Auto-approved: the operator answered "always" for this target earlier in the CLI session.',
+          decision: "approved",
+          requestId: approval.request.id
+        });
+        writeLine(
+          streams.stdout,
+          `Auto-approved ${target.value} (always for this session).`
+        );
+        continue;
+      }
+
+      writeLine(
+        streams.stdout,
+        `${ANSI_DIM}  ${approval.request.justification}${ANSI_RESET}`
+      );
+      streams.stdout.write(
+        `Approve ${target.label} → ${target.value}? [y/N/a] (y = yes, N = no, a = always for this session) `
+      );
       const answer = (await nextLine())?.trim().toLowerCase() ?? "";
-      const decision =
-        answer === "y" || answer === "yes" ? "approved" : "denied";
+
+      if (answer === "a" || answer === "always") {
+        state.alwaysApprove.add(alwaysKey);
+        await handle.resolveApproval({
+          decision: "approved",
+          requestId: approval.request.id
+        });
+        writeLine(
+          streams.stdout,
+          `Approved ${target.value}; further ${target.value} requests are auto-approved for this session.`
+        );
+        continue;
+      }
+
+      if (answer === "y" || answer === "yes") {
+        await handle.resolveApproval({
+          decision: "approved",
+          requestId: approval.request.id
+        });
+        writeLine(streams.stdout, `Approved ${target.value}.`);
+        continue;
+      }
+
+      streams.stdout.write(
+        "Optional note or alternative instruction for the agent (Enter to skip): "
+      );
+      const note = (await nextLine())?.trim() ?? "";
       await handle.resolveApproval({
-        decision,
+        ...(note.length > 0 ? { comment: note } : {}),
+        decision: "denied",
         requestId: approval.request.id
       });
       writeLine(
         streams.stdout,
-        decision === "approved"
-          ? `Approved ${approval.request.target.value}.`
-          : `Denied ${approval.request.target.value}.`
+        note.length > 0
+          ? `Denied ${target.value}. Your note was queued as steering for the agent.`
+          : `Denied ${target.value}.`
       );
     }
 
     const resumeRun = await handle.resume();
     await resumeRun.wait();
   }
+}
+
+async function answerAgentQuestion(
+  handle: AIAgentSessionHandle,
+  approval: GatewayApprovalRecord,
+  streams: CliStreams,
+  nextLine: () => Promise<string | null>
+): Promise<void> {
+  writeLine(streams.stdout, `The agent asks: ${approval.request.justification}`);
+  const options = approval.request.metadata.options;
+  if (Array.isArray(options)) {
+    for (const option of options) {
+      if (typeof option === "object" && option !== null && !Array.isArray(option)) {
+        const label = typeof option.label === "string" ? option.label : null;
+        const description =
+          typeof option.description === "string" ? option.description : null;
+        if (label) {
+          writeLine(
+            streams.stdout,
+            `  - ${label}${description ? `: ${description}` : ""}`
+          );
+        }
+      }
+    }
+  }
+  streams.stdout.write("Your answer (Enter to skip): ");
+  const answer = (await nextLine())?.trim() ?? "";
+  await handle.resolveApproval({
+    ...(answer.length > 0 ? { comment: answer } : {}),
+    decision: "approved",
+    requestId: approval.request.id
+  });
+  writeLine(
+    streams.stdout,
+    answer.length > 0 ? "Answer sent to the agent." : "Continued without an answer."
+  );
 }
 
 async function runPromptCli(
@@ -882,12 +1009,14 @@ async function resolveSdk(
 
 function parseChatCommand(
   line: string
-): "exit" | "help" | "mcp" | "message" | "unknown" {
+): "compact" | "exit" | "help" | "mcp" | "message" | "unknown" {
   if (!line.startsWith("/")) {
     return "message";
   }
   const name = line.slice(1).trim().toLowerCase().split(/\s+/u)[0];
   switch (name) {
+    case "compact":
+      return "compact";
     case "exit":
     case "quit":
       return "exit";
@@ -912,9 +1041,14 @@ function formatChatHelp(): string {
   return [
     "Interactive commands:",
     "  /help          Show this help",
+    "  /compact       Summarize the transcript so far into session memory and free the model's context",
     "  /mcp           List configured MCP servers, their state, and their tools",
     "  /exit, /quit   End the session and return to the shell",
-    "Anything else is sent to the agent as a message."
+    "Anything else is sent to the agent as a message.",
+    "",
+    "Approval prompts accept y (approve once), a (approve and auto-approve this target for the",
+    "rest of the session), or anything else to deny. A denial can carry an optional note that is",
+    "sent to the agent as steering, e.g. \"use ls instead\"."
   ].join("\n");
 }
 
@@ -951,6 +1085,33 @@ function formatMcpServers(
       return lines.join("\n");
     })
     .join("\n");
+}
+
+async function runCompactCommand(
+  handle: AIAgentSessionHandle,
+  streams: CliStreams
+): Promise<void> {
+  try {
+    const result = await handle.compact();
+    writeLine(streams.stdout, formatCompactResult(result));
+  } catch (error) {
+    writeLine(
+      streams.stderr,
+      `Failed to compact the session: ${renderCliError(error)}`
+    );
+  }
+}
+
+function formatCompactResult(result: GatewaySessionCompactResult): string {
+  const lines = [
+    result.hiddenMessageCount > 0
+      ? `Compacted ${result.hiddenMessageCount} earlier message(s) into a session summary. The model now sees the summary (Durable Memory) instead of the raw transcript.`
+      : "Nothing to compact yet: the session has no transcript to summarize."
+  ];
+  if (result.summaryPath) {
+    lines.push(`Summary file: ${result.summaryPath}`);
+  }
+  return lines.join("\n");
 }
 
 function createStdinLineSource(): AsyncIterable<string> {

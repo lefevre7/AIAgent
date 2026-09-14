@@ -34,7 +34,15 @@ npm run cli
 
 It creates a session and keeps prompting for input. The loop stays open until you type `/exit` or `/quit` (or stdin reaches end-of-input); `/help` lists the commands. Anything else is sent to the agent as a message.
 
-While the model works, the CLI shows a `Thinking…` indicator and then streams the response live, along with tool-activity lines. When a tool needs approval (file writes, shell commands, etc.) it prompts inline — `Approve <tool> → <target>? [y/N]` — and only runs the tool if you approve.
+While the model works, the CLI shows a `Thinking…` indicator and then streams the response live, along with tool-activity lines. When a tool needs approval (file writes, shell commands, etc.) it prompts inline — `Approve <tool> → <target>? [y/N/a]` — and only runs the tool if you approve:
+
+- `y` approves this request once.
+- `a` approves it and auto-approves the same target (same tool, command, path, or MCP server) for the rest of this CLI session.
+- anything else denies it. You are then offered an optional note ("use ls instead"); if you type one, it is queued as steering so the agent adapts on the resumed turn instead of retrying the same action.
+
+When the agent asks you a question (`ask_user_question`), the CLI prints the question and its options and sends your typed reply straight back to the agent.
+
+Interactive commands: `/help`, `/compact` (summarize the transcript so far into `chat-session-memory/` and stop replaying it to the model, useful when the context-window percentage climbs), `/mcp` (list configured MCP servers and their tools), and `/exit` / `/quit`.
 
 > If you use the linked `aia` command, it runs the built `dist/cli.js`. Rebuild after changing source (`npm run build:node`); `npm install`/`npm link` rebuild it automatically via the `prepare` script.
 

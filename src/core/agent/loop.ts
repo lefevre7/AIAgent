@@ -153,7 +153,11 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768;
 const AUTO_COMPACT_CONTEXT_WINDOW_FRACTION = 0.8;
 const DEFAULT_MAX_CONSECUTIVE_NUDGES = 3;
 const ACTIVATED_TOOLS_METADATA_KEY = "activatedToolNames";
-const COMPACTION_WATERMARK_METADATA_KEY = "compactedThroughMessageId";
+// Session metadata key holding the id of the last message that has been folded
+// into the compacted summary. Messages up to and including it are no longer
+// replayed to the model (see filterModelVisibleMessages). Exported so a manual
+// compaction (gateway `session.compact`, CLI `/compact`) sets the same key.
+export const COMPACTION_WATERMARK_METADATA_KEY = "compactedThroughMessageId";
 // Tool families that record thought or plan state without acting on the task.
 // A turn whose only calls belong to these families makes no real progress, so
 // it counts toward the no-progress guard instead of resetting it. Classifying

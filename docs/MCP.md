@@ -106,10 +106,10 @@ which sees `mcp_server` and `mcp_tool` targets (`extractApprovalTargets`).
 To auto-approve a server you trust, set `trust: "trusted"` on it. The gateway
 synthesizes an `mcp_server` **allow** rule for each trusted server and appends it *after*
 your configured rules (`withMcpTrustRules` in `src/core/approvals/policy.ts`). An explicit
-operator **deny** rule still wins — a server-level (`mcp_server`) deny because it precedes
-the appended trust rule, and a tool-level (`mcp_tool`/`tool`) deny because the `mcp_tool`
-target is evaluated before `mcp_server`. So you can trust a server yet still deny one of
-its tools.
+operator **deny** rule always wins: since 2026-09-14 the policy evaluates deny rules across
+every target (`mcp_tool`, `mcp_server`, `tool`, `command`, `path`) before considering any
+allow/ask rule, regardless of rule or target order. So you can trust a server yet still deny
+one of its tools with an `mcp_tool` or `tool` deny rule.
 
 ## Transport selection & fallback
 

@@ -168,6 +168,21 @@ describe("file-backed memory service", () => {
     const status = await memory.getMemoryStatus();
     expect(status.lastCompaction?.sessionId).toBe(session.id);
     expect(status.lastCompaction?.phase).toBeTruthy();
+
+    // Operator-triggered compaction reuses the same pipeline, records a
+    // "manual" phase, and reports what it wrote.
+    const manual = await memory.compactSessionDetailed({ sessionId: session.id, trigger: "manual" });
+    expect(manual.trigger).toBe("manual");
+    expect(manual.summary).toContain("Session Summary");
+    expect(manual.summaryPath).toBe(path.join(chatSessionRoot, `${session.id}.md`));
+    expect(manual.sourceTokenCount).toBeGreaterThan(0);
+    const historyAfterManual = await fs.readFile(path.join(stateRoot, "memory", "compactions", `${session.id}.jsonl`), "utf8");
+    expect(historyAfterManual).toContain('"phase":"manual"');
+    expect((await memory.getMemoryStatus()).lastCompaction?.trigger).toBe("manual");
+
+    await expect(memory.compactSessionDetailed({ sessionId: "session.missing", trigger: "manual" })).rejects.toThrow(
+      /unknown session/u
+    );
   });
 
   test("executes memory_write through the default runtime when the memory service is configured", async () => {

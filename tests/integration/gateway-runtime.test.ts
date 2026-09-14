@@ -141,6 +141,68 @@ describe("gateway runtime request dispatch", () => {
     });
   });
 
+  test("session.compact summarizes the transcript, sets the compaction watermark, and refuses busy sessions", async () => {
+    const adapter = new ScriptedLanguageModelAdapter({
+      modelId: "example-gw-compact",
+      providerId: "example_lm",
+      responses: [
+        (request) =>
+          buildScriptedResponse({
+            request,
+            text: "I wrote the plan and finished.",
+            toolCalls: [{ arguments: { summary: "done" }, callId: "tool.complete.compact", toolName: "attempt_complete" }]
+          })
+      ]
+    });
+
+    await withExampleSdk({
+      name: "gateway-runtime-compact",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "example-gw-compact", enabled: true }] },
+      run: async ({ sdk, workspaceRoot }) => {
+        const created = await sdk.sessions.create({
+          cwd: workspaceRoot,
+          goal: "Compact a finished session",
+          initialMessage: { text: "please finish quickly" },
+          metadata: { surface: "example" },
+          title: "Compact Session"
+        });
+        await created.run!.wait();
+        const before = await created.handle.snapshot();
+        expect(before.snapshot.messages.length).toBeGreaterThan(0);
+        const lastMessageId = before.snapshot.messages.at(-1)!.id;
+
+        const events: string[] = [];
+        const unsubscribe = created.handle.subscribe((event) => events.push(event.topic), {
+          topics: ["memory.updated", "session.updated"]
+        });
+
+        const result = await created.handle.compact();
+        unsubscribe();
+
+        expect(result.hiddenMessageCount).toBeGreaterThan(0);
+        expect(result.compactedThroughMessageId).toBe(lastMessageId);
+        expect(result.summary).toContain("Session Summary");
+        expect(result.summary).toContain("I wrote the plan and finished.");
+        expect(result.summaryPath).toBeTruthy();
+        expect(result.session.metadata.compactedThroughMessageId).toBe(lastMessageId);
+        expect(events).toEqual(expect.arrayContaining(["session.updated", "memory.updated"]));
+
+        // The persisted session carries the watermark, so later model requests
+        // replay nothing from before the compaction point.
+        const after = await created.handle.snapshot();
+        expect(after.snapshot.session.metadata.compactedThroughMessageId).toBe(lastMessageId);
+        expect(after.snapshot.session.status).toBe(before.snapshot.session.status);
+
+        // Compacting again with nothing new still succeeds (idempotent summary rewrite).
+        const again = await created.handle.compact();
+        expect(again.hiddenMessageCount).toBe(0);
+        expect(again.compactedThroughMessageId).toBe(lastMessageId);
+
+        await expect(sdk.sessions.compact("session.does-not-exist")).rejects.toThrow(/not found/u);
+      }
+    });
+  });
+
   test("cancels an in-flight session run while the model is still working", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {

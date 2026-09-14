@@ -32,12 +32,12 @@ const memoryCompactionRecordSchema = z
     createdAt: z.string().min(1),
     id: z.string().min(1),
     outputTokenCount: z.number().int().nonnegative(),
-    phase: z.enum(["startup_phase_1", "startup_phase_2", "session_completion", "threshold"]),
+    phase: z.enum(["manual", "startup_phase_1", "startup_phase_2", "session_completion", "threshold"]),
     placeholderMode: z.boolean(),
     sessionId: z.string().min(1),
     sourceTokenCount: z.number().int().nonnegative(),
     summary: z.string().min(1),
-    trigger: z.enum(["completion", "startup", "threshold"]),
+    trigger: z.enum(["completion", "manual", "startup", "threshold"]),
     updatedAt: z.string().min(1)
   })
   .strict();
@@ -52,13 +52,27 @@ export interface MemoryContextProvider {
   getPromptContext(sessionId: string): Promise<MemoryPromptContext | null>;
 }
 
+// "completion" and "threshold" are fired by the agent loop; "manual" is an
+// operator request (gateway `session.compact`, CLI `/compact`).
+export type MemoryCompactionTrigger = "completion" | "manual" | "threshold";
+
+export type MemoryCompactionParams = {
+  sessionId: string;
+  sourceTokenCount?: number;
+  threshold?: number;
+  trigger: MemoryCompactionTrigger;
+};
+
+export type MemoryCompactionOutcome = {
+  sessionId: string;
+  sourceTokenCount: number;
+  summary: string;
+  summaryPath: string;
+  trigger: MemoryCompactionTrigger;
+};
+
 export interface SessionMemoryLifecycle {
-  compactSession(params: {
-    sessionId: string;
-    sourceTokenCount?: number;
-    threshold?: number;
-    trigger: "completion" | "threshold";
-  }): Promise<void>;
+  compactSession(params: MemoryCompactionParams): Promise<void>;
   initializeSessionMemory(session: SessionRecord): Promise<void>;
 }
 
@@ -199,15 +213,25 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
     this.retrievalEngine.setEmbeddingProvider(params);
   }
 
-  async compactSession(params: {
-    sessionId: string;
-    sourceTokenCount?: number;
-    threshold?: number;
-    trigger: "completion" | "threshold";
-  }): Promise<void> {
+  async compactSession(params: MemoryCompactionParams): Promise<void> {
+    await this.compactSessionInternal(params);
+  }
+
+  // The same compaction the automatic triggers run, for an operator-initiated
+  // request. Returns what was written so the caller can report it and set the
+  // session's compaction watermark.
+  async compactSessionDetailed(params: MemoryCompactionParams): Promise<MemoryCompactionOutcome> {
+    const outcome = await this.compactSessionInternal(params);
+    if (!outcome) {
+      throw new Error(`Cannot compact unknown session "${params.sessionId}".`);
+    }
+    return outcome;
+  }
+
+  private async compactSessionInternal(params: MemoryCompactionParams): Promise<MemoryCompactionOutcome | null> {
     const snapshot = await this.options.sessions.getSessionSnapshot(params.sessionId);
     if (!snapshot) {
-      return;
+      return null;
     }
 
     const assistantMessages = snapshot.messages.filter((message) => message.role === "assistant");
@@ -244,7 +268,7 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
     await this.appendCompactionRecord({
       id: `memory-compaction.${params.sessionId}.${crypto.randomUUID()}`,
       outputTokenCount: Math.max(1, Math.round(summary.length / 4)),
-      phase: params.trigger === "completion" ? "session_completion" : "threshold",
+      phase: resolveCompactionPhase(params.trigger),
       placeholderMode: true,
       sessionId: params.sessionId,
       sourceTokenCount,
@@ -252,6 +276,14 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
       trigger: params.trigger
     });
     this.retrievalEngine?.markDirty();
+
+    return {
+      sessionId: params.sessionId,
+      sourceTokenCount,
+      summary,
+      summaryPath: this.chatSessionSummaryFile(params.sessionId),
+      trigger: params.trigger
+    };
   }
 
   async query(query: MemoryQuery): Promise<MemoryHit[]> {
@@ -857,6 +889,19 @@ function buildSessionSummary(
   ]
     .filter((line): line is string => typeof line === "string")
     .join("\n");
+}
+
+function resolveCompactionPhase(
+  trigger: MemoryCompactionTrigger
+): z.infer<typeof memoryCompactionRecordSchema>["phase"] {
+  switch (trigger) {
+    case "completion":
+      return "session_completion";
+    case "manual":
+      return "manual";
+    case "threshold":
+      return "threshold";
+  }
 }
 
 function estimateTokenCountFromSnapshot(messages: SessionSnapshot["messages"]): number {

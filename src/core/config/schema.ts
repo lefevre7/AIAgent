@@ -887,13 +887,18 @@ export const DEFAULT_APP_CONFIG: AppConfig = createDefaultAppConfig({
 export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
   configVersion: APPROVALS_CONFIG_VERSION,
   defaultMode: "ask",
+  // Patterns are JS regex sources written as TS string literals, so a regex
+  // escape needs exactly one doubled backslash here ("\\s" -> \s). A previous
+  // revision quadrupled them, which turned `\s`/`\b` into literal characters
+  // and silently disabled the destructive-command deny rule (security review
+  // H1). tests/unit/approval-defaults.test.ts exercises the shipped rules.
   rules: [
     {
       id: "rule.command.read.allow",
       mode: "allow",
       notes: "Common read-only shell inspection commands.",
       pattern:
-        "^(pwd|ls|find|rg|grep|sed|cat|head|tail|wc|git status|git diff)(\\\\b|$)",
+        "^(pwd|ls|find|rg|grep|sed|cat|head|tail|wc|git status|git diff)(\\b|$)",
       targetKind: "command"
     },
     {
@@ -902,15 +907,49 @@ export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
       notes:
         "Build, test, and package-manager commands should stay operator-visible.",
       pattern:
-        "^(npm|pnpm|yarn|bun|node|tsx|vitest|playwright|python3?|pytest|cargo|go|java|javac|gradle|\\\\./gradlew)(\\\\b|$)",
+        "^(npm|pnpm|yarn|bun|node|tsx|vitest|playwright|python3?|pytest|cargo|go|java|javac|gradle|\\./gradlew)(\\b|$)",
       targetKind: "command"
     },
     {
-      id: "rule.command.destructive.deny",
+      id: "rule.command.destructive.rm.deny",
       mode: "deny",
-      notes: "Block obviously destructive shell patterns by default.",
+      notes:
+        "Block recursive deletes of the filesystem root, home, the current directory, or a bare glob, and any --no-preserve-root use.",
       pattern:
-        "(^|\\\\s)(rm\\\\s+-rf\\\\s+/|mkfs|shutdown|reboot|halt)(\\\\s|$)",
+        "(^|[\\s;&|])(sudo\\s+)?rm\\s+(-[A-Za-z]*[rR][A-Za-z]*\\s+(/|~|\\*|\\.|\\$HOME)/?\\*?(\\s|$)|.*--no-preserve-root)",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.destructive.disk.deny",
+      mode: "deny",
+      notes:
+        "Block filesystem formatting and raw device writes (mkfs, dd/shred to /dev, redirecting output onto a disk device).",
+      pattern:
+        "(^|[\\s;&|])(sudo\\s+)?(mkfs(\\.[a-z0-9]+)?\\s|dd\\s.*\\bof=/dev/|shred\\s.*/dev/|>\\s*/dev/(sd|nvme|disk|hd|mmcblk))",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.destructive.system.deny",
+      mode: "deny",
+      notes:
+        "Block host shutdown and reboot commands (as the command itself, not as a word inside another command's arguments).",
+      pattern:
+        "(^|[;&|]\\s*)(sudo\\s+)?(shutdown|reboot|halt|poweroff)(\\s|$)",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.destructive.permissions.deny",
+      mode: "deny",
+      notes: "Block recursive permission or ownership changes of the filesystem root.",
+      pattern:
+        "(^|[\\s;&|])(sudo\\s+)?ch(mod|own)\\s+-[A-Za-z]*R[A-Za-z]*\\s+\\S+\\s+/(\\s|$)",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.destructive.forkbomb.deny",
+      mode: "deny",
+      notes: "Block the classic shell fork bomb.",
+      pattern: ":\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&\\s*\\}\\s*;\\s*:",
       targetKind: "command"
     },
     {

@@ -61,12 +61,23 @@ function buildSnapshot(text: string, lastError?: string): GatewaySessionSnapshot
   } as unknown as GatewaySessionSnapshot;
 }
 
-type PendingApprovalSpec = { label: string; requestId: string; value: string };
+type PendingApprovalSpec = {
+  justification?: string;
+  kind?: string;
+  label: string;
+  options?: Array<{ description?: string; label: string }>;
+  requestId: string;
+  value: string;
+};
 
 type ToolEventSpec = { errorMessage?: string; status: string; toolName: string };
 
+type ResolvedApprovalSpec = { comment?: string; decision: string; requestId: string };
+
 function createFakeSdk(
   options: {
+    compactResult?: { hiddenMessageCount: number; summaryPath?: string };
+    compactError?: string;
     lastError?: string;
     modelStatus?: string;
     pendingApprovals?: PendingApprovalSpec[];
@@ -76,14 +87,16 @@ function createFakeSdk(
   } = {}
 ): {
   sdk: AIAgentSdk;
-  getResolved: () => Array<{ decision: string; requestId: string }>;
+  getCompactCalls: () => number;
+  getResolved: () => ResolvedApprovalSpec[];
   getSent: () => string[];
   wasClosed: () => boolean;
 } {
   const sent: string[] = [];
-  const resolved: Array<{ decision: string; requestId: string }> = [];
+  const resolved: ResolvedApprovalSpec[] = [];
   let pending = [...(options.pendingApprovals ?? [])];
   let closed = false;
+  let compactCalls = 0;
   let listener: ((event: unknown) => void) | null = null;
 
   const emit = (delta: string): void => {
@@ -91,13 +104,34 @@ function createFakeSdk(
   };
 
   const handle = {
+    async compact() {
+      compactCalls += 1;
+      if (options.compactError) {
+        throw new Error(options.compactError);
+      }
+      return {
+        hiddenMessageCount: options.compactResult?.hiddenMessageCount ?? 0,
+        session: { id: "session.test.cli.1" },
+        summary: "# Session Summary",
+        summaryPath: options.compactResult?.summaryPath
+      };
+    },
     async listPendingApprovals() {
       return pending.map((entry) => ({
-        request: { id: entry.requestId, target: { kind: "tool", label: entry.label, value: entry.value } }
+        request: {
+          id: entry.requestId,
+          justification: entry.justification ?? `The tool "${entry.value}" requires approval.`,
+          metadata: entry.options ? { options: entry.options } : {},
+          target: { kind: entry.kind ?? "tool", label: entry.label, value: entry.value }
+        }
       }));
     },
-    async resolveApproval(input: { decision: string; requestId: string }) {
-      resolved.push({ decision: input.decision, requestId: input.requestId });
+    async resolveApproval(input: { comment?: string; decision: string; requestId: string }) {
+      resolved.push({
+        ...(input.comment !== undefined ? { comment: input.comment } : {}),
+        decision: input.decision,
+        requestId: input.requestId
+      });
       pending = pending.filter((entry) => entry.requestId !== input.requestId);
       return { approval: { request: { id: input.requestId } } };
     },
@@ -162,6 +196,7 @@ function createFakeSdk(
   } as unknown as AIAgentSdk;
 
   return {
+    getCompactCalls: () => compactCalls,
     getResolved: () => resolved,
     getSent: () => sent,
     sdk,
@@ -318,7 +353,11 @@ describe("interactive CLI loop", () => {
   });
 
   test("prompts inline for approval and resolves it when the operator approves", async () => {
-    const fake = createFakeSdk({ pendingApprovals: [{ label: "Write File", requestId: "approval.1", value: "write_file" }] });
+    const fake = createFakeSdk({
+      pendingApprovals: [
+        { justification: "Ask before file writes.", label: "Write File", requestId: "approval.1", value: "write_file" }
+      ]
+    });
     const capture = createCaptureStreams();
 
     const exitCode = await runCli([], capture.streams, {
@@ -327,24 +366,143 @@ describe("interactive CLI loop", () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(capture.getStdout()).toContain("Approve Write File → write_file? [y/N]");
+    expect(capture.getStdout()).toContain("Approve Write File → write_file? [y/N/a]");
+    // The request's justification is shown so the operator knows why it is asked.
+    expect(capture.getStdout()).toContain("Ask before file writes.");
     expect(capture.getStdout()).toContain("Approved write_file.");
     expect(fake.getResolved()).toEqual([{ decision: "approved", requestId: "approval.1" }]);
     expect(fake.getSent()).toEqual(["write the file"]);
   });
 
-  test("denies an approval when the operator declines", async () => {
+  test("denies an approval when the operator declines and skips the optional note", async () => {
     const fake = createFakeSdk({ pendingApprovals: [{ label: "Run Command", requestId: "approval.2", value: "shell_command" }] });
     const capture = createCaptureStreams();
 
     const exitCode = await runCli([], capture.streams, {
       createSdk: async () => fake.sdk,
-      interactiveInput: lineSource(["run it", "n", "/exit"])
+      // "n" denies, the empty line skips the note, then /exit.
+      interactiveInput: lineSource(["run it", "n", "", "/exit"])
     });
 
     expect(exitCode).toBe(0);
+    expect(capture.getStdout()).toContain("Optional note or alternative instruction");
     expect(capture.getStdout()).toContain("Denied shell_command.");
     expect(fake.getResolved()).toEqual([{ decision: "denied", requestId: "approval.2" }]);
+    expect(capture.getStdout()).toContain("Goodbye.");
+  });
+
+  test("sends a denial note as the resolution comment so it becomes steering", async () => {
+    const fake = createFakeSdk({ pendingApprovals: [{ label: "Run Command", requestId: "approval.3", value: "shell_command" }] });
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCli([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: lineSource(["run it", "no", "use ls instead of find", "/exit"])
+    });
+
+    expect(exitCode).toBe(0);
+    expect(fake.getResolved()).toEqual([
+      { comment: "use ls instead of find", decision: "denied", requestId: "approval.3" }
+    ]);
+    expect(capture.getStdout()).toContain("Denied shell_command. Your note was queued as steering for the agent.");
+  });
+
+  test("answering `a` approves and auto-approves the same target for the rest of the session", async () => {
+    const fake = createFakeSdk({
+      pendingApprovals: [
+        { label: "Write File", requestId: "approval.4", value: "write_file" },
+        { label: "Write File", requestId: "approval.5", value: "write_file" },
+        { label: "Run Command", requestId: "approval.6", value: "shell_command" }
+      ]
+    });
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCli([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      // "a" for the first write_file; the second write_file is auto-approved
+      // without a prompt; the unrelated shell_command still prompts ("y").
+      interactiveInput: lineSource(["write two files", "a", "y", "/exit"])
+    });
+
+    expect(exitCode).toBe(0);
+    expect(fake.getResolved()).toEqual([
+      { decision: "approved", requestId: "approval.4" },
+      {
+        comment: 'Auto-approved: the operator answered "always" for this target earlier in the CLI session.',
+        decision: "approved",
+        requestId: "approval.5"
+      },
+      { decision: "approved", requestId: "approval.6" }
+    ]);
+    expect(capture.getStdout()).toContain("further write_file requests are auto-approved for this session");
+    expect(capture.getStdout()).toContain("Auto-approved write_file (always for this session).");
+    expect(capture.getStdout()).toContain("Approve Run Command → shell_command? [y/N/a]");
+  });
+
+  test("answers an agent question directly and threads the reply as the resolution comment", async () => {
+    const fake = createFakeSdk({
+      pendingApprovals: [
+        {
+          justification: "Which database should I target?",
+          kind: "question",
+          label: "Ask User Question",
+          options: [{ description: "Local dev database", label: "sqlite" }, { label: "postgres" }],
+          requestId: "approval.7",
+          value: "ask_user_question"
+        }
+      ]
+    });
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCli([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: lineSource(["set up the db", "postgres", "/exit"])
+    });
+
+    expect(exitCode).toBe(0);
+    expect(capture.getStdout()).toContain("The agent asks: Which database should I target?");
+    expect(capture.getStdout()).toContain("  - sqlite: Local dev database");
+    expect(capture.getStdout()).toContain("  - postgres");
+    expect(capture.getStdout()).not.toContain("[y/N/a]");
+    expect(fake.getResolved()).toEqual([{ comment: "postgres", decision: "approved", requestId: "approval.7" }]);
+    expect(capture.getStdout()).toContain("Answer sent to the agent.");
+  });
+
+  test("/compact summarizes the session through the SDK and reports the result", async () => {
+    const fake = createFakeSdk({ compactResult: { hiddenMessageCount: 6, summaryPath: "/tmp/chat-session-memory/session.md" } });
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCli([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: lineSource(["hello", "/compact", "/exit"])
+    });
+
+    expect(exitCode).toBe(0);
+    expect(fake.getCompactCalls()).toBe(1);
+    expect(capture.getStdout()).toContain("Compacted 6 earlier message(s) into a session summary.");
+    expect(capture.getStdout()).toContain("Summary file: /tmp/chat-session-memory/session.md");
+    // /compact is a REPL command, never sent to the agent as a message.
+    expect(fake.getSent()).toEqual(["hello"]);
+  });
+
+  test("/compact reports an empty session and surfaces gateway errors without leaving the loop", async () => {
+    const empty = createFakeSdk({ compactResult: { hiddenMessageCount: 0 } });
+    const emptyCapture = createCaptureStreams();
+    expect(
+      await runCli([], emptyCapture.streams, { createSdk: async () => empty.sdk, interactiveInput: lineSource(["/compact", "/exit"]) })
+    ).toBe(0);
+    expect(emptyCapture.getStdout()).toContain("Nothing to compact yet");
+
+    const failing = createFakeSdk({ compactError: "Session has pending approvals" });
+    const failingCapture = createCaptureStreams();
+    expect(
+      await runCli([], failingCapture.streams, {
+        createSdk: async () => failing.sdk,
+        interactiveInput: lineSource(["/compact", "still here", "/exit"])
+      })
+    ).toBe(0);
+    expect(failingCapture.getStderr()).toContain("Failed to compact the session: Session has pending approvals");
+    expect(failing.getSent()).toEqual(["still here"]);
   });
 
   test("treats /quit as an exit alias", async () => {
@@ -372,6 +530,7 @@ describe("interactive CLI loop", () => {
 
     expect(exitCode).toBe(0);
     expect(capture.getStdout()).toContain("Interactive commands:");
+    expect(capture.getStdout()).toContain("/compact");
     expect(capture.getStderr()).toContain('Unknown command "/bogus"');
     expect(fake.getSent()).toEqual(["real message"]);
   });

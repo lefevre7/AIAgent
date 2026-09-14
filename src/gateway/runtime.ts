@@ -8,8 +8,10 @@ import { z } from "zod";
 import {
   AgentLoop,
   ApprovalCoordinator,
+  COMPACTION_WATERMARK_METADATA_KEY,
   ChannelService,
   FileSessionStore,
+  filterModelVisibleMessages,
   LanguageModelRuntime,
   MemorySystemStatus,
   TaskStateService,
@@ -72,6 +74,7 @@ import {
   type GatewayRunCompletionReason,
   type GatewayRunKind,
   type GatewayRunRecord,
+  type GatewaySessionCompactResult,
   type GatewaySessionSnapshot,
   type GatewaySubscription,
   type JsonValue,
@@ -747,6 +750,14 @@ export class GatewayRuntime
             ).sessionId
           )
         });
+      case "session.compact":
+        return gatewayResponsePayloadSchemas["session.compact"].parse(
+          await this.compactSessionNow(
+            gatewayRequestPayloadSchemas["session.compact"].parse(
+              request.payload
+            ).sessionId
+          )
+        );
       case "session.create":
         return gatewayResponsePayloadSchemas["session.create"].parse(
           await this.createSession(
@@ -863,6 +874,89 @@ export class GatewayRuntime
     }
 
     return this.cancelRun(active.run.id);
+  }
+
+  // Operator-triggered compaction (CLI `/compact`). Writes the session summary
+  // through the same memory lifecycle the loop uses for threshold compaction,
+  // then moves the session's compaction watermark to the newest persisted
+  // message so later model requests replay only the summary (via the Durable
+  // Memory prompt section) plus whatever arrives afterwards.
+  private async compactSessionNow(
+    sessionId: string
+  ): Promise<GatewaySessionCompactResult> {
+    const session = await this.requireIdleSession(sessionId);
+    const pendingApprovals = await this.options.sessions.readPendingApprovals();
+    if (
+      Object.values(pendingApprovals).some(
+        (entry) => entry.sessionId === sessionId
+      )
+    ) {
+      throw gatewayError(
+        "busy",
+        `Session "${sessionId}" has pending approvals. Resolve them before compacting.`
+      );
+    }
+
+    const snapshot = await this.options.sessions.getSessionSnapshot(sessionId);
+    const visibleMessages = filterModelVisibleMessages(
+      snapshot?.messages ?? [],
+      session
+    );
+    const outcome = await this.options.memoryService.compactSessionDetailed({
+      sessionId,
+      trigger: "manual"
+    });
+
+    const watermarkMessageId = snapshot?.messages.at(-1)?.id;
+    const updatedAt = new Date().toISOString();
+    const updatedSession = sessionRecordSchema.parse({
+      ...session,
+      lastActiveAt: updatedAt,
+      metadata: {
+        ...session.metadata,
+        ...(watermarkMessageId
+          ? { [COMPACTION_WATERMARK_METADATA_KEY]: watermarkMessageId }
+          : {})
+      },
+      updatedAt
+    });
+    // Save the record directly: persistSession() also rewrites resume metadata,
+    // which is not what a compaction of an otherwise-untouched session wants.
+    await this.options.sessions.saveSession(updatedSession);
+
+    await this.emitEvent(
+      {
+        createdAt: updatedAt,
+        id: `session-updated.${sessionId}.${crypto.randomUUID()}`,
+        metadata: {},
+        payload: updatedSession,
+        topic: "session.updated"
+      },
+      true
+    );
+    await this.emitEvent(
+      {
+        createdAt: updatedAt,
+        id: `memory-updated.${sessionId}.${crypto.randomUUID()}`,
+        // memory.updated carries no session in its payload; the metadata
+        // sessionId is what session-scoped subscriptions (the CLI) filter on.
+        metadata: { sessionId },
+        payload: {
+          entryId: `memory.session-summary.${sessionId}`,
+          scope: "session"
+        },
+        topic: "memory.updated"
+      },
+      true
+    );
+
+    return {
+      compactedThroughMessageId: watermarkMessageId,
+      hiddenMessageCount: visibleMessages.length,
+      session: updatedSession,
+      summary: outcome.summary,
+      summaryPath: outcome.summaryPath
+    };
   }
 
   private async createSession(
