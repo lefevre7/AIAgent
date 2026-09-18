@@ -301,6 +301,12 @@ const runtimeConfigSchema = z
     defaultProvider: providerIdSchema,
     logLevel: logLevelSchema,
     maxConsecutiveNudges: z.number().int().positive().max(100),
+    // How many times one run may execute the exact same tool with the exact
+    // same arguments before the runtime refuses and tells the model to change
+    // approach. Guards against a small model re-issuing an identical read in a
+    // loop; legitimate repeats (re-reading a file after editing it) are well
+    // under the default.
+    maxIdenticalToolCalls: z.number().int().positive().max(100),
     maxTurnsPerRun: z.union([
       z.literal("unlimited"),
       z.number().int().positive().max(100_000)
@@ -830,6 +836,7 @@ export function createDefaultAppConfig(params: {
       defaultProvider: "lm_studio",
       logLevel: "info",
       maxConsecutiveNudges: 3,
+      maxIdenticalToolCalls: 3,
       maxTurnsPerRun: "unlimited",
       // Cap a single generation so a looping/rambling local model cannot stream
       // unbounded until the request times out; repetitionPenalty is a mild,

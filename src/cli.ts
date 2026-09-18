@@ -25,9 +25,14 @@ import {
 import type {
   GatewayApprovalRecord,
   GatewayEvent,
+  GatewayRunCompletionReason,
+  GatewayRunRecord,
   GatewaySessionCompactResult,
   GatewaySessionSnapshot,
-  Message
+  JsonValue,
+  Message,
+  SessionSnapshot,
+  ToolCallRecord
 } from "@/core/contracts";
 
 type CliStream = Pick<NodeJS.WriteStream, "write">;
@@ -346,6 +351,78 @@ function formatModelUnavailable(model: {
   ].join("\n");
 }
 
+// The tool call already carries its arguments, and printing them is what
+// makes four different reads read as four different lines instead of four
+// identical ones.
+function formatToolActivity(toolCall: ToolCallRecord): string {
+  const label = `${toolCall.toolName}${formatToolArguments(toolCall.arguments)}`;
+  return toolCall.status === "failed" && toolCall.error
+    ? `· ${label}: failed — ${toolCall.error.message}`
+    : `· ${label}: ${toolCall.status}`;
+}
+
+// Tolerates a payload without arguments: rendering tool activity must never be
+// able to throw, because that exception would travel back into the run that
+// emitted the event.
+function formatToolArguments(args: Record<string, JsonValue> | undefined): string {
+  const entries = Object.entries(args ?? {});
+  if (entries.length === 0) {
+    return "";
+  }
+
+  const rendered = entries
+    .map(([key, value]) => `${key}=${truncateForDisplay(formatArgumentValue(value), 48)}`)
+    .join(", ");
+  return `(${truncateForDisplay(rendered, 140)})`;
+}
+
+function formatArgumentValue(value: JsonValue): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function truncateForDisplay(value: string, limit: number): string {
+  return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
+}
+
+function describeCompletionReason(
+  reason: GatewayRunCompletionReason | undefined
+): string {
+  switch (reason) {
+    case "session_awaiting_approval":
+    case "tool_awaiting_approval":
+      return "waiting for an approval decision";
+    case "session_cancelled":
+      return "the run was cancelled";
+    case "session_completion_blocked":
+      return "the agent stopped without completing the task";
+    case "session_failed":
+      return "the run failed";
+    case "tool_failed":
+      return "the tool call failed";
+    case "session_completed":
+    case "session_created":
+    case "tool_succeeded":
+      return "the run finished";
+    default:
+      return "the run ended without reporting a reason";
+  }
+}
+
+// Anything other than a clean completion gets a line. A turn that ends for an
+// unstated reason is indistinguishable from the agent quitting on you.
+function formatTurnStopNotice(
+  run: GatewayRunRecord | null,
+  snapshot: SessionSnapshot
+): string | null {
+  if (run?.completionReason === "session_completed") {
+    return null;
+  }
+
+  const summary = snapshot.resumeMetadata?.statusSummary;
+  const detail = summary ? ` ${summary}` : "";
+  return `${ANSI_DIM}Turn ended: ${describeCompletionReason(run?.completionReason)} (session ${snapshot.session.status}).${detail}${ANSI_RESET}`;
+}
+
 async function runChatTurn(
   handle: AIAgentSessionHandle,
   text: string,
@@ -377,17 +454,19 @@ async function runChatTurn(
       streams.stdout.write(event.payload.delta);
     } else if (event.topic === "tool.updated") {
       // Tool activity goes to stderr so it never corrupts streamed stdout text.
-      // Surface the failure reason so the operator can see why a tool failed.
       closeReasoning();
-      const tool = event.payload;
-      if (tool.status === "failed" && tool.error) {
-        writeLine(
-          streams.stderr,
-          `· ${tool.toolName}: failed — ${tool.error.message}`
-        );
-      } else {
-        writeLine(streams.stderr, `· ${tool.toolName}: ${tool.status}`);
-      }
+      writeLine(streams.stderr, formatToolActivity(event.payload));
+    } else if (event.topic === "approval.requested") {
+      // Announce the pause the moment it happens. The prompt itself only
+      // appears once the run yields, which can be a while on a long turn, and
+      // until then an unannounced pause is indistinguishable from the agent
+      // having quietly stopped.
+      closeReasoning();
+      const target = event.payload.target;
+      writeLine(
+        streams.stderr,
+        `${DIM}· paused for approval: ${target.label} → ${target.value}${RESET}`
+      );
     } else if (event.topic === "gateway.status") {
       const metrics = event.payload.metrics;
       if (metrics) {
@@ -401,6 +480,7 @@ async function runChatTurn(
   };
   const unsubscribe = handle.subscribe(onEvent, {
     topics: [
+      "approval.requested",
       "message.delta",
       "message.reasoning",
       "tool.updated",
@@ -412,19 +492,33 @@ async function runChatTurn(
     // Thinking line is terminated so streamed tokens / tool lines start cleanly.
     writeLine(streams.stdout, "Thinking…");
     const run = await handle.sendMessage({ text });
-    await run.wait();
+    let finalRun = await run.wait();
 
     closeReasoning();
     if (streamedText) {
       streams.stdout.write("\n");
     }
 
-    await resolvePendingApprovals(handle, streams, nextLine, approvalState);
+    finalRun =
+      (await resolvePendingApprovals(
+        handle,
+        streams,
+        nextLine,
+        approvalState
+      )) ?? finalRun;
 
-    const errorMessage = (await handle.snapshot()).snapshot.session.lastError
-      ?.message;
+    const snapshot = (await handle.snapshot()).snapshot;
+    const errorMessage = snapshot.session.lastError?.message;
     if (errorMessage) {
       writeLine(streams.stderr, `Error: ${errorMessage}`);
+    } else {
+      // A turn that ends for any reason other than "the agent finished" used
+      // to print nothing at all, which is how a paused or blocked run read as
+      // the agent stopping for no reason.
+      const notice = formatTurnStopNotice(finalRun, snapshot);
+      if (notice) {
+        writeLine(streams.stderr, notice);
+      }
     }
   } catch (error) {
     writeLine(streams.stderr, renderCliError(error));
@@ -445,11 +539,13 @@ async function resolvePendingApprovals(
   streams: CliStreams,
   nextLine: () => Promise<string | null>,
   state: CliApprovalState
-): Promise<void> {
+): Promise<GatewayRunRecord | null> {
+  let lastRun: GatewayRunRecord | null = null;
+
   for (let round = 0; round < 50; round += 1) {
     const pending = await handle.listPendingApprovals();
     if (pending.length === 0) {
-      return;
+      return lastRun;
     }
 
     for (const approval of pending) {
@@ -524,8 +620,14 @@ async function resolvePendingApprovals(
     }
 
     const resumeRun = await handle.resume();
-    await resumeRun.wait();
+    lastRun = await resumeRun.wait();
   }
+
+  writeLine(
+    streams.stderr,
+    "Stopped after 50 rounds of approvals without the session settling. Run the prompt again, or resolve the remaining approvals from another surface."
+  );
+  return lastRun;
 }
 
 async function answerAgentQuestion(

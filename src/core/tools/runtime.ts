@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 
+import { toJsonRecord, toJsonValue } from "@/core/contracts";
 import type {
   ApprovalRequest,
   ApprovalTargetKind,
@@ -155,17 +156,22 @@ export class ToolRuntime implements AgentLoopToolExecutor {
         session: context.session,
         turn: context.turn
       });
+      // Tool results are arbitrary values from arbitrary tools (MCP servers
+      // included), and anything with a key set to an explicit `undefined`
+      // fails the strict JsonValue contract the moment the record is put on
+      // an event. Normalize once here, at the single boundary every tool
+      // result crosses, instead of trusting each tool to be careful.
       const completedCall: ToolCallRecord = {
         ...call,
         completedAt: new Date().toISOString(),
-        metadata: {
+        metadata: toJsonRecord({
           ...call.metadata,
           ...(result.metadata ?? {}),
           citations: result.citations ?? [],
           progress: result.progress ?? [],
           toolId: tool.definition.toolId
-        },
-        result: result.result,
+        }),
+        result: toJsonValue(result.result),
         status: "succeeded"
       };
 
@@ -191,10 +197,10 @@ export class ToolRuntime implements AgentLoopToolExecutor {
       ...call,
       completedAt: new Date().toISOString(),
       error,
-      metadata: {
+      metadata: toJsonRecord({
         ...call.metadata,
         ...(metadata ?? {})
-      },
+      }),
       status: "failed"
     };
   }

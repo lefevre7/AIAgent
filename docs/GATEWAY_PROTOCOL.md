@@ -90,6 +90,15 @@ Rules:
 - new work on a busy session returns `busy`
 - `session.message`, `session.resume`, and `tool.execute` return quickly with an accepted run record
 - clients follow progress through `run.updated` plus the normal message/tool/turn/session events
+- every run reaches a terminal status (`cancelled`, `completed`, `failed`). A run that throws
+  anywhere after the agent loop returns is finalized as `failed` with completion reason
+  `session_failed`, and the session records the structured error. Nothing may leave a run
+  non-terminal: a client waiting on `run.updated` has no other way to learn the run is over,
+  and the run's session would stay permanently `busy`.
+- `run.get` reads the current record for a run id. Terminal runs stay readable for the last
+  100 runs, so a client that subscribes just after a run ends can still see that it finished
+  instead of waiting for an event that will never come.
+- `tool.updated` is emitted as each tool call settles, during the run, not batched after it.
 
 ### Direct Tool Execution
 
@@ -104,6 +113,9 @@ The gateway exposes:
 - `approval.get`
 - `approval.list`
 - `approval.resolve`
+
+`approval.requested` is emitted the moment a tool pauses, so a surface can tell the operator
+about the pause before the run yields.
 
 Approval resolution uses actor `gateway` by default and can create denied-comment steering through the shared approval coordinator.
 
@@ -127,6 +139,10 @@ Current topics:
 - `turn.updated`
 
 Replay only guarantees persisted events. Some live-only status events may still be emitted without replay persistence.
+
+Subscribers are dispatched independently: an exception thrown by one listener is logged and
+dropped rather than propagating back into whatever emitted the event. A subscriber must never
+be able to abort the run it is observing.
 
 ## Server Integration
 

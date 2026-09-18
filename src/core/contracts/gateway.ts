@@ -374,6 +374,12 @@ export const gatewayRunCancelRequestSchema = z
   })
   .strict();
 
+export const gatewayRunGetRequestSchema = z
+  .object({
+    runId: entityIdSchema
+  })
+  .strict();
+
 export const gatewayApprovalGetRequestSchema = z
   .object({
     requestId: entityIdSchema
@@ -425,6 +431,7 @@ export const gatewayRequestTopicSchema = z.enum([
   "memory.query",
   "model.health",
   "run.cancel",
+  "run.get",
   "session.cancel",
   "session.compact",
   "session.create",
@@ -484,6 +491,7 @@ export const gatewayRequestPayloadSchemas = {
   "memory.query": memoryQuerySchema,
   "model.health": z.object({ provider: providerIdSchema.optional() }).strict(),
   "run.cancel": gatewayRunCancelRequestSchema,
+  "run.get": gatewayRunGetRequestSchema,
   "session.cancel": gatewaySessionCancelRequestSchema,
   "session.compact": gatewaySessionCompactRequestSchema,
   "session.create": gatewaySessionCreateRequestSchema,
@@ -536,6 +544,7 @@ export const gatewayResponsePayloadSchemas = {
   "memory.query": z.object({ hits: z.array(memoryHitSchema) }).strict(),
   "model.health": providerHealthSchema,
   "run.cancel": z.object({ run: gatewayRunRecordSchema }).strict(),
+  "run.get": z.object({ run: gatewayRunRecordSchema }).strict(),
   "session.cancel": z.object({ run: gatewayRunRecordSchema }).strict(),
   "session.compact": gatewaySessionCompactResultSchema,
   "session.create": z

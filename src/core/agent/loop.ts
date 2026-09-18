@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type {
   ApprovalRequest,
   ApprovalResolution,
+  JsonValue,
   LanguageModelRequest,
   LanguageModelProvider,
   LanguageModelResponse,
@@ -57,6 +58,7 @@ export type AgentLoopRunParams = {
   }>;
   availableTools: ToolDefinition[];
   maxConsecutiveNudges?: number;
+  maxIdenticalToolCalls?: number;
   maxTurns?: number | "unlimited";
   session: SessionRecord;
   steeringInjections?: SteeringInjection[];
@@ -130,6 +132,14 @@ type AgentLoopOptions = {
     summary: string;
     metrics?: AgentLoopStatusMetrics;
   }) => Promise<void> | void;
+  // Called as each tool call settles, so a surface can show tool activity while
+  // the run is still going instead of receiving it all after the run ends. The
+  // host is expected to swallow its own failures: progress reporting must never
+  // be able to abort the run it is reporting on.
+  onToolUpdated?: (params: {
+    sessionId: string;
+    toolCall: ToolCallRecord;
+  }) => Promise<void> | void;
   promptBudgets?: {
     instructionDocChars?: number;
     memorySummaryChars?: number;
@@ -152,6 +162,7 @@ const DEFAULT_AUTO_COMPACT_THRESHOLD_TOKENS = 100_000;
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768;
 const AUTO_COMPACT_CONTEXT_WINDOW_FRACTION = 0.8;
 const DEFAULT_MAX_CONSECUTIVE_NUDGES = 3;
+const DEFAULT_MAX_IDENTICAL_TOOL_CALLS = 3;
 const ACTIVATED_TOOLS_METADATA_KEY = "activatedToolNames";
 // Session metadata key holding the id of the last message that has been folded
 // into the compacted summary. Messages up to and including it are no longer
@@ -177,6 +188,13 @@ export class AgentLoop {
     const maxTurns = params.maxTurns ?? "unlimited";
     const maxConsecutiveNudges =
       params.maxConsecutiveNudges ?? DEFAULT_MAX_CONSECUTIVE_NUDGES;
+    const maxIdenticalToolCalls =
+      params.maxIdenticalToolCalls ?? DEFAULT_MAX_IDENTICAL_TOOL_CALLS;
+    // How many times each exact (tool, arguments) pair has already run in this
+    // execution. A small model that cannot tell an empty result from a failed
+    // one will otherwise reissue the same read indefinitely, and the
+    // no-progress guard never fires because each call "succeeds".
+    const identicalToolCallCounts = new Map<string, number>();
     // Rebuilt after threshold compaction so the refreshed session summary
     // reaches the Durable Memory section of the system prompt.
     const buildPack = async (forSession: SessionRecord) =>
@@ -656,14 +674,26 @@ export class AgentLoop {
           proposal,
           toolDefinition
         );
-        const outcome = await (
-          this.options.toolExecutor ?? defaultToolExecutor()
-        ).execute(toolCall, {
-          session,
-          turn
-        });
+        const identityKey = toolCallIdentityKey(toolCall);
+        const priorIdenticalCalls =
+          identicalToolCallCounts.get(identityKey) ?? 0;
+        identicalToolCallCounts.set(identityKey, priorIdenticalCalls + 1);
+
+        const outcome =
+          priorIdenticalCalls >= maxIdenticalToolCalls
+            ? refuseRepeatedToolCall(toolCall, priorIdenticalCalls)
+            : await (
+                this.options.toolExecutor ?? defaultToolExecutor()
+              ).execute(toolCall, {
+                session,
+                turn
+              });
         toolOutcomes.push(outcome);
         appendedToolCalls.push(outcome.toolCall);
+        await this.options.onToolUpdated?.({
+          sessionId: session.id,
+          toolCall: outcome.toolCall
+        });
       }
 
       await this.options.sessions.appendToolCalls(
@@ -1284,6 +1314,68 @@ function createToolCallRecord(
     toolId: definition?.toolId ?? proposal.toolId,
     toolName: proposal.toolName,
     turnId
+  };
+}
+
+// Identity of a tool call for repeat detection: the tool plus its arguments,
+// with object keys sorted so argument order cannot disguise the same call.
+function toolCallIdentityKey(toolCall: ToolCallRecord): string {
+  return `${toolCall.toolName}:${stableStringify(toolCall.arguments)}`;
+}
+
+function stableStringify(value: JsonValue | undefined): string {
+  if (value === undefined) {
+    return "";
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+// Refusing costs one turn and tells the model exactly what to do differently;
+// executing it again would return the same bytes and buy nothing. The refusal
+// is a normal failed tool result so it flows back through the same path the
+// model already knows how to read.
+function refuseRepeatedToolCall(
+  toolCall: ToolCallRecord,
+  priorIdenticalCalls: number
+): AgentLoopToolExecutionResult {
+  const failedCall: ToolCallRecord = {
+    ...toolCall,
+    completedAt: new Date().toISOString(),
+    error: {
+      code: "repeated_tool_call",
+      details: {
+        priorIdenticalCalls,
+        toolName: toolCall.toolName
+      },
+      message: `"${toolCall.toolName}" was already called ${priorIdenticalCalls} time(s) in this run with exactly these arguments, and returned the same result each time. Do not repeat it: use the result you already have, call a different tool, change the arguments, or report what you found.`,
+      retriable: false
+    },
+    metadata: {
+      ...toolCall.metadata,
+      repeatedToolCall: true
+    },
+    status: "failed"
+  };
+
+  return {
+    resultMessage: createToolResultMessage(
+      toolCall.sessionId,
+      toolCall.turnId,
+      failedCall
+    ),
+    toolCall: failedCall
   };
 }
 

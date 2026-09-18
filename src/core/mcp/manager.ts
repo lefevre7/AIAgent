@@ -193,16 +193,23 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       toolsByServer.set(serverName, existing);
     }
 
+    // Spread optional fields in conditionally rather than assigning possibly
+    // undefined values: zod keeps a key that was handed an explicit undefined,
+    // and a summary carrying one cannot be serialized as a JsonValue when this
+    // result travels out on a tool.updated event. A server that never
+    // connected has no lastConnectedAt, and a healthy one has no error.
     return this.getServerStatuses().map((status) =>
       mcpServerSummarySchema.parse({
         capabilities: status.capabilities,
-        error: status.error?.message,
-        lastConnectedAt: status.lastConnectedAt,
+        ...(status.error?.message ? { error: status.error.message } : {}),
+        ...(status.lastConnectedAt
+          ? { lastConnectedAt: status.lastConnectedAt }
+          : {}),
         serverName: status.serverName,
         state: status.state,
         tools: (toolsByServer.get(status.serverName) ?? [])
           .map((tool) => ({
-            description: tool.description,
+            ...(tool.description ? { description: tool.description } : {}),
             invocationName: tool.invocationName,
             name: tool.name
           }))

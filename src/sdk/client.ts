@@ -62,6 +62,13 @@ export type AIAgentGatewayRequestOptions = {
   signal?: AbortSignal;
 };
 
+export type AIAgentRunWaitOptions = AIAgentGatewayRequestOptions & {
+  // Reject instead of waiting forever when a run never reports a terminal
+  // status. Off by default: agent runs against a local model legitimately take
+  // minutes, so only a caller that knows its own ceiling should impose one.
+  timeoutMs?: number;
+};
+
 export type AIAgentMessageInput = z.input<typeof gatewayMessageInputSchema>;
 export type AIAgentSessionCreateInput = z.input<typeof gatewaySessionCreateRequestSchema>;
 
@@ -184,32 +191,52 @@ export class AIAgentSdk {
     this.requireProviderHost().registerLanguageModelAdapter(registration);
   }
 
-  async waitForRun(run: GatewayRunRecord, options: AIAgentGatewayRequestOptions = {}): Promise<GatewayRunRecord> {
+  async getRun(runId: string, options: AIAgentGatewayRequestOptions = {}): Promise<GatewayRunRecord> {
+    return (await this.request("run.get", { runId }, options)).run;
+  }
+
+  async waitForRun(run: GatewayRunRecord, options: AIAgentRunWaitOptions = {}): Promise<GatewayRunRecord> {
     if (isTerminalRunStatus(run.status)) {
       return run;
     }
 
-    return withAbort(
-      new Promise<GatewayRunRecord>((resolve) => {
-        const unsubscribe = this.subscribe(
-          (event) => {
-            if (event.topic !== "run.updated" || event.payload.id !== run.id) {
-              return;
-            }
-
-            if (isTerminalRunStatus(event.payload.status)) {
-              unsubscribe();
-              resolve(event.payload);
-            }
-          },
-          {
-            sessionId: run.sessionId,
-            topics: ["run.updated"]
+    // Held on an object rather than a local: the executor below runs
+    // synchronously, but control-flow analysis cannot see that through the
+    // Promise constructor and would narrow a local to never.
+    const subscription: { unsubscribe?: () => void } = {};
+    const terminal = new Promise<GatewayRunRecord>((resolve) => {
+      subscription.unsubscribe = this.subscribe(
+        (event) => {
+          if (event.topic !== "run.updated" || event.payload.id !== run.id) {
+            return;
           }
-        );
-      }),
-      options.signal
-    );
+
+          if (isTerminalRunStatus(event.payload.status)) {
+            resolve(event.payload);
+          }
+        },
+        {
+          sessionId: run.sessionId,
+          topics: ["run.updated"]
+        }
+      );
+    });
+
+    try {
+      // The subscription goes up after the caller was handed the run record,
+      // so a run that finished in that window would never deliver its terminal
+      // event to this listener. Re-read the record now that we are listening;
+      // a run the gateway no longer remembers falls through to the wait, where
+      // the optional timeout applies.
+      const current = await this.getRun(run.id, options).catch(() => null);
+      if (current && isTerminalRunStatus(current.status)) {
+        return current;
+      }
+
+      return await withAbort(withRunWaitTimeout(terminal, run.id, options.timeoutMs), options.signal);
+    } finally {
+      subscription.unsubscribe?.();
+    }
   }
 
   private requireProviderHost(): GatewayRuntimeProviderRegistrationHost {
@@ -308,7 +335,12 @@ export class AIAgentRunHandle {
     return this.record;
   }
 
-  async wait(options: AIAgentGatewayRequestOptions = {}): Promise<GatewayRunRecord> {
+  async refresh(options: AIAgentGatewayRequestOptions = {}): Promise<GatewayRunRecord> {
+    this.record = await this.sdk.getRun(this.record.id, options);
+    return this.record;
+  }
+
+  async wait(options: AIAgentRunWaitOptions = {}): Promise<GatewayRunRecord> {
     this.record = await this.sdk.waitForRun(this.record, options);
     return this.record;
   }
@@ -576,6 +608,46 @@ function buildGatewayResponseError(response: GatewayResponse): Error {
   error.name = "AIAgentGatewayError";
   Object.assign(error, structuredError ?? {});
   return error;
+}
+
+export class AIAgentRunWaitTimeoutError extends Error {
+  constructor(
+    readonly runId: string,
+    readonly timeoutMs: number
+  ) {
+    super(
+      `Gave up after ${timeoutMs}ms waiting for gateway run "${runId}" to report a terminal status. The run may still be executing, or the gateway may have failed to finalize it.`
+    );
+    this.name = "AIAgentRunWaitTimeoutError";
+  }
+}
+
+function withRunWaitTimeout(
+  promise: Promise<GatewayRunRecord>,
+  runId: string,
+  timeoutMs?: number
+): Promise<GatewayRunRecord> {
+  if (timeoutMs === undefined) {
+    return promise;
+  }
+
+  return new Promise<GatewayRunRecord>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new AIAgentRunWaitTimeoutError(runId, timeoutMs));
+    }, timeoutMs);
+    // Never let the wait alone keep the process alive.
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    );
+  });
 }
 
 function createAbortError(): Error {

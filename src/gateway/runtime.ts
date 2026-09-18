@@ -91,6 +91,11 @@ import {
   normalizeGatewayError
 } from "@/gateway/errors";
 
+// How many terminal run records stay readable through `run.get`. Large enough
+// that a client polling right after a run ends always finds it, small enough
+// that a long-lived gateway does not accumulate them.
+const FINISHED_RUN_HISTORY_LIMIT = 100;
+
 type ActiveGatewayRun = {
   cancelRequested: boolean;
   run: GatewayRunRecord;
@@ -163,6 +168,10 @@ export class GatewayRuntime
 {
   private readonly activeRunsById = new Map<string, ActiveGatewayRun>();
   private readonly activeRunsBySession = new Map<string, ActiveGatewayRun>();
+  // Terminal runs, kept briefly so `run.get` can answer for a run that already
+  // finished. A caller that subscribes to run.updated just after a run ends
+  // would otherwise have no way to learn it is over, and would wait forever.
+  private readonly finishedRunsById = new Map<string, GatewayRunRecord>();
   private readonly inFlightRuns = new Set<Promise<void>>();
   private readonly eventLog: GatewayEventLog;
   private readonly approvalCoordinator: ApprovalCoordinator;
@@ -227,6 +236,29 @@ export class GatewayRuntime
           },
           false
         );
+      },
+      // Tool activity is emitted as each call settles rather than with the
+      // post-run batch, so an operator watching a long run sees tools as they
+      // happen. Failures here are logged and dropped: a progress event must
+      // never be able to abort the run that produced it.
+      onToolUpdated: async ({ sessionId, toolCall }) => {
+        try {
+          await this.emitEvent(
+            {
+              createdAt: toolCall.completedAt ?? toolCall.startedAt,
+              id: `tool-updated.${toolCall.id}`,
+              metadata: { sessionId },
+              payload: toolCall,
+              topic: "tool.updated"
+            },
+            true
+          );
+        } catch (error) {
+          console.error(
+            `Failed to emit tool activity for "${toolCall.toolName}":`,
+            error
+          );
+        }
       },
       onStatus: async ({ session, summary, metrics }) => {
         await this.emitEvent(
@@ -742,6 +774,12 @@ export class GatewayRuntime
               .runId
           )
         });
+      case "run.get":
+        return gatewayResponsePayloadSchemas["run.get"].parse({
+          run: this.getRunRecord(
+            gatewayRequestPayloadSchemas["run.get"].parse(request.payload).runId
+          )
+        });
       case "session.cancel":
         return gatewayResponsePayloadSchemas["session.cancel"].parse({
           run: await this.cancelSession(
@@ -862,6 +900,27 @@ export class GatewayRuntime
       true
     );
     return active.run;
+  }
+
+  private getRunRecord(runId: string): GatewayRunRecord {
+    const run =
+      this.activeRunsById.get(runId)?.run ?? this.finishedRunsById.get(runId);
+    if (!run) {
+      throw gatewayError("not_found", `Run "${runId}" was not found.`);
+    }
+
+    return run;
+  }
+
+  private rememberFinishedRun(run: GatewayRunRecord): void {
+    this.finishedRunsById.set(run.id, run);
+    while (this.finishedRunsById.size > FINISHED_RUN_HISTORY_LIMIT) {
+      const oldest = this.finishedRunsById.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      this.finishedRunsById.delete(oldest.value);
+    }
   }
 
   private async cancelSession(sessionId: string): Promise<GatewayRunRecord> {
@@ -1125,7 +1184,11 @@ export class GatewayRuntime
       userMessages?: Message[];
     }
   ): void {
-    this.trackRun(this.executeSessionRun(runId, session, params));
+    this.trackRun(
+      this.guardRun(runId, session.id, () =>
+        this.executeSessionRun(runId, session, params)
+      )
+    );
   }
 
   private launchToolRun(
@@ -1133,7 +1196,87 @@ export class GatewayRuntime
     session: SessionRecord,
     input: z.infer<(typeof gatewayRequestPayloadSchemas)["tool.execute"]>
   ): void {
-    this.trackRun(this.executeToolRun(runId, session, input));
+    this.trackRun(
+      this.guardRun(runId, session.id, () =>
+        this.executeToolRun(runId, session, input)
+      )
+    );
+  }
+
+  // A run is fire-and-forget: nothing awaits it, so anything that throws after
+  // the agent loop returns — event emission, session persistence, the channel
+  // relay — used to skip completeRun entirely and leave the run stuck in
+  // "running" forever. That is invisible from outside: waitForRun only
+  // resolves on a terminal run.updated, so the operator sees the CLI go silent
+  // mid-task with no error and no prompt, and the session stays wedged as
+  // "busy" because it never leaves activeRunsBySession. Every run must reach a
+  // terminal state, even when finalizing it is the only thing left that works.
+  private async guardRun(
+    runId: string,
+    sessionId: string,
+    body: () => Promise<void>
+  ): Promise<void> {
+    try {
+      await body();
+    } catch (error) {
+      await this.failRun(runId, sessionId, normalizeGatewayError(error));
+    }
+  }
+
+  private async failRun(
+    runId: string,
+    sessionId: string,
+    error: StructuredError
+  ): Promise<void> {
+    const active = this.activeRunsById.get(runId);
+
+    try {
+      const session = await this.options.sessions.getSession(sessionId);
+      if (session) {
+        const failedSession = await this.persistSession(session, "failed", {
+          activeTurnId: undefined,
+          clearError: false,
+          statusSummary: error.message,
+          structuredError: error
+        });
+        await this.emitEvent(
+          {
+            createdAt: failedSession.updatedAt,
+            id: `session-updated.${failedSession.id}.${crypto.randomUUID()}`,
+            metadata: {},
+            payload: failedSession,
+            topic: "session.updated"
+          },
+          true
+        );
+      }
+    } catch (persistError) {
+      console.error(
+        `Failed to record the failure of gateway run "${runId}":`,
+        persistError
+      );
+    }
+
+    if (!active) {
+      return;
+    }
+
+    try {
+      await this.completeRun(active, {
+        completionReason: "session_failed",
+        error,
+        sessionId,
+        status: "failed"
+      });
+    } catch (completeError) {
+      // completeRun already releases the maps in a finally, so reaching here
+      // means only the terminal event failed. Say so loudly: a caller waiting
+      // on this run is about to wait forever.
+      console.error(
+        `Failed to emit the terminal event for gateway run "${runId}":`,
+        completeError
+      );
+    }
   }
 
   // Keeps a handle on every fire-and-forget run so close() can drain them.
@@ -1142,7 +1285,12 @@ export class GatewayRuntime
   private trackRun(promise: Promise<void>): void {
     const tracked = promise.then(
       () => undefined,
-      () => undefined
+      (error: unknown) => {
+        // guardRun owns run failures, so anything surfacing here means even
+        // failing the run threw. Discarding it silently is exactly how a
+        // wedged run stayed invisible, so it goes to stderr.
+        console.error("A gateway run failed and could not be finalized:", error);
+      }
     );
     this.inFlightRuns.add(tracked);
     void tracked.finally(() => {
@@ -1186,6 +1334,8 @@ export class GatewayRuntime
         toolsConfig: this.options.config.tools
       }),
       maxConsecutiveNudges: this.options.config.runtime.maxConsecutiveNudges,
+      maxIdenticalToolCalls:
+        this.options.config.runtime.maxIdenticalToolCalls,
       maxTurns: this.options.config.runtime.maxTurnsPerRun,
       session: currentSession,
       userMessages: params.userMessages
@@ -1528,24 +1678,9 @@ export class GatewayRuntime
       );
     }
 
-    for (const toolCall of result.toolCalls) {
-      await this.emitEvent(
-        {
-          createdAt: toolCall.completedAt ?? toolCall.startedAt,
-          id: `tool-updated.${toolCall.id}`,
-          metadata: {},
-          payload: {
-            ...toolCall,
-            resultMessageId: result.messages.find(
-              (message) => message.id === `message.tool.${toolCall.id}`
-            )?.id
-          },
-          topic: "tool.updated"
-        },
-        true
-      );
-    }
-
+    // No tool.updated loop here on purpose: the agent loop's onToolUpdated
+    // hook already emitted one per tool call as it settled, and re-emitting
+    // would duplicate the event id in the log.
     for (const turn of result.turns) {
       await this.emitEvent(
         {
@@ -2326,9 +2461,14 @@ export class GatewayRuntime
       status: params.status,
       toolCallIds: params.toolCallIds ?? active.run.toolCallIds,
       turnIds: params.turnIds ?? active.run.turnIds
-    } as Partial<GatewayRunRecord>);
-    this.activeRunsById.delete(active.run.id);
-    this.activeRunsBySession.delete(active.run.sessionId);
+    } as Partial<GatewayRunRecord>).finally(() => {
+      // Release the run even if emitting the terminal event failed. These maps
+      // are the "session is busy" check, so a leaked entry rejects every later
+      // request for that session with no way to clear it short of a restart.
+      this.rememberFinishedRun(active.run);
+      this.activeRunsById.delete(active.run.id);
+      this.activeRunsBySession.delete(active.run.sessionId);
+    });
   }
 
   private async finalizeCancelledRun(
@@ -2468,7 +2608,21 @@ export class GatewayRuntime
     const emitted = persist
       ? await this.eventLog.append(normalizedEvent)
       : gatewayEventSchema.parse(normalizedEvent);
-    this.emit("event", emitted);
+    this.dispatchEvent(emitted);
+  }
+
+  // EventEmitter.emit() runs listeners synchronously and lets the first throw
+  // escape into whoever emitted the event — which for a run means one
+  // misbehaving subscriber aborts the run that produced the event. Give each
+  // listener its own try/catch so a bad subscriber loses only its own event.
+  private dispatchEvent(event: GatewayEvent): void {
+    for (const listener of this.listeners("event")) {
+      try {
+        (listener as (value: GatewayEvent) => void)(event);
+      } catch (error) {
+        console.error("A gateway event subscriber threw:", error);
+      }
+    }
   }
 }
 

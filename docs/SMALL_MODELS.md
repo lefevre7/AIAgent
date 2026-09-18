@@ -53,6 +53,12 @@ The system prompt no longer lists tools; it contains a short "Working With Tools
 
 `runtime.maxTurnsPerRun` defaults to `"unlimited"` (matching codex/Roo-Code-style loops, which bound work by completion discipline rather than turn count; mistral-vibe uses a finite configurable cap; openai-agents-js defaults to 10). A no-progress guard stops the run as `completion_blocked` after `runtime.maxConsecutiveNudges` (default 3) consecutive unproductive turns (no tool calls, or completion attempts that were mixed/rejected). Productive tool execution resets the guard.
 
+### Repeated identical tool calls
+
+`runtime.maxIdenticalToolCalls` (default 3) bounds how many times one run may execute the same tool with the same arguments. Past the cap the runtime refuses the call and returns a failed tool result telling the model to use the result it already has, change the arguments, or report what it found.
+
+This closes a gap the no-progress guard cannot see: a model that keeps reissuing a successful read (an empty directory listing reads like a search miss, so a small model retries it with different flags that resolve to the same call) never triggers a nudge, because every call succeeds. Arguments are compared with object keys sorted, so key order cannot disguise a repeat. Legitimate repeats — re-reading a file after editing it — stay well under the default.
+
 ### Threshold compaction
 
 When the last model request's real `usage.inputTokens` reaches the threshold, the loop triggers `compactSession({ trigger: "threshold" })`, refreshes the prompt pack (so the new session summary lands in the Durable Memory section), and sets a session watermark — messages before the watermark are no longer replayed to the model. Threshold resolution order:
@@ -67,6 +73,7 @@ When the last model request's real `usage.inputTokens` reaches the threshold, th
 "runtime": {
   "maxTurnsPerRun": "unlimited",
   "maxConsecutiveNudges": 3,
+  "maxIdenticalToolCalls": 3,
   "modelSettings": {
     "contextWindowTokens": 32768,  // drives compaction, Ollama num_ctx fallback, and context% metric
     "temperature": 0.7,
@@ -142,5 +149,5 @@ General guidance that holds regardless of family:
 - `src/core/lm/shared.ts` — native tool-call serialization (OpenAI-compatible + Ollama), malformed-call reporting, compact JSON rendering
 - `src/core/lm/ollama.ts` — `num_ctx` / `keep_alive`
 - `src/core/prompts/pack.tsx` — Working With Tools section, instruction/memory budgets
-- `src/core/config/schema.ts` — `tools`, `runtime.modelSettings`, `runtime.promptBudgets`, `runtime.maxTurnsPerRun`, `runtime.maxConsecutiveNudges`, `memory.autoCompactThresholdTokens`, `providers.ollama.contextLength`/`keepAlive`
+- `src/core/config/schema.ts` — `tools`, `runtime.modelSettings`, `runtime.promptBudgets`, `runtime.maxTurnsPerRun`, `runtime.maxConsecutiveNudges`, `runtime.maxIdenticalToolCalls`, `memory.autoCompactThresholdTokens`, `providers.ollama.contextLength`/`keepAlive`
 - `tests/integration/prompt-payload.test.ts` — payload budget regression tests

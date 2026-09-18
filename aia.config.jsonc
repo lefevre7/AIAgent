@@ -5,13 +5,14 @@
 
   "runtime": {
     "defaultProvider": "lm_studio",
-    "defaultModel": "google/gemma-4-26b-a4b-qat",
+    "defaultModel": "qwen3.8-27b-mlx",
     "logLevel": "info",
     "statusUpdates": true,
     "verboseEvents": true
     // Small-model knobs (see docs/SMALL_MODELS.md for full guidance):
     // "maxTurnsPerRun": "unlimited",      // or a number
     // "maxConsecutiveNudges": 3,          // no-progress guard
+    // "maxIdenticalToolCalls": 3,         // refuse the same tool+arguments past this many calls
     // "modelSettings": {
     //   "contextWindowTokens": 32768,     // drives compaction + Ollama num_ctx fallback
     //   "temperature": 0.7,
@@ -41,7 +42,7 @@
     "lmStudio": {
       "enabled": true,
       "baseUrl": "http://localhost:1234/v1",
-      "model": "google/gemma-4-26b-a4b-qat",
+      "model": "qwen3.8-27b-mlx",
       "timeoutMs": 300000,
       "headers": {}
     },
