@@ -49,7 +49,10 @@ describe("MCPWebSearchService", () => {
   });
 
   test("ignores tools that do not expose a query field", async () => {
-    const noQuery = { ...searchCapability(), inputSchema: { properties: { other: { type: "string" } }, type: "object" } };
+    const noQuery = {
+      ...searchCapability(),
+      inputSchema: { properties: { other: { type: "string" } }, type: "object" }
+    };
     const service = new MCPWebSearchService({ mcpManager: fakeManager({ capabilities: [noQuery] }) });
     await expect(service.search("anything")).rejects.toMatchObject({ code: "web_search_no_backend" });
   });

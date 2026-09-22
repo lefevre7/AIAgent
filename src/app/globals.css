@@ -12,10 +12,7 @@
   --info: #2b637f;
   --caution: #a86a1c;
   --error: #9b3f3f;
-  font-family:
-    "IBM Plex Sans",
-    "Avenir Next",
-    sans-serif;
+  font-family: "IBM Plex Sans", "Avenir Next", sans-serif;
   line-height: 1.5;
 }
 

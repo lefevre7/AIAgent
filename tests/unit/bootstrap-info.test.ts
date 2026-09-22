@@ -10,4 +10,3 @@ describe("createBootstrapInfo", () => {
     });
   });
 });
-

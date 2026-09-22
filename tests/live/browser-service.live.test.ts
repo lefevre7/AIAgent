@@ -139,81 +139,84 @@ describe("browser automation service (live)", () => {
     expect(closed.pages).toHaveLength(0);
   });
 
-  liveTest("executes browser_open and browser_snapshot through the runtime when browser actions are allowed", async () => {
-    const root = await createTempRoot();
-    const service = createPlaywrightBrowserAutomationService({
-      artifactRoot: path.join(root, ".aia", "browser"),
-      headless: true
-    });
-    services.push(service);
+  liveTest(
+    "executes browser_open and browser_snapshot through the runtime when browser actions are allowed",
+    async () => {
+      const root = await createTempRoot();
+      const service = createPlaywrightBrowserAutomationService({
+        artifactRoot: path.join(root, ".aia", "browser"),
+        headless: true
+      });
+      services.push(service);
 
-    const settings: ApprovalSettings = {
-      configVersion: 1,
-      defaultMode: "ask",
-      rules: [
-        {
-          id: "rule.browser.allow",
-          mode: "allow",
-          pattern: "^browser_",
-          targetKind: "browser_action"
-        }
-      ]
-    };
+      const settings: ApprovalSettings = {
+        configVersion: 1,
+        defaultMode: "ask",
+        rules: [
+          {
+            id: "rule.browser.allow",
+            mode: "allow",
+            pattern: "^browser_",
+            targetKind: "browser_action"
+          }
+        ]
+      };
 
-    const runtime = new ToolRuntime({
-      approvalDecider: createToolApprovalDecider({
-        settings
-      }),
-      registry: createDefaultToolRegistry({
-        browserService: service
-      })
-    });
-
-    const openResult = await runtime.execute(
-      createRuntimeCall({
-        arguments: {
-          url: createRuntimeBrowserDataUrl()
-        },
-        id: "tool-call.browser.runtime.open",
-        toolName: "browser_open"
-      }),
-      {
-        session: buildRuntimeSession(),
-        turn: buildRuntimeTurn()
-      }
-    );
-
-    expect(openResult.toolCall.status).toBe("succeeded");
-    expect(openResult.toolCall.result).toMatchObject({
-      createdPage: true,
-      page: {
-        title: "Runtime Browser"
-      }
-    });
-
-    const snapshotResult = await runtime.execute(
-      createRuntimeCall({
-        id: "tool-call.browser.runtime.snapshot",
-        toolName: "browser_snapshot"
-      }),
-      {
-        session: buildRuntimeSession(),
-        turn: buildRuntimeTurn()
-      }
-    );
-
-    expect(snapshotResult.toolCall.status).toBe("succeeded");
-    expect(snapshotResult.toolCall.result).toMatchObject({
-      title: "Runtime Browser"
-    });
-    expect(snapshotResult.resultMessage?.parts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "markdown"
+      const runtime = new ToolRuntime({
+        approvalDecider: createToolApprovalDecider({
+          settings
+        }),
+        registry: createDefaultToolRegistry({
+          browserService: service
         })
-      ])
-    );
-  });
+      });
+
+      const openResult = await runtime.execute(
+        createRuntimeCall({
+          arguments: {
+            url: createRuntimeBrowserDataUrl()
+          },
+          id: "tool-call.browser.runtime.open",
+          toolName: "browser_open"
+        }),
+        {
+          session: buildRuntimeSession(),
+          turn: buildRuntimeTurn()
+        }
+      );
+
+      expect(openResult.toolCall.status).toBe("succeeded");
+      expect(openResult.toolCall.result).toMatchObject({
+        createdPage: true,
+        page: {
+          title: "Runtime Browser"
+        }
+      });
+
+      const snapshotResult = await runtime.execute(
+        createRuntimeCall({
+          id: "tool-call.browser.runtime.snapshot",
+          toolName: "browser_snapshot"
+        }),
+        {
+          session: buildRuntimeSession(),
+          turn: buildRuntimeTurn()
+        }
+      );
+
+      expect(snapshotResult.toolCall.status).toBe("succeeded");
+      expect(snapshotResult.toolCall.result).toMatchObject({
+        title: "Runtime Browser"
+      });
+      expect(snapshotResult.resultMessage?.parts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "markdown"
+          })
+        ])
+      );
+    }
+  );
 });
 
 function createBrowserHarnessDataUrl(): string {

@@ -60,18 +60,18 @@ These are not directly comparable on all axes:
 
 ## Executive Summary
 
-| Repo | Type | Loop Completion Model | Tools | MCP | Skills/Subagents | Memory | Short Verdict |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `aider` | end-user coding chat | implicit end-of-reply | narrow edit/chat helpers | none | none | session summarization only | effective code-editing chat, not a full agent runtime |
-| `Roo-Code` | end-user assistant | explicit `attempt_completion` | strong native tool loop | strong | strong | strong session + code index | one of the clearest coding assistant runtimes |
-| `codex` | product/runtime hybrid | implicit no-follow-up | very broad, dynamic | very strong | very strong | very strong persistent pipeline | most extensible overall |
-| `mistral-vibe` | end-user assistant | stop when latest item is not a tool result | clean built-ins | solid | solid | session compaction only | elegant mid-weight agent loop |
-| `OpenHands` | legacy end-user assistant | explicit finish tool and controller stops | good V0 tools | solid | present | condensation-focused | local code is legacy; V1 moved elsewhere |
-| `openclaw` | platform/runtime | lifecycle-driven | very broad platform tools | strong | very strong | strongest memory breadth | most ambitious platform, less simple as a coding assistant |
-| `openai-agents-js` | framework | explicit runner next-step state machine | clean framework tools | strong | handoffs strong | pluggable sessions | excellent orchestration framework |
-| `voltagent` | framework | AI SDK `stopWhen` / `maxSteps` | toolkit composition | strong | strong | very strong adapter-based memory | strong builder framework, less canonical assistant loop |
-| `opendev` | end-user assistant | explicit `task_complete` | broad, practical built-ins | strong | strong | strong sessions, partial advanced memory integration | one of the best explicit ReAct runtimes |
-| `vscode-copilot-chat` | end-user assistant | explicit internal completion gate | strongest descriptor quality | strong | strong subagents | strong multi-scope memory | strongest shipped assistant architecture in this set |
+| Repo                  | Type                      | Loop Completion Model                      | Tools                        | MCP         | Skills/Subagents | Memory                                               | Short Verdict                                              |
+| --------------------- | ------------------------- | ------------------------------------------ | ---------------------------- | ----------- | ---------------- | ---------------------------------------------------- | ---------------------------------------------------------- |
+| `aider`               | end-user coding chat      | implicit end-of-reply                      | narrow edit/chat helpers     | none        | none             | session summarization only                           | effective code-editing chat, not a full agent runtime      |
+| `Roo-Code`            | end-user assistant        | explicit `attempt_completion`              | strong native tool loop      | strong      | strong           | strong session + code index                          | one of the clearest coding assistant runtimes              |
+| `codex`               | product/runtime hybrid    | implicit no-follow-up                      | very broad, dynamic          | very strong | very strong      | very strong persistent pipeline                      | most extensible overall                                    |
+| `mistral-vibe`        | end-user assistant        | stop when latest item is not a tool result | clean built-ins              | solid       | solid            | session compaction only                              | elegant mid-weight agent loop                              |
+| `OpenHands`           | legacy end-user assistant | explicit finish tool and controller stops  | good V0 tools                | solid       | present          | condensation-focused                                 | local code is legacy; V1 moved elsewhere                   |
+| `openclaw`            | platform/runtime          | lifecycle-driven                           | very broad platform tools    | strong      | very strong      | strongest memory breadth                             | most ambitious platform, less simple as a coding assistant |
+| `openai-agents-js`    | framework                 | explicit runner next-step state machine    | clean framework tools        | strong      | handoffs strong  | pluggable sessions                                   | excellent orchestration framework                          |
+| `voltagent`           | framework                 | AI SDK `stopWhen` / `maxSteps`             | toolkit composition          | strong      | strong           | very strong adapter-based memory                     | strong builder framework, less canonical assistant loop    |
+| `opendev`             | end-user assistant        | explicit `task_complete`                   | broad, practical built-ins   | strong      | strong           | strong sessions, partial advanced memory integration | one of the best explicit ReAct runtimes                    |
+| `vscode-copilot-chat` | end-user assistant        | explicit internal completion gate          | strongest descriptor quality | strong      | strong subagents | strong multi-scope memory                            | strongest shipped assistant architecture in this set       |
 
 ## Overall Rankings
 

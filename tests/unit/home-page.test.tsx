@@ -8,13 +8,7 @@ import { HomePage } from "@/web/home-page";
 
 describe("HomePage", () => {
   it("renders the control-plane dashboard summary", () => {
-    render(
-      <HomePage
-        dashboard={createDashboardFixture()}
-        memoryText=""
-        redirectTo="/"
-      />
-    );
+    render(<HomePage dashboard={createDashboardFixture()} memoryText="" redirectTo="/" />);
 
     expect(screen.getByRole("heading", { level: 1, name: "AIAgent" })).toBeVisible();
     expect(screen.getByText("Web Control Plane")).toBeVisible();
@@ -99,7 +93,15 @@ function tokenAuthDashboard(): ControlPlaneDashboard {
     status: { ok: true as const, status: "ready" },
     websocketPath: "/api/gateway/ws"
   };
-  dashboard.tunnel = { enabled: true, exposures: [], metadata: {}, provider: "none", publicBaseUrl: undefined, ready: false, warnings: [] };
+  dashboard.tunnel = {
+    enabled: true,
+    exposures: [],
+    metadata: {},
+    provider: "none",
+    publicBaseUrl: undefined,
+    ready: false,
+    warnings: []
+  };
   return dashboard as unknown as ControlPlaneDashboard;
 }
 
@@ -144,7 +146,13 @@ function populatedDashboard(): ControlPlaneDashboard {
 
   dashboard.sessions = {
     items: [
-      { goal: "g1", id: "session.populated", status: "awaiting_approval", title: "Caution", updatedAt: "2026-06-10T00:00:00.000Z" },
+      {
+        goal: "g1",
+        id: "session.populated",
+        status: "awaiting_approval",
+        title: "Caution",
+        updatedAt: "2026-06-10T00:00:00.000Z"
+      },
       { goal: "g2", id: "s2", status: "failed", title: "Error", updatedAt: "2026-06-10T00:00:00.000Z" },
       { goal: "g3", id: "s3", status: "completed", title: "Ok", updatedAt: "2026-06-10T00:00:00.000Z" },
       { goal: "g4", id: "s4", status: "running_model", title: "Info", updatedAt: "2026-06-10T00:00:00.000Z" }
@@ -174,7 +182,13 @@ function populatedDashboard(): ControlPlaneDashboard {
 
   dashboard.approvals = [
     {
-      request: { id: "approval.open", justification: "needs approval", sessionId: "session.populated", status: "pending", target: { label: "shell_command" } },
+      request: {
+        id: "approval.open",
+        justification: "needs approval",
+        sessionId: "session.populated",
+        status: "pending",
+        target: { label: "shell_command" }
+      },
       resolution: null
     },
     {
@@ -189,15 +203,27 @@ function populatedDashboard(): ControlPlaneDashboard {
       resolution: null
     },
     {
-      request: { id: "approval.done", justification: "already resolved", sessionId: "session.populated", status: "resolved", target: { label: "write_file" } },
+      request: {
+        id: "approval.done",
+        justification: "already resolved",
+        sessionId: "session.populated",
+        status: "resolved",
+        target: { label: "write_file" }
+      },
       resolution: { decision: "approved" }
     }
   ];
 
   dashboard.memory = {
     hits: [
-      { entry: { content: "c", id: "m1", kind: "note", scope: "workspace", summary: "a memory" }, explanation: "matched" },
-      { entry: { content: "x".repeat(400), id: "m2", kind: "fact", scope: "session", summary: undefined }, explanation: "matched too" }
+      {
+        entry: { content: "c", id: "m1", kind: "note", scope: "workspace", summary: "a memory" },
+        explanation: "matched"
+      },
+      {
+        entry: { content: "x".repeat(400), id: "m2", kind: "fact", scope: "session", summary: undefined },
+        explanation: "matched too"
+      }
     ],
     query: "test",
     sessionId: "session.populated",
@@ -206,14 +232,22 @@ function populatedDashboard(): ControlPlaneDashboard {
 
   dashboard.channels = {
     deliveries: [
-      { channel: "whatsapp", direction: "inbound", id: "d1", message: { parts: [{ kind: "markdown", markdown: "**hi**" }] }, status: "received" }
+      {
+        channel: "whatsapp",
+        direction: "inbound",
+        id: "d1",
+        message: { parts: [{ kind: "markdown", markdown: "**hi**" }] },
+        status: "received"
+      }
     ],
     routes: [{ id: "route.1" }],
     statuses: [
       { capabilities: ["text", "media"], channel: "whatsapp", enabled: true, status: "ready" },
       { capabilities: [], channel: "slack", enabled: false, status: "disabled" }
     ],
-    webhookEndpoints: [{ channel: "whatsapp", path: "/webhooks/whatsapp", publicUrl: "https://x/webhooks/whatsapp", status: "ready" }]
+    webhookEndpoints: [
+      { channel: "whatsapp", path: "/webhooks/whatsapp", publicUrl: "https://x/webhooks/whatsapp", status: "ready" }
+    ]
   };
 
   dashboard.tunnel = {
@@ -228,20 +262,70 @@ function populatedDashboard(): ControlPlaneDashboard {
 
   dashboard.logs = {
     events: [
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e1", payload: { justification: "why", target: { label: "shell" } }, topic: "approval.requested" },
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e2", payload: { actor: "operator", decision: "approved" }, topic: "approval.resolved" },
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e3", payload: { direction: "inbound", identity: { channel: "whatsapp" }, parts: [{ kind: "text", text: "msg" }] }, topic: "channel.message" },
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e4", payload: messageWithAllParts("m.created"), topic: "message.created" },
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e1",
+        payload: { justification: "why", target: { label: "shell" } },
+        topic: "approval.requested"
+      },
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e2",
+        payload: { actor: "operator", decision: "approved" },
+        topic: "approval.resolved"
+      },
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e3",
+        payload: { direction: "inbound", identity: { channel: "whatsapp" }, parts: [{ kind: "text", text: "msg" }] },
+        topic: "channel.message"
+      },
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e4",
+        payload: messageWithAllParts("m.created"),
+        topic: "message.created"
+      },
       { createdAt: "2026-06-10T00:00:00.000Z", id: "e5", payload: { delta: "streamed" }, topic: "message.delta" },
       { createdAt: "2026-06-10T00:00:00.000Z", id: "e6", payload: { delta: "thinking" }, topic: "message.reasoning" },
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e7", payload: { kind: "message", status: "running" }, topic: "run.updated" },
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e8", payload: { status: "running_model", title: "Active" }, topic: "session.updated" },
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e9", payload: { status: "succeeded", toolName: "shell_command" }, topic: "tool.updated" },
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e10", payload: { status: "completed", trigger: "user" }, topic: "turn.updated" },
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e11", payload: { request: { agentId: "claude" }, status: "succeeded" }, topic: "external_agent.updated" },
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e7",
+        payload: { kind: "message", status: "running" },
+        topic: "run.updated"
+      },
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e8",
+        payload: { status: "running_model", title: "Active" },
+        topic: "session.updated"
+      },
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e9",
+        payload: { status: "succeeded", toolName: "shell_command" },
+        topic: "tool.updated"
+      },
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e10",
+        payload: { status: "completed", trigger: "user" },
+        topic: "turn.updated"
+      },
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e11",
+        payload: { request: { agentId: "claude" }, status: "succeeded" },
+        topic: "external_agent.updated"
+      },
       { createdAt: "2026-06-10T00:00:00.000Z", id: "e12", payload: { status: "ready" }, topic: "gateway.status" },
       { createdAt: "2026-06-10T00:00:00.000Z", id: "e13", payload: { message: "a log line" }, topic: "log.emitted" },
-      { createdAt: "2026-06-10T00:00:00.000Z", id: "e14", payload: { entryId: "m1", scope: "workspace" }, topic: "memory.updated" }
+      {
+        createdAt: "2026-06-10T00:00:00.000Z",
+        id: "e14",
+        payload: { entryId: "m1", scope: "workspace" },
+        topic: "memory.updated"
+      }
     ]
   };
 

@@ -15,7 +15,12 @@ import type {
   VoicePlaybackRecord,
   VoicePlaybackRequest
 } from "@/core/contracts";
-import { synthesisResultSchema, voiceDescriptorSchema, voiceDeviceDescriptorSchema, voicePlaybackRecordSchema } from "@/core/contracts";
+import {
+  synthesisResultSchema,
+  voiceDescriptorSchema,
+  voiceDeviceDescriptorSchema,
+  voicePlaybackRecordSchema
+} from "@/core/contracts";
 
 import {
   buildVoiceArtifactPath,
@@ -184,10 +189,7 @@ export class LocalSystemVoiceAdapter implements VoiceAdapter {
       });
       const result = await runProcess(this.sayPath, args);
       if (result.exitCode !== 0) {
-        throw createVoiceError(
-          "voice_playback_failed",
-          result.stderr.trim() || "macOS speech playback failed."
-        );
+        throw createVoiceError("voice_playback_failed", result.stderr.trim() || "macOS speech playback failed.");
       }
 
       return voicePlaybackRecordSchema.parse({
@@ -217,10 +219,7 @@ export class LocalSystemVoiceAdapter implements VoiceAdapter {
     const filePath = voiceInputPathFromUri(request.audio?.uri ?? "");
     const result = await runProcess("/usr/bin/afplay", [filePath]);
     if (result.exitCode !== 0) {
-      throw createVoiceError(
-        "voice_audio_playback_failed",
-        result.stderr.trim() || "Audio artifact playback failed."
-      );
+      throw createVoiceError("voice_audio_playback_failed", result.stderr.trim() || "Audio artifact playback failed.");
     }
 
     return voicePlaybackRecordSchema.parse({
@@ -279,12 +278,7 @@ export class LocalSystemVoiceAdapter implements VoiceAdapter {
   }
 }
 
-function buildSayArgs(params: {
-  outputDevice?: string;
-  outputPath?: string;
-  text: string;
-  voice?: string;
-}): string[] {
+function buildSayArgs(params: { outputDevice?: string; outputPath?: string; text: string; voice?: string }): string[] {
   const args: string[] = [];
   if (params.voice) {
     args.push("-v", params.voice);

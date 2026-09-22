@@ -19,13 +19,13 @@ either a literal string or a secret reference.
 
 Two filenames are discovered inside `~/.aia`:
 
-| File | Role |
-| --- | --- |
-| `~/.aia/config.jsonc` | Base global layer. |
+| File                      | Role                                                                                     |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| `~/.aia/config.jsonc`     | Base global layer.                                                                       |
 | `~/.aia/aia.config.jsonc` | Override global layer; also the canonical write/install target for `mcp install --user`. |
 
 When both exist they are merged (`config.jsonc` first, `aia.config.jsonc`
-overriding). Either one is optional. Each is parsed as a *fragment*, so it may
+overriding). Either one is optional. Each is parsed as a _fragment_, so it may
 contain only the sections you want to set (e.g. just `mcp.servers`).
 
 `AIA_USER_CONFIG_PATH` overrides discovery entirely: when set, that single file
@@ -119,15 +119,15 @@ reasoning part, and provider-native reasoning is archived in the events log. See
 
 `externalAgents.interactive` holds the defaults for long-lived external-agent terminals:
 
-| Key | Default | Meaning |
-|---|---|---|
-| `cols` / `rows` | `120` / `40` | PTY size. The rendered screen the model reads is this size. |
-| `idleMs` | `2000` | No output for this long counts toward turn end. |
-| `stabilityMs` | `1000` | Rendered screen unchanged for this long counts toward turn end. |
-| `turnTimeoutMs` | `600000` | Hard bound on one `send`. |
-| `humanLockMs` | `10000` | Agent writes are refused this long after a human keystroke. |
-| `sessionWarningThreshold` | `4` | Warn (never block) past this many live sessions. |
-| `terminalApp` | `"Terminal"` | macOS app opened by `attach`. |
+| Key                       | Default      | Meaning                                                         |
+| ------------------------- | ------------ | --------------------------------------------------------------- |
+| `cols` / `rows`           | `120` / `40` | PTY size. The rendered screen the model reads is this size.     |
+| `idleMs`                  | `2000`       | No output for this long counts toward turn end.                 |
+| `stabilityMs`             | `1000`       | Rendered screen unchanged for this long counts toward turn end. |
+| `turnTimeoutMs`           | `600000`     | Hard bound on one `send`.                                       |
+| `humanLockMs`             | `10000`      | Agent writes are refused this long after a human keystroke.     |
+| `sessionWarningThreshold` | `4`          | Warn (never block) past this many live sessions.                |
+| `terminalApp`             | `"Terminal"` | macOS app opened by `attach`.                                   |
 
 Each agent in `externalAgents.agents` may carry its own `interactive` block (`args`,
 `idleMs`, `readyPattern?`, `stabilityMs`, `turnTimeoutMs`) which wins over the defaults.
@@ -178,7 +178,7 @@ server **refuses to start** without one when:
 This was previously a warning, so the insecure configuration still came up and served
 traffic (security review M13). It also covers the case header handling cannot: a tunnel
 or reverse proxy terminating in front of AIAgent forwards to the loopback socket, so
-remote requests *are* genuinely loopback by the time the auth check sees them. Note that
+remote requests _are_ genuinely loopback by the time the auth check sees them. Note that
 `X-Forwarded-For` is deliberately ignored everywhere — it is client-supplied, and
 trusting it was security review H2.
 

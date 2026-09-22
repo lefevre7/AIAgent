@@ -17,8 +17,7 @@ import {
 import type { ChannelService } from "@/core/channels";
 
 const tempRoots: string[] = [];
-const PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 afterEach(async () => {
   await Promise.all(
@@ -103,7 +102,11 @@ describe("channel_send tool", () => {
       turn: buildTurn()
     });
     expect(delivered.toolCall.status).toBe("succeeded");
-    expect(delivered.toolCall.result).toMatchObject({ channel: "whatsapp", delivered: true, messageId: "channel-message.1" });
+    expect(delivered.toolCall.result).toMatchObject({
+      channel: "whatsapp",
+      delivered: true,
+      messageId: "channel-message.1"
+    });
     expect(sent).toHaveLength(1);
   });
 

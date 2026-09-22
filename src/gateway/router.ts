@@ -95,18 +95,20 @@ export function createGatewayRouter(options: GatewayRouterOptions): Router {
   });
 
   router.get("/approvals", async (request, response) => {
-    await respondWithGatewayJson(response, async () =>
-      ({
-        approvals: await options.runtime.listApprovalRecords(
-          gatewayApprovalListQuerySchema.parse({
-            limit: parseIntegerQueryValue(request.query.limit),
-            pendingOnly: parseBooleanQueryValue(request.query.pendingOnly),
-            sessionId: parseStringQueryValue(request.query.sessionId)
-          })
-        )
-      }) satisfies {
-        approvals: Awaited<ReturnType<GatewayRuntimeLike["listApprovalRecords"]>>;
-      }
+    await respondWithGatewayJson(
+      response,
+      async () =>
+        ({
+          approvals: await options.runtime.listApprovalRecords(
+            gatewayApprovalListQuerySchema.parse({
+              limit: parseIntegerQueryValue(request.query.limit),
+              pendingOnly: parseBooleanQueryValue(request.query.pendingOnly),
+              sessionId: parseStringQueryValue(request.query.sessionId)
+            })
+          )
+        }) satisfies {
+          approvals: Awaited<ReturnType<GatewayRuntimeLike["listApprovalRecords"]>>;
+        }
     );
   });
 
@@ -130,10 +132,7 @@ export function createGatewayRouter(options: GatewayRouterOptions): Router {
   return router;
 }
 
-async function respondWithGatewayJson(
-  response: Response,
-  load: () => Promise<unknown>
-): Promise<void> {
+async function respondWithGatewayJson(response: Response, load: () => Promise<unknown>): Promise<void> {
   try {
     response.json(await load());
   } catch (error) {

@@ -44,9 +44,7 @@ export async function createServerRuntimeContext(params: {
     sessions
   });
   const gatewayAuthToken =
-    typeof loaded.resolvedConfig.gateway.auth.token === "string"
-      ? loaded.resolvedConfig.gateway.auth.token
-      : undefined;
+    typeof loaded.resolvedConfig.gateway.auth.token === "string" ? loaded.resolvedConfig.gateway.auth.token : undefined;
   const tunnelService = new TunnelService({
     authToken: gatewayAuthToken,
     gatewayConfig: loaded.resolvedConfig.gateway,
@@ -95,12 +93,14 @@ export async function createServerRuntimeContext(params: {
   };
 }
 
-export async function getServerRuntimeContext(params: {
-  cwd?: string;
-  env?: Record<string, string | undefined>;
-  fetchImpl?: typeof fetch;
-  userHomeDirectory?: string;
-} = {}): Promise<ServerRuntimeContext> {
+export async function getServerRuntimeContext(
+  params: {
+    cwd?: string;
+    env?: Record<string, string | undefined>;
+    fetchImpl?: typeof fetch;
+    userHomeDirectory?: string;
+  } = {}
+): Promise<ServerRuntimeContext> {
   if (!runtimeContextPromise) {
     runtimeContextPromise = createServerRuntimeContext({
       cwd: params.cwd ?? process.cwd(),

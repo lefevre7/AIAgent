@@ -22,7 +22,7 @@ npm run test:coverage
 
 `vitest.coverage.config.ts` runs the unit (jsdom) and integration (node) suites as
 two named projects and aggregates V8 coverage across both. Per the project
-decision, **only `src/core/config/**` (plus `*.d.ts`) is excluded** from the
+decision, **only `src/core/config/**`(plus`\*.d.ts`) is excluded\*\* from the
 denominator; everything else counts.
 
 Current measured coverage is **92.2% lines/statements, 82.6% branches, 97.2%
@@ -53,7 +53,7 @@ that boundary rather than by exclusion:
   module with the network/bootstrap mocked, or render the component with `renderToString`.
 
 Opt-in live suites still exist (see below) to prove the real adapters end-to-end, but they
-are no longer the *only* coverage for these areas. `npm run test:coverage` is **part of
+are no longer the _only_ coverage for these areas. `npm run test:coverage` is **part of
 `validate:penultimate`**: it previously sat outside every gate, and the thresholds
 silently fell below their own floor without anything failing.
 

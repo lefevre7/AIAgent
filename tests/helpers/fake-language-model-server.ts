@@ -53,10 +53,7 @@ export async function startFakeLanguageModelServer(
       return;
     }
 
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/chat/completions" || url.pathname === "/api/chat")
-    ) {
+    if (request.method === "POST" && (url.pathname === "/chat/completions" || url.pathname === "/api/chat")) {
       const body = await readJsonBody(request);
       const provider = url.pathname === "/chat/completions" ? "lm_studio" : "ollama";
       const recordedRequest: FakeLanguageModelRequest = {
@@ -159,11 +156,7 @@ function buildDefaultPlan(request: FakeLanguageModelRequest): FakeLanguageModelP
   };
 }
 
-function buildLmStudioResponse(params: {
-  modelId: string;
-  plan: FakeLanguageModelPlan;
-  sequence: number;
-}) {
+function buildLmStudioResponse(params: { modelId: string; plan: FakeLanguageModelPlan; sequence: number }) {
   return {
     choices: [
       {
@@ -215,17 +208,31 @@ function writeLmStudioStream(
     // Emit tool calls the way LM Studio does: name/id first, then `arguments`
     // streamed in pieces across later fragments for the same index.
     send({
-      choices: [{ delta: { tool_calls: [{ function: { arguments: "", name: toolCall.name }, id: callId, index, type: "function" }] }, finish_reason: null }],
+      choices: [
+        {
+          delta: {
+            tool_calls: [{ function: { arguments: "", name: toolCall.name }, id: callId, index, type: "function" }]
+          },
+          finish_reason: null
+        }
+      ],
       id,
       model: params.modelId
     });
     send({
-      choices: [{ delta: { tool_calls: [{ function: { arguments: argsJson.slice(0, midpoint) }, index }] }, finish_reason: null }],
+      choices: [
+        {
+          delta: { tool_calls: [{ function: { arguments: argsJson.slice(0, midpoint) }, index }] },
+          finish_reason: null
+        }
+      ],
       id,
       model: params.modelId
     });
     send({
-      choices: [{ delta: { tool_calls: [{ function: { arguments: argsJson.slice(midpoint) }, index }] }, finish_reason: null }],
+      choices: [
+        { delta: { tool_calls: [{ function: { arguments: argsJson.slice(midpoint) }, index }] }, finish_reason: null }
+      ],
       id,
       model: params.modelId
     });

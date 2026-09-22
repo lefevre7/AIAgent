@@ -64,7 +64,9 @@ export function createSessionsSearchTool(params: { sessions: FileSessionStore })
           {
             kind: "status",
             state: "searched",
-            summary: query ? `Found ${hits.length} session(s) matching "${input.query}".` : `Listed ${hits.length} recent session(s).`
+            summary: query
+              ? `Found ${hits.length} session(s) matching "${input.query}".`
+              : `Listed ${hits.length} recent session(s).`
           }
         ],
         result: {

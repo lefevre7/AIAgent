@@ -10,11 +10,7 @@ import { APP_CONFIG_FILE_NAME, DEFAULT_LM_STUDIO_MODEL, type LoadedAIAgentConfig
  * `loadAIAgentConfig` would need a workspace on disk and tells us nothing extra
  * about the message.
  */
-function buildLoaded(params: {
-  globals: string[];
-  model: string;
-  workspace: string | null;
-}): LoadedAIAgentConfig {
+function buildLoaded(params: { globals: string[]; model: string; workspace: string | null }): LoadedAIAgentConfig {
   return {
     paths: { workspaceRoot: "/repo" },
     resolvedConfig: { runtime: { defaultModel: params.model } },

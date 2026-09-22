@@ -74,7 +74,8 @@ export const webFetchToolDefinition: ToolDefinition = {
       "Fetch a specific documentation page before summarizing it.",
       "Pull the main content from a URL and optionally focus on a specific query."
     ],
-    purpose: "Fetch a specific public web page, extract the main content, and convert it into markdown the model can read reliably.",
+    purpose:
+      "Fetch a specific public web page, extract the main content, and convert it into markdown the model can read reliably.",
     sideEffectSummary: "Performs public network reads only.",
     whenNotToUse: [
       "Do not use this when you still need to discover relevant URLs; use web_search first.",

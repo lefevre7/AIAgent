@@ -2,7 +2,13 @@ import path from "node:path";
 
 import { describe, expect } from "vitest";
 
-import { createDefaultToolRuntime, sessionRecordSchema, toolCallRecordSchema, turnRecordSchema, type ToolRuntime } from "@/core";
+import {
+  createDefaultToolRuntime,
+  sessionRecordSchema,
+  toolCallRecordSchema,
+  turnRecordSchema,
+  type ToolRuntime
+} from "@/core";
 import { createLiveTestHarness, envFlag } from "./helpers";
 
 const { createTempRoot, liveTest } = createLiveTestHarness({
@@ -60,12 +66,7 @@ describe("command tools (live)", () => {
   });
 });
 
-async function executeApproved(
-  runtime: ToolRuntime,
-  cwd: string,
-  toolName: string,
-  args: Record<string, unknown>
-) {
+async function executeApproved(runtime: ToolRuntime, cwd: string, toolName: string, args: Record<string, unknown>) {
   return runtime.executeApproved(
     toolCallRecordSchema.parse({
       arguments: args,

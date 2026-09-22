@@ -158,7 +158,10 @@ export class AIAgentSdk {
     query: z.input<typeof gatewayEventReplayQuerySchema>,
     options: AIAgentGatewayRequestOptions = {}
   ): Promise<GatewayEventPage> {
-    return withAbort(this.options.controlPlane.replayEvents(gatewayEventReplayQuerySchema.parse(query)), options.signal);
+    return withAbort(
+      this.options.controlPlane.replayEvents(gatewayEventReplayQuerySchema.parse(query)),
+      options.signal
+    );
   }
 
   async request<Topic extends GatewayRequestTopic>(
@@ -269,7 +272,10 @@ export class AIAgentSessionHandle {
     });
   }
 
-  async injectSteering(input: AIAgentSteeringInput, options: AIAgentGatewayRequestOptions = {}): Promise<SteeringInjection> {
+  async injectSteering(
+    input: AIAgentSteeringInput,
+    options: AIAgentGatewayRequestOptions = {}
+  ): Promise<SteeringInjection> {
     return this.sdk.steering.inject(this.sessionId, input, options);
   }
 
@@ -304,7 +310,10 @@ export class AIAgentSessionHandle {
     return this.sdk.sessions.snapshot(this.sessionId, options);
   }
 
-  subscribe(listener: (event: GatewayEvent) => void, options: Omit<AIAgentEventStreamOptions, "sessionId"> = {}): () => void {
+  subscribe(
+    listener: (event: GatewayEvent) => void,
+    options: Omit<AIAgentEventStreamOptions, "sessionId"> = {}
+  ): () => void {
     return this.sdk.subscribe(listener, {
       ...options,
       sessionId: this.sessionId
@@ -699,7 +708,9 @@ function createGatewayEventStream(
   };
 }
 
-function isProviderRegistrationHost(value: GatewayRuntimeLike): value is GatewayRuntimeLike & GatewayRuntimeProviderRegistrationHost {
+function isProviderRegistrationHost(
+  value: GatewayRuntimeLike
+): value is GatewayRuntimeLike & GatewayRuntimeProviderRegistrationHost {
   return (
     typeof (value as Partial<GatewayRuntimeProviderRegistrationHost>).registerEmbeddingAdapter === "function" &&
     typeof (value as Partial<GatewayRuntimeProviderRegistrationHost>).registerLanguageModelAdapter === "function"
@@ -725,9 +736,7 @@ function resolveCloseControlPlane(
   throw new Error("closeControlPlane was requested, but the control plane does not expose close().");
 }
 
-function resolveProviderHost(
-  controlPlane: GatewayRuntimeLike
-): GatewayRuntimeProviderRegistrationHost | null {
+function resolveProviderHost(controlPlane: GatewayRuntimeLike): GatewayRuntimeProviderRegistrationHost | null {
   return isProviderRegistrationHost(controlPlane) ? controlPlane : null;
 }
 

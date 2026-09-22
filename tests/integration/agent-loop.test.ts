@@ -62,9 +62,7 @@ describe("agent loop", () => {
     expect(result.session.status).toBe("completed");
     expect(result.turns).toHaveLength(1);
     expect(
-      (await store.getSessionSnapshot(result.session.id))?.messages.some(
-        (message) => message.role === "assistant"
-      )
+      (await store.getSessionSnapshot(result.session.id))?.messages.some((message) => message.role === "assistant")
     ).toBe(true);
   });
 
@@ -132,9 +130,9 @@ describe("agent loop", () => {
     expect(result.stopReason).toBe("completed");
 
     const snapshot = await store.getSessionSnapshot(result.session.id);
-    expect(
-      snapshot?.messages.some((message) => (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG))
-    ).toBe(false);
+    expect(snapshot?.messages.some((message) => (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG))).toBe(
+      false
+    );
 
     expect(snapshot?.resumeMetadata?.statusSummary).toBe("The task completed successfully.");
   });
@@ -169,23 +167,16 @@ describe("agent loop", () => {
     expect(result.stopReason).toBe("completed");
     expect(result.turns).toHaveLength(2);
     const snapshot = await store.getSessionSnapshot(result.session.id);
-    expect(
-      snapshot?.messages.some(
-        (message) =>
-          message.source === "system" && message.visibility === "compact"
-      )
-    ).toBe(true);
+    expect(snapshot?.messages.some((message) => message.source === "system" && message.visibility === "compact")).toBe(
+      true
+    );
     expect(result.turns[1]?.trigger).toBe("system_nudge");
     const secondRequest = model.requests[1];
     expect(
       secondRequest?.messages.some(
         (message) =>
           message.source === "system" &&
-          message.parts.some(
-            (part) =>
-              part.kind === "text" &&
-              part.text.includes("You must keep working")
-          )
+          message.parts.some((part) => part.kind === "text" && part.text.includes("You must keep working"))
       )
     ).toBe(true);
   });
@@ -197,12 +188,7 @@ describe("agent loop", () => {
         sessionId: "session.loop.1",
         toolCalls: []
       });
-    const { loop } = await createLoop([
-      noToolResponse(),
-      noToolResponse(),
-      noToolResponse(),
-      noToolResponse()
-    ]);
+    const { loop } = await createLoop([noToolResponse(), noToolResponse(), noToolResponse(), noToolResponse()]);
 
     const result = await loop.run({
       availableTools: [buildAttemptCompleteTool()],
@@ -222,9 +208,7 @@ describe("agent loop", () => {
       toolCalls: []
     });
     malformedResponse.metadata = {
-      rejectedToolCalls: [
-        { reason: "Tool call 1 was missing a function name." }
-      ]
+      rejectedToolCalls: [{ reason: "Tool call 1 was missing a function name." }]
     };
     const { loop, model } = await createLoop([
       malformedResponse,
@@ -253,9 +237,7 @@ describe("agent loop", () => {
     expect(
       secondRequest?.messages.some((message) =>
         message.parts.some(
-          (part) =>
-            part.kind === "text" &&
-            part.text.includes("Tool call 1 was missing a function name.")
+          (part) => part.kind === "text" && part.text.includes("Tool call 1 was missing a function name.")
         )
       )
     ).toBe(true);
@@ -296,22 +278,14 @@ describe("agent loop", () => {
     });
 
     expect(result.stopReason).toBe("completed");
-    expect(
-      result.turns.some(
-        (turn) =>
-          turn.summary === "The runtime rejected a mixed completion/tool turn."
-      )
-    ).toBe(true);
-    expect(result.turns.some((turn) => turn.trigger === "system_nudge")).toBe(
+    expect(result.turns.some((turn) => turn.summary === "The runtime rejected a mixed completion/tool turn.")).toBe(
       true
     );
+    expect(result.turns.some((turn) => turn.trigger === "system_nudge")).toBe(true);
     const snapshot = await store.getSessionSnapshot(result.session.id);
-    expect(
-      snapshot?.messages.some(
-        (message) =>
-          message.source === "system" && message.visibility === "compact"
-      )
-    ).toBe(true);
+    expect(snapshot?.messages.some((message) => message.source === "system" && message.visibility === "compact")).toBe(
+      true
+    );
   });
 
   test("stops with completion_blocked when the turn limit is reached without completion", async () => {
@@ -399,11 +373,7 @@ describe("agent loop", () => {
         (message) =>
           message.source === "system" &&
           message.parts.some(
-            (part) =>
-              part.kind === "text" &&
-              part.text.includes(
-                "A required verification step is still unresolved."
-              )
+            (part) => part.kind === "text" && part.text.includes("A required verification step is still unresolved.")
           )
       )
     ).toBe(true);
@@ -499,8 +469,7 @@ describe("agent loop", () => {
 
     const model = new FakeModel([
       buildModelResponse({
-        messageText:
-          "The operator approved the risky action and the task is complete.",
+        messageText: "The operator approved the risky action and the task is complete.",
         sessionId: session.id,
         toolCalls: [
           {
@@ -554,8 +523,7 @@ describe("agent loop", () => {
       autoQueueDeniedCommentAsSteering: true,
       resolution: buildApprovalResolution("approval.loop.1", {
         actor: "web",
-        comment:
-          "Do not write yet. Read the file, explain the risk, and propose a patch instead.",
+        comment: "Do not write yet. Read the file, explain the risk, and propose a patch instead.",
         decision: "denied",
         id: "approval-resolution.loop.denied"
       }),
@@ -564,8 +532,7 @@ describe("agent loop", () => {
 
     const model = new FakeModel([
       buildModelResponse({
-        messageText:
-          "I followed the updated direction and the task is complete.",
+        messageText: "I followed the updated direction and the task is complete.",
         sessionId: session.id,
         toolCalls: [
           {
@@ -588,11 +555,7 @@ describe("agent loop", () => {
 
     expect(resumed.stopReason).toBe("completed");
     expect(resumed.turns[0]?.trigger).toBe("steering");
-    expect(
-      resumed.messages.some(
-        (message) => message.role === "user" && message.source === "operator"
-      )
-    ).toBe(true);
+    expect(resumed.messages.some((message) => message.role === "user" && message.source === "operator")).toBe(true);
   });
 
   test("initializes memory placeholders and compacts on accepted completion when a memory lifecycle is configured", async () => {
@@ -708,24 +671,14 @@ describe("agent loop", () => {
     expect(result.stopReason).toBe("completed");
     const snapshot = await store.getSessionSnapshot(result.session.id);
     const assistantToolCallMessage = snapshot?.messages.find(
-      (message) =>
-        message.role === "assistant" &&
-        message.parts.some((part) => part.kind === "tool_call")
+      (message) => message.role === "assistant" && message.parts.some((part) => part.kind === "tool_call")
     );
     expect(assistantToolCallMessage).toBeDefined();
-    const toolCallPart = assistantToolCallMessage?.parts.find(
-      (part) => part.kind === "tool_call"
+    const toolCallPart = assistantToolCallMessage?.parts.find((part) => part.kind === "tool_call");
+    expect(toolCallPart && toolCallPart.kind === "tool_call" ? toolCallPart.toolName : undefined).toBe("read_file");
+    expect(toolCallPart && toolCallPart.kind === "tool_call" ? toolCallPart.callId : undefined).toBe(
+      "tool.read.native"
     );
-    expect(
-      toolCallPart && toolCallPart.kind === "tool_call"
-        ? toolCallPart.toolName
-        : undefined
-    ).toBe("read_file");
-    expect(
-      toolCallPart && toolCallPart.kind === "tool_call"
-        ? toolCallPart.callId
-        : undefined
-    ).toBe("tool.read.native");
   });
 
   test("activates tools discovered through tool_search on the next turn", async () => {
@@ -799,16 +752,8 @@ describe("agent loop", () => {
 
     expect(result.stopReason).toBe("completed");
     const secondRequest = model.requests[1];
-    expect(
-      secondRequest?.availableTools.some(
-        (tool) => tool.invocationName === "browser_open"
-      )
-    ).toBe(true);
-    expect(
-      model.requests[0]?.availableTools.some(
-        (tool) => tool.invocationName === "browser_open"
-      )
-    ).toBe(false);
+    expect(secondRequest?.availableTools.some((tool) => tool.invocationName === "browser_open")).toBe(true);
+    expect(model.requests[0]?.availableTools.some((tool) => tool.invocationName === "browser_open")).toBe(false);
   });
 
   test("compacts the session and stops replaying pre-compaction history once the token threshold is crossed", async () => {
@@ -888,14 +833,8 @@ describe("agent loop", () => {
     // After compaction the original user message must no longer be replayed;
     // the post-compaction request should start from the compaction watermark.
     const secondRequest = model.requests[1];
-    expect(
-      secondRequest?.messages.some(
-        (message) => message.id === "message.user.loop.1"
-      )
-    ).toBe(false);
-    expect(
-      secondRequest?.messages.some((message) => message.role === "tool")
-    ).toBe(true);
+    expect(secondRequest?.messages.some((message) => message.id === "message.user.loop.1")).toBe(false);
+    expect(secondRequest?.messages.some((message) => message.role === "tool")).toBe(true);
   });
 
   test("persists a failed session when the model throws an unexpected error", async () => {
@@ -981,11 +920,7 @@ describe("agent loop", () => {
     );
 
     const result = await loop.run({
-      availableTools: [
-        buildAttemptCompleteTool(),
-        buildThinkTool(),
-        buildReadFileTool()
-      ],
+      availableTools: [buildAttemptCompleteTool(), buildThinkTool(), buildReadFileTool()],
       maxTurns: 6,
       session: buildSession(),
       userMessages: [buildUserMessage()]
@@ -997,10 +932,7 @@ describe("agent loop", () => {
       snapshot?.messages.some(
         (message) =>
           message.source === "system" &&
-          message.parts.some(
-            (part) =>
-              part.kind === "text" && part.text.includes("Stop planning now")
-          )
+          message.parts.some((part) => part.kind === "text" && part.text.includes("Stop planning now"))
       )
     ).toBe(false);
   });
@@ -1060,21 +992,14 @@ describe("agent loop", () => {
 
     expect(result.stopReason).toBe("completion_blocked");
     expect(
-      result.turns.some((turn) =>
-        turn.summary?.includes(
-          "planning or reasoning turns without taking action"
-        )
-      )
+      result.turns.some((turn) => turn.summary?.includes("planning or reasoning turns without taking action"))
     ).toBe(true);
     const snapshot = await store.getSessionSnapshot("session.loop.1");
     expect(
       snapshot?.messages.some(
         (message) =>
           message.source === "system" &&
-          message.parts.some(
-            (part) =>
-              part.kind === "text" && part.text.includes("Stop planning now")
-          )
+          message.parts.some((part) => part.kind === "text" && part.text.includes("Stop planning now"))
       )
     ).toBe(true);
   });
@@ -1083,8 +1008,7 @@ describe("agent loop", () => {
     const { loop, store } = await createLoop(
       [
         buildModelResponse({
-          messageText:
-            "<think>internal deliberation that should not persist</think>\nReading the file now.",
+          messageText: "<think>internal deliberation that should not persist</think>\nReading the file now.",
           sessionId: "session.loop.1",
           toolCalls: [
             {
@@ -1147,13 +1071,9 @@ describe("agent loop", () => {
     const assistantWithTool = snapshot?.messages.find(
       (message) =>
         message.role === "assistant" &&
-        message.parts.some(
-          (part) => part.kind === "tool_call" && part.toolName === "read_file"
-        )
+        message.parts.some((part) => part.kind === "tool_call" && part.toolName === "read_file")
     );
-    const text = (assistantWithTool?.parts ?? [])
-      .map((part) => (part.kind === "text" ? part.text : ""))
-      .join(" ");
+    const text = (assistantWithTool?.parts ?? []).map((part) => (part.kind === "text" ? part.text : "")).join(" ");
     expect(text).not.toContain("internal deliberation");
     expect(text).not.toContain("<think>");
     expect(text).toContain("Reading the file now.");
@@ -1161,9 +1081,7 @@ describe("agent loop", () => {
     // The transcript keeps the reasoning as its own part rather than deleting
     // it: the operator wanted it readable, and the model still needs it within
     // the turn that produced it.
-    const reasoning = (assistantWithTool?.parts ?? []).filter(
-      (part) => part.kind === "reasoning"
-    );
+    const reasoning = (assistantWithTool?.parts ?? []).filter((part) => part.kind === "reasoning");
     expect(reasoning).toHaveLength(1);
     expect(reasoning[0]).toMatchObject({
       text: "internal deliberation that should not persist"
@@ -1171,27 +1089,18 @@ describe("agent loop", () => {
 
     // By the time a later turn runs, that reasoning is outside the retained
     // window and must not be replayed into the model's context.
-    const laterVisible = filterModelVisibleMessages(
-      snapshot?.messages ?? [],
-      snapshot?.session ?? buildSession(),
-      { reasoningContextTurns: 1 }
-    );
+    const laterVisible = filterModelVisibleMessages(snapshot?.messages ?? [], snapshot?.session ?? buildSession(), {
+      reasoningContextTurns: 1
+    });
     expect(
       laterVisible.some((message) =>
-        message.parts.some(
-          (part) =>
-            part.kind === "reasoning" &&
-            part.text.includes("internal deliberation")
-        )
+        message.parts.some((part) => part.kind === "reasoning" && part.text.includes("internal deliberation"))
       )
     ).toBe(false);
     // The answer itself survives the filter.
     expect(
       laterVisible.some((message) =>
-        message.parts.some(
-          (part) =>
-            part.kind === "text" && part.text.includes("Reading the file now.")
-        )
+        message.parts.some((part) => part.kind === "text" && part.text.includes("Reading the file now."))
       )
     ).toBe(true);
   });
@@ -1509,8 +1418,7 @@ function buildAttemptCompleteTool(): ToolDefinition {
     },
     approvalMode: "never",
     descriptor: {
-      approvalNotes:
-        "The runtime will validate completion before ending the task.",
+      approvalNotes: "The runtime will validate completion before ending the task.",
       examples: ["Use after the requested work is fully done."],
       purpose: "Finish the task through the runtime completion gate.",
       sideEffectSummary: "No side effects.",
@@ -1542,8 +1450,7 @@ function buildAttemptCompleteTool(): ToolDefinition {
     },
     streamingMode: "none",
     toolId: "tool.builtin.attempt_complete",
-    usageGuidance:
-      "Use only when the task is actually complete and ready for runtime validation.",
+    usageGuidance: "Use only when the task is actually complete and ready for runtime validation.",
     version: "1.0.0"
   };
 }
@@ -1660,10 +1567,7 @@ function buildApprovalRequest(sessionId: string): ApprovalRequest {
   };
 }
 
-function buildApprovalResolution(
-  requestId: string,
-  overrides: Partial<ApprovalResolution> = {}
-): ApprovalResolution {
+function buildApprovalResolution(requestId: string, overrides: Partial<ApprovalResolution> = {}): ApprovalResolution {
   return {
     actor: "cli",
     decidedAt: "2026-03-27T12:00:03.000Z",

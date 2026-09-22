@@ -18,7 +18,10 @@ export type GatewayAuthorizationResult =
       statusCode: number;
     };
 
-export function authorizeGatewayHttpRequest(request: Request, options: GatewayAuthOptions = {}): GatewayAuthorizationResult {
+export function authorizeGatewayHttpRequest(
+  request: Request,
+  options: GatewayAuthOptions = {}
+): GatewayAuthorizationResult {
   return authorizeGatewayAccess({
     configuredToken: options.token,
     remoteAddress: request.socket.remoteAddress,
@@ -93,7 +96,10 @@ export function assertGatewayExposureIsAuthenticated(params: {
  * though they are not themselves a remote address.
  */
 function isUnspecifiedAddress(address: string): boolean {
-  const normalized = address.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  const normalized = address
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
   return normalized === "0.0.0.0" || normalized === "::" || normalized === "*";
 }
 
@@ -102,7 +108,10 @@ export function isLoopbackAddress(address: string | undefined): boolean {
     return false;
   }
 
-  const normalized = address.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  const normalized = address
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
   const withoutScope = normalized.split("%")[0] ?? normalized;
   const withoutPrefix = withoutScope.startsWith("::ffff:") ? withoutScope.slice("::ffff:".length) : withoutScope;
 

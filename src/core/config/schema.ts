@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-import {
-  approvalPolicyModeSchema,
-  approvalPolicyRuleSchema,
-  providerIdSchema
-} from "@/core/contracts";
+import { approvalPolicyModeSchema, approvalPolicyRuleSchema, providerIdSchema } from "@/core/contracts";
 import {
   APP_CONFIG_VERSION,
   APPROVALS_CONFIG_VERSION,
@@ -122,13 +118,7 @@ const imageProviderConfigSchema = z
     baseUrl: urlLikeStringSchema,
     enabled: z.boolean(),
     headers: z.record(z.string(), secretInputSchema).default({}),
-    kind: z.enum([
-      "comfyui_compatible",
-      "custom",
-      "lm_studio",
-      "mcp",
-      "sd_webui"
-    ]),
+    kind: z.enum(["comfyui_compatible", "custom", "lm_studio", "mcp", "sd_webui"]),
     model: z.string().min(1).max(256).optional(),
     timeoutMs: positiveTimeoutSchema,
     workflowPath: z.string().min(1).optional(),
@@ -142,12 +132,7 @@ const voiceProviderConfigSchema = z
     baseUrl: urlLikeStringSchema.optional(),
     enabled: z.boolean(),
     inputDevice: z.string().min(1).max(256).optional(),
-    kind: z.enum([
-      "apple_native",
-      "custom",
-      "local_system",
-      "whisper_compatible"
-    ]),
+    kind: z.enum(["apple_native", "custom", "local_system", "whisper_compatible"]),
     locale: z.string().min(1).max(32).optional(),
     model: z.string().min(1).max(256).optional(),
     outputDevice: z.string().min(1).max(256).optional(),
@@ -235,12 +220,7 @@ const memoryConfigSchema = z
     // Trigger threshold-based session compaction when the last model request used
     // at least this many input tokens. Unset: derived from
     // runtime.modelSettings.contextWindowTokens (80%) or a 100k fallback. 0 disables.
-    autoCompactThresholdTokens: z
-      .number()
-      .int()
-      .min(0)
-      .max(100_000_000)
-      .optional(),
+    autoCompactThresholdTokens: z.number().int().min(0).max(100_000_000).optional(),
     candidateLimit: z.number().int().positive().max(1000),
     chatSessionRoot: z.string().min(1),
     chunkOverlapChars: z.number().int().min(0).max(20_000),
@@ -263,12 +243,7 @@ const memoryConfigSchema = z
 
 const runtimeModelSettingsSchema = z
   .object({
-    contextWindowTokens: z
-      .number()
-      .int()
-      .positive()
-      .max(100_000_000)
-      .optional(),
+    contextWindowTokens: z.number().int().positive().max(100_000_000).optional(),
     frequencyPenalty: z.number().min(-2).max(2).optional(),
     maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
     minP: z.number().min(0).max(1).optional(),
@@ -307,10 +282,7 @@ const runtimeConfigSchema = z
     // loop; legitimate repeats (re-reading a file after editing it) are well
     // under the default.
     maxIdenticalToolCalls: z.number().int().positive().max(100),
-    maxTurnsPerRun: z.union([
-      z.literal("unlimited"),
-      z.number().int().positive().max(100_000)
-    ]),
+    maxTurnsPerRun: z.union([z.literal("unlimited"), z.number().int().positive().max(100_000)]),
     modelSettings: runtimeModelSettingsSchema,
     promptBudgets: runtimePromptBudgetsSchema,
     // How many of the most recent turns keep their reasoning (<think> blocks) in
@@ -367,11 +339,7 @@ const externalAgentInteractiveConfigSchema = z
   .strict();
 
 const externalAgentInstructionModeSchema = z.enum(["arg", "stdin"]);
-export const externalAgentConfigKindSchema = z.enum([
-  "claude",
-  "codex",
-  "mistral_vibe"
-]);
+export const externalAgentConfigKindSchema = z.enum(["claude", "codex", "mistral_vibe"]);
 
 const externalAgentBaseConfigSchema = z
   .object({
@@ -558,20 +526,13 @@ const mcpHttpServerConfigSchema = mcpServerBaseConfigSchema
   })
   .strict();
 
-const mcpServerConfigSchema = z.discriminatedUnion("type", [
-  mcpHttpServerConfigSchema,
-  mcpStdioServerConfigSchema
-]);
+const mcpServerConfigSchema = z.discriminatedUnion("type", [mcpHttpServerConfigSchema, mcpStdioServerConfigSchema]);
 
 const mcpImportConfigSchema = z
   .object({
     description: z.string().min(1).max(2000).optional(),
     enabled: z.boolean(),
-    format: z.enum([
-      "claude_desktop",
-      "generic_mcp_servers_json",
-      "roo_project"
-    ]),
+    format: z.enum(["claude_desktop", "generic_mcp_servers_json", "roo_project"]),
     path: z.string().min(1),
     watch: z.boolean()
   })
@@ -687,29 +648,22 @@ const appConfigObjectSchema = z
   })
   .strict();
 
-export const appConfigSchema = appConfigObjectSchema.superRefine(
-  (value, context) => {
-    const enabledImageProviderIds = Object.entries(
-      value.providers.imageProviders
-    )
-      .filter(([, providerConfig]) => providerConfig.enabled)
-      .map(([providerId]) => providerId);
+export const appConfigSchema = appConfigObjectSchema.superRefine((value, context) => {
+  const enabledImageProviderIds = Object.entries(value.providers.imageProviders)
+    .filter(([, providerConfig]) => providerConfig.enabled)
+    .map(([providerId]) => providerId);
 
-    if (
-      enabledImageProviderIds.length > 0 &&
-      !enabledImageProviderIds.includes(value.image.defaultProviderId)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message:
-          enabledImageProviderIds.length > 1
-            ? `image.defaultProviderId must reference one of the enabled image providers: ${enabledImageProviderIds.join(", ")}.`
-            : `image.defaultProviderId must reference the enabled image provider "${enabledImageProviderIds[0]}".`,
-        path: ["image", "defaultProviderId"]
-      });
-    }
+  if (enabledImageProviderIds.length > 0 && !enabledImageProviderIds.includes(value.image.defaultProviderId)) {
+    context.addIssue({
+      code: "custom",
+      message:
+        enabledImageProviderIds.length > 1
+          ? `image.defaultProviderId must reference one of the enabled image providers: ${enabledImageProviderIds.join(", ")}.`
+          : `image.defaultProviderId must reference the enabled image provider "${enabledImageProviderIds[0]}".`,
+      path: ["image", "defaultProviderId"]
+    });
   }
-);
+});
 
 export const approvalSettingsSchema = z
   .object({
@@ -720,19 +674,14 @@ export const approvalSettingsSchema = z
   .strict();
 
 export const appConfigFragmentSchema = appConfigObjectSchema.deepPartial();
-export const approvalSettingsFragmentSchema =
-  approvalSettingsSchema.deepPartial();
+export const approvalSettingsFragmentSchema = approvalSettingsSchema.deepPartial();
 
 export type AppConfig = z.infer<typeof appConfigSchema>;
 export type AppConfigFragment = z.infer<typeof appConfigFragmentSchema>;
 export type ApprovalSettings = z.infer<typeof approvalSettingsSchema>;
-export type ApprovalSettingsFragment = z.infer<
-  typeof approvalSettingsFragmentSchema
->;
+export type ApprovalSettingsFragment = z.infer<typeof approvalSettingsFragmentSchema>;
 export type ExternalAgentConfig = z.infer<typeof externalAgentConfigSchema>;
-export type ExternalAgentConfigKind = z.infer<
-  typeof externalAgentConfigKindSchema
->;
+export type ExternalAgentConfigKind = z.infer<typeof externalAgentConfigKindSchema>;
 export type ExternalAgentsConfig = z.infer<typeof externalAgentsConfigSchema>;
 export type ImageConfig = z.infer<typeof imageConfigSchema>;
 export type ImageProviderConfig = z.infer<typeof imageProviderConfigSchema>;
@@ -744,9 +693,7 @@ export type ToolsConfig = z.infer<typeof toolsConfigSchema>;
 export type VoiceConfig = z.infer<typeof voiceConfigSchema>;
 export type VoiceProviderConfig = z.infer<typeof voiceProviderConfigSchema>;
 
-export function createDefaultAppConfig(params: {
-  userStateDirectory: string;
-}): AppConfig {
+export function createDefaultAppConfig(params: { userStateDirectory: string }): AppConfig {
   return {
     browser: {
       actionTimeoutMs: 15_000,
@@ -1009,15 +956,13 @@ export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
       id: "rule.command.read.allow",
       mode: "allow",
       notes: "Common read-only shell inspection commands.",
-      pattern:
-        "^(pwd|ls|find|rg|grep|sed|cat|head|tail|wc|git status|git diff)(\\b|$)",
+      pattern: "^(pwd|ls|find|rg|grep|sed|cat|head|tail|wc|git status|git diff)(\\b|$)",
       targetKind: "command"
     },
     {
       id: "rule.command.build.ask",
       mode: "ask",
-      notes:
-        "Build, test, and package-manager commands should stay operator-visible.",
+      notes: "Build, test, and package-manager commands should stay operator-visible.",
       pattern:
         "^(npm|pnpm|yarn|bun|node|tsx|vitest|playwright|python3?|pytest|cargo|go|java|javac|gradle|\\./gradlew)(\\b|$)",
       targetKind: "command"
@@ -1045,16 +990,14 @@ export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
       mode: "deny",
       notes:
         "Block host shutdown and reboot commands (as the command itself, not as a word inside another command's arguments).",
-      pattern:
-        "(^|[;&|]\\s*)(sudo\\s+)?(shutdown|reboot|halt|poweroff)(\\s|$)",
+      pattern: "(^|[;&|]\\s*)(sudo\\s+)?(shutdown|reboot|halt|poweroff)(\\s|$)",
       targetKind: "command"
     },
     {
       id: "rule.command.destructive.permissions.deny",
       mode: "deny",
       notes: "Block recursive permission or ownership changes of the filesystem root.",
-      pattern:
-        "(^|[\\s;&|])(sudo\\s+)?ch(mod|own)\\s+-[A-Za-z]*R[A-Za-z]*\\s+\\S+\\s+/(\\s|$)",
+      pattern: "(^|[\\s;&|])(sudo\\s+)?ch(mod|own)\\s+-[A-Za-z]*R[A-Za-z]*\\s+\\S+\\s+/(\\s|$)",
       targetKind: "command"
     },
     {
@@ -1074,8 +1017,7 @@ export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
     {
       id: "rule.tool.write.ask",
       mode: "ask",
-      notes:
-        "Ask before file writes, command execution, browser mutation, or external side effects.",
+      notes: "Ask before file writes, command execution, browser mutation, or external side effects.",
       pattern: "^(write_|edit_|apply_|execute_|browser_|send_|generate_|undo_)",
       targetKind: "tool"
     }

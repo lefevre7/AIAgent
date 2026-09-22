@@ -234,7 +234,10 @@ describe("memory retrieval", () => {
   test("degrades to lexical retrieval when the embedding provider is unavailable at startup", async () => {
     const root = await createTempRoot();
     const engine = new MemoryRetrievalEngine(
-      buildRetrievalOptions(path.join(root, ".aia", "memory.sqlite"), { embeddingsEnabled: true, hardFailOnStartup: false }),
+      buildRetrievalOptions(path.join(root, ".aia", "memory.sqlite"), {
+        embeddingsEnabled: true,
+        hardFailOnStartup: false
+      }),
       new EmbeddingRuntime([createUnavailableEmbeddingAdapter()], { defaultProvider: "lm_studio" })
     );
 
@@ -260,7 +263,10 @@ describe("memory retrieval", () => {
   test("hard-fails startup when embeddings are required but the provider is unavailable", async () => {
     const root = await createTempRoot();
     const engine = new MemoryRetrievalEngine(
-      buildRetrievalOptions(path.join(root, ".aia", "memory.sqlite"), { embeddingsEnabled: true, hardFailOnStartup: true }),
+      buildRetrievalOptions(path.join(root, ".aia", "memory.sqlite"), {
+        embeddingsEnabled: true,
+        hardFailOnStartup: true
+      }),
       new EmbeddingRuntime([createUnavailableEmbeddingAdapter()], { defaultProvider: "lm_studio" })
     );
 

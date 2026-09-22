@@ -4,10 +4,7 @@ import path from "node:path";
 
 import { afterEach, test } from "vitest";
 
-export function createLiveTestHarness(options: {
-  enabled: boolean;
-  prefix: string;
-}) {
+export function createLiveTestHarness(options: { enabled: boolean; prefix: string }) {
   const tempRoots: string[] = [];
   const liveTest = options.enabled ? test : test.skip;
 

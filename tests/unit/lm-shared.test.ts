@@ -86,7 +86,11 @@ describe("language-model shared helpers", () => {
 
   test("reports malformed tool calls instead of silently dropping them", () => {
     const normalized = normalizeToolCallProposals(
-      ["not an object", { function: { arguments: "{}" } }, { function: { arguments: '{"ok":true}', name: "read_file" } }],
+      [
+        "not an object",
+        { function: { arguments: "{}" } },
+        { function: { arguments: '{"ok":true}', name: "read_file" } }
+      ],
       "fallback.tool"
     );
 
@@ -173,7 +177,7 @@ describe("language-model shared helpers", () => {
       [
         {
           function: {
-            arguments: "{\"input\":\"latest docs\"}",
+            arguments: '{"input":"latest docs"}',
             name: "web_search"
           }
         }

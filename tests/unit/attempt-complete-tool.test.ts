@@ -19,9 +19,7 @@ describe("attempt_complete tool definition", () => {
   });
 
   test("invocation name and aliases stay stable", () => {
-    expect(attemptCompleteToolDefinition.invocationName).toBe(
-      "attempt_complete"
-    );
+    expect(attemptCompleteToolDefinition.invocationName).toBe("attempt_complete");
     expect(attemptCompleteToolDefinition.aliases).toContain("task_complete");
   });
 

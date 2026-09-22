@@ -10,32 +10,11 @@ import {
   uriSchema
 } from "@/core/contracts/common";
 
-export const mcpTransportTypeSchema = z.enum([
-  "auto",
-  "sse",
-  "stdio",
-  "streamable-http"
-]);
-export const mcpServerConnectionStateSchema = z.enum([
-  "connected",
-  "connecting",
-  "degraded",
-  "disabled",
-  "failed"
-]);
-export const mcpCapabilityKindSchema = z.enum([
-  "prompt",
-  "resource",
-  "resource_template",
-  "server_template",
-  "tool"
-]);
+export const mcpTransportTypeSchema = z.enum(["auto", "sse", "stdio", "streamable-http"]);
+export const mcpServerConnectionStateSchema = z.enum(["connected", "connecting", "degraded", "disabled", "failed"]);
+export const mcpCapabilityKindSchema = z.enum(["prompt", "resource", "resource_template", "server_template", "tool"]);
 export const mcpCapabilityAccessSchema = z.enum(["api_only", "model_and_api"]);
-export const mcpImportFormatSchema = z.enum([
-  "claude_desktop",
-  "generic_mcp_servers_json",
-  "roo_project"
-]);
+export const mcpImportFormatSchema = z.enum(["claude_desktop", "generic_mcp_servers_json", "roo_project"]);
 export const mcpSearchScopeSchema = z.enum(["connected", "templates"]);
 
 export const mcpServerProvenanceSchema = z
@@ -231,27 +210,17 @@ export const mcpServerSummarySchema = z
 export type MCPCapability = z.infer<typeof mcpCapabilitySchema>;
 export type MCPCapabilityAccess = z.infer<typeof mcpCapabilityAccessSchema>;
 export type MCPCapabilityKind = z.infer<typeof mcpCapabilityKindSchema>;
-export type MCPCapabilitySearchMatch = z.infer<
-  typeof mcpCapabilitySearchMatchSchema
->;
-export type MCPCapabilitySearchQuery = z.infer<
-  typeof mcpCapabilitySearchQuerySchema
->;
+export type MCPCapabilitySearchMatch = z.infer<typeof mcpCapabilitySearchMatchSchema>;
+export type MCPCapabilitySearchQuery = z.infer<typeof mcpCapabilitySearchQuerySchema>;
 export type MCPImportFormat = z.infer<typeof mcpImportFormatSchema>;
 export type MCPManagerHealth = z.infer<typeof mcpManagerHealthSchema>;
 export type MCPPromptResult = z.infer<typeof mcpPromptResultSchema>;
 export type MCPResourceReadResult = z.infer<typeof mcpResourceReadResultSchema>;
-export type MCPServerConnectionState = z.infer<
-  typeof mcpServerConnectionStateSchema
->;
+export type MCPServerConnectionState = z.infer<typeof mcpServerConnectionStateSchema>;
 export type MCPServerProvenance = z.infer<typeof mcpServerProvenanceSchema>;
 export type MCPServerStatus = z.infer<typeof mcpServerStatusSchema>;
 export type MCPServerSummary = z.infer<typeof mcpServerSummarySchema>;
-export type MCPServerTemplateCapability = z.infer<
-  typeof mcpServerTemplateCapabilitySchema
->;
-export type MCPTemplateBootstrapStep = z.infer<
-  typeof mcpTemplateBootstrapStepSchema
->;
+export type MCPServerTemplateCapability = z.infer<typeof mcpServerTemplateCapabilitySchema>;
+export type MCPTemplateBootstrapStep = z.infer<typeof mcpTemplateBootstrapStepSchema>;
 export type MCPToolCapability = z.infer<typeof mcpToolCapabilitySchema>;
 export type MCPTransportType = z.infer<typeof mcpTransportTypeSchema>;

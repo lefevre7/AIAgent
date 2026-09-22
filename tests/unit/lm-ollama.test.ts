@@ -143,8 +143,18 @@ describe("OllamaLanguageModelAdapter", () => {
       events.push(event as never);
     }
 
-    expect(events.filter((e) => e.kind === "response.reasoning").map((e) => e.delta).join("")).toContain("let me think");
-    expect(events.filter((e) => e.kind === "response.delta").map((e) => e.delta).join("")).toContain("Hello");
+    expect(
+      events
+        .filter((e) => e.kind === "response.reasoning")
+        .map((e) => e.delta)
+        .join("")
+    ).toContain("let me think");
+    expect(
+      events
+        .filter((e) => e.kind === "response.delta")
+        .map((e) => e.delta)
+        .join("")
+    ).toContain("Hello");
     expect(events.some((e) => e.kind === "response.completed")).toBe(true);
   });
 });

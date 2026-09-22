@@ -41,11 +41,7 @@ function makeTool(invocationName: string): ToolDefinition {
 }
 
 const registry = {
-  listDefinitions: (): ToolDefinition[] => [
-    makeTool("read_file"),
-    makeTool("mcp_status"),
-    makeTool("memory_search")
-  ]
+  listDefinitions: (): ToolDefinition[] => [makeTool("read_file"), makeTool("mcp_status"), makeTool("memory_search")]
 };
 const toolsConfig = { exclude: [], include: [], profile: "lean" as const };
 
@@ -76,9 +72,7 @@ describe("resolveVisibleToolDefinitions", () => {
       registry,
       toolsConfig: { exclude: ["memory_search"], include: [], profile: "full" }
     }).map((tool) => tool.invocationName);
-    expect(visible).toEqual(
-      expect.arrayContaining(["read_file", "mcp_status"])
-    );
+    expect(visible).toEqual(expect.arrayContaining(["read_file", "mcp_status"]));
     expect(visible).not.toContain("memory_search");
   });
 });

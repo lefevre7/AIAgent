@@ -21,7 +21,9 @@ describe("gateway event subscription matching", () => {
   test("a session-filtered subscription receives matching message.delta events", () => {
     const event = messageDeltaEvent("session.abc");
     expect(eventMatchesGatewaySubscription(event, { sessionId: "session.abc", topics: ["message.delta"] })).toBe(true);
-    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.other", topics: ["message.delta"] })).toBe(false);
+    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.other", topics: ["message.delta"] })).toBe(
+      false
+    );
   });
 
   test("topic filtering still applies to message.delta", () => {
@@ -39,8 +41,12 @@ describe("gateway event subscription matching", () => {
       topic: "message.reasoning"
     });
     expect(deriveGatewayEventSessionId(event)).toBe("session.abc");
-    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.abc", topics: ["message.reasoning"] })).toBe(true);
-    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.other", topics: ["message.reasoning"] })).toBe(false);
+    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.abc", topics: ["message.reasoning"] })).toBe(
+      true
+    );
+    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.other", topics: ["message.reasoning"] })).toBe(
+      false
+    );
   });
 
   test("routes live tool output deltas to the owning session only", () => {
@@ -62,8 +68,12 @@ describe("gateway event subscription matching", () => {
     });
 
     expect(deriveGatewayEventSessionId(event)).toBe("session.abc");
-    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.abc", topics: ["tool.output.delta"] })).toBe(true);
-    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.other", topics: ["tool.output.delta"] })).toBe(false);
+    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.abc", topics: ["tool.output.delta"] })).toBe(
+      true
+    );
+    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.other", topics: ["tool.output.delta"] })).toBe(
+      false
+    );
     expect(eventMatchesGatewaySubscription(event, { topics: ["tool.updated"] })).toBe(false);
   });
 

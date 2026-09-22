@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 
-import { ToolRuntime, createDefaultToolRegistry, sessionRecordSchema, toolCallRecordSchema, turnRecordSchema } from "@/core";
+import {
+  ToolRuntime,
+  createDefaultToolRegistry,
+  sessionRecordSchema,
+  toolCallRecordSchema,
+  turnRecordSchema
+} from "@/core";
 
 function buildRuntime() {
   return new ToolRuntime({
@@ -47,7 +53,9 @@ describe("ToolRuntime definition lookups and unknown tools", () => {
     expect(runtime.getDefinition("think")?.invocationName).toBe("think");
     expect(runtime.getDefinition("does_not_exist")).toBeNull();
     expect(runtime.listDefinitions().length).toBeGreaterThan(0);
-    expect(runtime.searchDefinitions({ limit: 5, query: "think" }).some((m) => m.definition.invocationName === "think")).toBe(true);
+    expect(
+      runtime.searchDefinitions({ limit: 5, query: "think" }).some((m) => m.definition.invocationName === "think")
+    ).toBe(true);
   });
 
   test("fails gracefully when executing an unregistered tool", async () => {

@@ -15,11 +15,7 @@ import type {
 import { externalAgentSessionRecordSchema } from "@/core/contracts";
 import { buildExternalAgentEnvironment } from "@/core/external-agents/environment";
 import { writeJsonAtomic } from "@/core/io/files";
-import {
-  startProcessSession,
-  type ProcessSession,
-  type ProcessSessionStream
-} from "@/core/process/session";
+import { startProcessSession, type ProcessSession, type ProcessSessionStream } from "@/core/process/session";
 import { TerminalTurnWatcher } from "@/core/process/turn-watcher";
 
 export type ExternalAgentSessionOutputListener = (event: {
@@ -391,9 +387,7 @@ export class FileExternalAgentSessionService implements ExternalAgentSessionServ
 
   private resolveTurnTimeout(agentId: string): number {
     return (
-      this.options.agents[agentId]?.interactive?.turnTimeoutMs ??
-      this.options.turnTimeoutMs ??
-      DEFAULT_TURN_TIMEOUT_MS
+      this.options.agents[agentId]?.interactive?.turnTimeoutMs ?? this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
     );
   }
 
@@ -510,9 +504,7 @@ export function createExternalAgentSessionServiceFromConfig(params: {
     return null;
   }
 
-  const enabled = Object.fromEntries(
-    Object.entries(externalAgents.agents).filter(([, config]) => config.enabled)
-  );
+  const enabled = Object.fromEntries(Object.entries(externalAgents.agents).filter(([, config]) => config.enabled));
   if (Object.keys(enabled).length === 0) {
     return null;
   }

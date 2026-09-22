@@ -3,12 +3,12 @@
 AIAgent can delegate work to other coding-agent CLIs (Claude Code, Codex, Mistral Vibe). There are two
 distinct modes, and they serve different shapes of work:
 
-| | One-shot jobs | Interactive sessions |
-|---|---|---|
-| Tool actions | `run`, `get`, `list`, `cancel`, `resume` | `start`, `send`, `read`, `stop`, `attach`, `list` |
-| Process model | spawn per job, exit when done | one long-lived PTY that outlives the turn |
-| Best for | "write this file", "fix this test" | back-and-forth work, or work you want to watch |
-| State | `.aia/external-agents/jobs/<id>/` | `.aia/external-agents/sessions/<id>/` |
+|               | One-shot jobs                            | Interactive sessions                              |
+| ------------- | ---------------------------------------- | ------------------------------------------------- |
+| Tool actions  | `run`, `get`, `list`, `cancel`, `resume` | `start`, `send`, `read`, `stop`, `attach`, `list` |
+| Process model | spawn per job, exit when done            | one long-lived PTY that outlives the turn         |
+| Best for      | "write this file", "fix this test"       | back-and-forth work, or work you want to watch    |
+| State         | `.aia/external-agents/jobs/<id>/`        | `.aia/external-agents/sessions/<id>/`             |
 
 Both live on the same `external_agent` tool. Adding interactive mode did not change any one-shot behavior.
 
@@ -53,7 +53,7 @@ A CLI does not announce that it finished thinking. Three weak signals are combin
 
 1. **Byte idle** (`idleMs`) — no output for a while. Alone, this false-positives on any spinner, which
    keeps emitting bytes forever.
-2. **Screen stability** (`stabilityMs`) — the *rendered screen* is unchanged across two samples. This
+2. **Screen stability** (`stabilityMs`) — the _rendered screen_ is unchanged across two samples. This
    is what survives spinners: the frames overwrite each other, so the screen stops changing even while
    bytes keep arriving.
 3. **Ready pattern** (`readyPattern`) — a regex matching the agent's prompt, e.g. `^>\s*$`. When it
@@ -97,7 +97,7 @@ approval-bypass flag:
 - Codex: `--dangerously-bypass-approvals-and-sandbox`
 
 This is a deliberate, operator-chosen default, not an oversight. An external agent that stops to ask its
-*own* approval questions inside a PTY that AIAgent is driving would deadlock on a prompt nobody answers.
+_own_ approval questions inside a PTY that AIAgent is driving would deadlock on a prompt nobody answers.
 Decision: external agents run in their own auto-approve mode, and AIAgent gates the thing that matters —
 **opening the session**.
 
@@ -144,7 +144,7 @@ an update notice:
   Press enter to continue
 ```
 
-Every `send` ends with a carriage return, so sending *anything* into that screen accepted the
+Every `send` ends with a carriage return, so sending _anything_ into that screen accepted the
 highlighted default and started a `brew upgrade`. Nothing malfunctioned; the terminal did exactly what
 a human pressing Enter would have done.
 
@@ -191,12 +191,12 @@ signed out — run `claude` and `/login`. Nothing in AIAgent can paper over that
     "enabled": true,
     "interactive": {
       "cols": 120,
-      "humanLockMs": 10000,        // agent writes refused this long after a human keystroke
+      "humanLockMs": 10000, // agent writes refused this long after a human keystroke
       "idleMs": 2000,
       "rows": 40,
       "sessionWarningThreshold": 4, // warn (do not block) past this many live sessions
       "stabilityMs": 1000,
-      "terminalApp": "Terminal",    // macOS app used by `attach`
+      "terminalApp": "Terminal", // macOS app used by `attach`
       "turnTimeoutMs": 600000
     },
     "agents": {
@@ -233,15 +233,15 @@ otherwise would be a lie the next `send` would trip over. `read` on an ended ses
 
 ## Gateway and SDK
 
-| Topic | Purpose |
-|---|---|
-| `external_agent.session.start` | Start a session |
-| `external_agent.session.send` | Send an instruction and wait for the turn |
-| `external_agent.session.read` | Re-read the screen |
-| `external_agent.session.stop` | Stop a session |
-| `external_agent.session.list` | List sessions |
-| `external_agent.session.attach` | Open a desktop terminal window |
-| `external_agent.session.write` | Relay a raw human keystroke (used by `aia attach`) |
+| Topic                           | Purpose                                            |
+| ------------------------------- | -------------------------------------------------- |
+| `external_agent.session.start`  | Start a session                                    |
+| `external_agent.session.send`   | Send an instruction and wait for the turn          |
+| `external_agent.session.read`   | Re-read the screen                                 |
+| `external_agent.session.stop`   | Stop a session                                     |
+| `external_agent.session.list`   | List sessions                                      |
+| `external_agent.session.attach` | Open a desktop terminal window                     |
+| `external_agent.session.write`  | Relay a raw human keystroke (used by `aia attach`) |
 
 Live output streams as `tool.output.delta` with `sourceKind: "external_agent"` and
 `sourceId: <externalSessionId>`. These events are emitted with `persist: false` — `terminal.log` is the

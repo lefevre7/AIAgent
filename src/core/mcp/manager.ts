@@ -6,22 +6,11 @@ import { EventEmitter } from "node:events";
 import { applyEdits, format, modify } from "jsonc-parser";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import {
-  getDefaultEnvironment,
-  StdioClientTransport
-} from "@modelcontextprotocol/sdk/client/stdio.js";
-import {
-  StreamableHTTPClientTransport,
-  StreamableHTTPError
-} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { UriTemplate } from "@modelcontextprotocol/sdk/shared/uriTemplate.js";
 
-import type {
-  AppConfig,
-  LoadedAIAgentConfig,
-  ResolvedConfigPaths,
-  SecretInput
-} from "@/core/config";
+import type { AppConfig, LoadedAIAgentConfig, ResolvedConfigPaths, SecretInput } from "@/core/config";
 import { loadAIAgentConfig } from "@/core/config";
 import { APP_CONFIG_VERSION } from "@/core/config/constants";
 import { deepMerge } from "@/core/config/merge";
@@ -47,10 +36,7 @@ import {
 } from "@/core/contracts";
 import { BUILT_IN_MCP_SERVER_TEMPLATES } from "@/core/mcp/templates";
 import { loadImportedMcpServers } from "@/core/mcp/imports";
-import {
-  disambiguateInvocationName,
-  sanitizeMcpInvocationName
-} from "@/core/mcp/names";
+import { disambiguateInvocationName, sanitizeMcpInvocationName } from "@/core/mcp/names";
 import { MCPCapabilityCatalog } from "@/core/mcp/catalog";
 
 type ManagedMCPServer = {
@@ -86,10 +72,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
   private readonly reloadConfig?: () => Promise<LoadedAIAgentConfig>;
   private readonly connections = new Map<string, ManagedMCPServer>();
   private catalog = new MCPCapabilityCatalog();
-  private templateDefinitions: Record<
-    string,
-    AppConfig["mcp"]["templates"][string]
-  > = {};
+  private templateDefinitions: Record<string, AppConfig["mcp"]["templates"][string]> = {};
   private importedFiles: string[] = [];
   private readonly watchers = new Map<string, fs.FSWatcher>();
   private refreshTimer: NodeJS.Timeout | null = null;
@@ -141,12 +124,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
   }
 
   getToolCapabilities(): MCPToolCapability[] {
-    return this.catalog
-      .list()
-      .filter(
-        (capability): capability is MCPToolCapability =>
-          capability.kind === "tool"
-      );
+    return this.catalog.list().filter((capability): capability is MCPToolCapability => capability.kind === "tool");
   }
 
   getCatalog(): MCPCapabilityCatalog {
@@ -202,9 +180,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       mcpServerSummarySchema.parse({
         capabilities: status.capabilities,
         ...(status.error?.message ? { error: status.error.message } : {}),
-        ...(status.lastConnectedAt
-          ? { lastConnectedAt: status.lastConnectedAt }
-          : {}),
+        ...(status.lastConnectedAt ? { lastConnectedAt: status.lastConnectedAt } : {}),
         serverName: status.serverName,
         state: status.state,
         tools: (toolsByServer.get(status.serverName) ?? [])
@@ -213,9 +189,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
             invocationName: tool.invocationName,
             name: tool.name
           }))
-          .sort((left, right) =>
-            left.invocationName.localeCompare(right.invocationName)
-          ),
+          .sort((left, right) => left.invocationName.localeCompare(right.invocationName)),
         transport: status.transport
       })
     );
@@ -252,19 +226,13 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     for (const [serverName, serverConfig] of Object.entries(resolved.servers)) {
       const previous = previousConnections.get(serverName);
       const configSignature = JSON.stringify(serverConfig);
-      const previousSignature = previous
-        ? JSON.stringify(previous.config)
-        : null;
+      const previousSignature = previous ? JSON.stringify(previous.config) : null;
 
       // Reuse an existing connection only when it is actually connected and the
       // config is unchanged. Failed entries are intentionally NOT reused so a
       // transient failure (server not yet up, brief network/5xx) is retried on
       // the next refresh instead of being pinned as "failed" until restart.
-      if (
-        previous &&
-        previousSignature === configSignature &&
-        previous.status.state === "connected"
-      ) {
+      if (previous && previousSignature === configSignature && previous.status.state === "connected") {
         nextConnections.set(serverName, previous);
         previousConnections.delete(serverName);
         continue;
@@ -325,9 +293,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
         };
         nextConnections.set(serverName, failedEntry);
         if (serverConfig.required) {
-          requiredFailures.push(
-            new Error(`${serverName}: ${structured.message}`)
-          );
+          requiredFailures.push(new Error(`${serverName}: ${structured.message}`));
         }
       }
     }
@@ -344,9 +310,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     this.templateDefinitions = resolved.templates;
     this.importedFiles = resolved.importedFiles;
     this.catalog = new MCPCapabilityCatalog([
-      ...Array.from(this.connections.values()).flatMap(
-        (entry) => entry.capabilities
-      ),
+      ...Array.from(this.connections.values()).flatMap((entry) => entry.capabilities),
       ...buildTemplateCapabilities(this.templateDefinitions)
     ]);
     this.lastRefreshAt = new Date().toISOString();
@@ -367,15 +331,9 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     }
   }
 
-  async callTool(
-    serverName: string,
-    invocationOrRawToolName: string,
-    args: Record<string, unknown> = {}
-  ) {
+  async callTool(serverName: string, invocationOrRawToolName: string, args: Record<string, unknown> = {}) {
     const server = this.getConnectedServer(serverName);
-    const rawName =
-      server.rawToolNamesByInvocationName.get(invocationOrRawToolName) ??
-      invocationOrRawToolName;
+    const rawName = server.rawToolNamesByInvocationName.get(invocationOrRawToolName) ?? invocationOrRawToolName;
     return server.client.callTool(
       {
         arguments: args,
@@ -386,15 +344,9 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     );
   }
 
-  async readResource(
-    serverName: string,
-    uri: string
-  ): Promise<MCPResourceReadResult> {
+  async readResource(serverName: string, uri: string): Promise<MCPResourceReadResult> {
     const server = this.getConnectedServer(serverName);
-    const result = await server.client.readResource(
-      { uri },
-      requestOptions(server.timeoutMs)
-    );
+    const result = await server.client.readResource({ uri }, requestOptions(server.timeoutMs));
     return mcpResourceReadResultSchema.parse({
       contents: result.contents,
       uri
@@ -440,11 +392,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     if (serverName) {
       const server = this.getConnectedServer(serverName);
       const prompts = await collectPaginated(
-        async (cursor) =>
-          server.client.listPrompts(
-            cursor ? { cursor } : undefined,
-            requestOptions(server.timeoutMs)
-          ),
+        async (cursor) => server.client.listPrompts(cursor ? { cursor } : undefined, requestOptions(server.timeoutMs)),
         "prompts"
       );
       return prompts;
@@ -482,11 +430,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     return entries;
   }
 
-  async getPrompt(
-    serverName: string,
-    name: string,
-    args: Record<string, string> = {}
-  ): Promise<MCPPromptResult> {
+  async getPrompt(serverName: string, name: string, args: Record<string, string> = {}): Promise<MCPPromptResult> {
     const server = this.getConnectedServer(serverName);
     const prompt = await server.client.getPrompt(
       {
@@ -519,17 +463,12 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
 
     const targetPath =
       params.configPath ??
-      (params.destination === "user"
-        ? this.configPaths?.globalConfigPath
-        : this.configPaths?.workspaceConfigPath);
+      (params.destination === "user" ? this.configPaths?.globalConfigPath : this.configPaths?.workspaceConfigPath);
     if (!targetPath) {
-      throw new Error(
-        "Unable to resolve the MCP template install target path."
-      );
+      throw new Error("Unable to resolve the MCP template install target path.");
     }
 
-    const installedServerName =
-      params.serverName ?? defaultInstalledServerName(params.templateId);
+    const installedServerName = params.serverName ?? defaultInstalledServerName(params.templateId);
     const installedServer = deepMerge(template.server, params.overrides ?? {}, {
       provenance: {
         source: "template",
@@ -548,24 +487,12 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
         2
       );
     const parsed = parseJsoncText(baseDocument, targetPath);
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error(`Config file at ${targetPath} must contain an object.`);
     }
 
-    let nextText = applyJsoncEdit(
-      baseDocument,
-      ["configVersion"],
-      APP_CONFIG_VERSION
-    );
-    nextText = applyJsoncEdit(
-      nextText,
-      ["mcp", "servers", installedServerName],
-      installedServer
-    );
+    let nextText = applyJsoncEdit(baseDocument, ["configVersion"], APP_CONFIG_VERSION);
+    nextText = applyJsoncEdit(nextText, ["mcp", "servers", installedServerName], installedServer);
     nextText = applyEdits(
       nextText,
       format(nextText, undefined, {
@@ -591,10 +518,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     return {
       importedFiles: imported.files,
       servers: deepMerge(imported.servers, this.config.mcp.servers),
-      templates: deepMerge(
-        BUILT_IN_MCP_SERVER_TEMPLATES,
-        this.config.mcp.templates
-      )
+      templates: deepMerge(BUILT_IN_MCP_SERVER_TEMPLATES, this.config.mcp.templates)
     };
   }
 
@@ -609,12 +533,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     });
 
     try {
-      return await this.enumerateConnectedServer(
-        client,
-        serverName,
-        serverConfig,
-        transport
-      );
+      return await this.enumerateConnectedServer(client, serverName, serverConfig, transport);
     } catch (error) {
       // Tear down the already-connected transport (and, for stdio, the spawned
       // child process) so a failure during capability enumeration does not leak
@@ -642,28 +561,21 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
     // calls are skipped, and an advertised-but-faulting one returns [] instead of
     // discarding the whole server.
     const tools = serverCapabilities?.tools
-      ? await collectPaginated(
-          async (cursor) =>
-            client.listTools(cursor ? { cursor } : undefined, reqOpts),
-          "tools"
-        )
+      ? await collectPaginated(async (cursor) => client.listTools(cursor ? { cursor } : undefined, reqOpts), "tools")
       : [];
     const resources = await collectPaginatedGated(
       Boolean(serverCapabilities?.resources),
-      async (cursor) =>
-        client.listResources(cursor ? { cursor } : undefined, reqOpts),
+      async (cursor) => client.listResources(cursor ? { cursor } : undefined, reqOpts),
       "resources"
     );
     const resourceTemplates = await collectPaginatedGated(
       Boolean(serverCapabilities?.resources),
-      async (cursor) =>
-        client.listResourceTemplates(cursor ? { cursor } : undefined, reqOpts),
+      async (cursor) => client.listResourceTemplates(cursor ? { cursor } : undefined, reqOpts),
       "resourceTemplates"
     );
     const prompts = await collectPaginatedGated(
       Boolean(serverCapabilities?.prompts),
-      async (cursor) =>
-        client.listPrompts(cursor ? { cursor } : undefined, reqOpts),
+      async (cursor) => client.listPrompts(cursor ? { cursor } : undefined, reqOpts),
       "prompts"
     );
 
@@ -689,16 +601,12 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
             taskSupport: normalizeTaskSupport(tool.execution?.taskSupport)
           },
           id: `mcp.tool.${serverName}.${tool.name}`,
-          inputSchema: toJsonRecord(
-            tool.inputSchema as Record<string, unknown>
-          ),
+          inputSchema: toJsonRecord(tool.inputSchema as Record<string, unknown>),
           invocationName,
           kind: "tool" as const,
           metadata: toJsonRecord(tool._meta),
           name: tool.name,
-          outputSchema: tool.outputSchema
-            ? toJsonRecord(tool.outputSchema as Record<string, unknown>)
-            : undefined,
+          outputSchema: tool.outputSchema ? toJsonRecord(tool.outputSchema as Record<string, unknown>) : undefined,
           rawName: tool.name,
           serverName,
           tags: buildCapabilityTags(serverConfig.tags, "tool")
@@ -788,9 +696,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       throw new Error(`No MCP server named "${serverName}" is registered.`);
     }
     if (server.status.state !== "connected") {
-      throw new Error(
-        `MCP server "${serverName}" is not connected (state: ${server.status.state}).`
-      );
+      throw new Error(`MCP server "${serverName}" is not connected (state: ${server.status.state}).`);
     }
     return server;
   }
@@ -830,16 +736,12 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       const directory = path.dirname(target);
       const basename = path.basename(target);
       try {
-        const watcher = fs.watch(
-          directory,
-          { persistent: false },
-          (_eventType, fileName) => {
-            if (fileName && fileName.toString() !== basename) {
-              return;
-            }
-            this.scheduleReload();
+        const watcher = fs.watch(directory, { persistent: false }, (_eventType, fileName) => {
+          if (fileName && fileName.toString() !== basename) {
+            return;
           }
-        );
+          this.scheduleReload();
+        });
         this.watchers.set(target, watcher);
       } catch {
         // The target's directory may not exist yet (e.g. a not-yet-created
@@ -920,11 +822,7 @@ async function connectClient(params: {
       new URL(params.serverConfig.url),
       sseTransportOptions(
         params.fetchImpl,
-        materializeSecrets(
-          params.serverConfig.headers,
-          params.serverName,
-          "headers"
-        )
+        materializeSecrets(params.serverConfig.headers, params.serverName, "headers")
       )
     );
     await connectOrClose(client, transport, connectOptions);
@@ -935,22 +833,15 @@ async function connectClient(params: {
   }
 
   const httpConfig = params.serverConfig;
-  const requestHeaders = materializeSecrets(
-    httpConfig.headers,
-    params.serverName,
-    "headers"
-  );
+  const requestHeaders = materializeSecrets(httpConfig.headers, params.serverName, "headers");
   const connectStreamable = async () => {
     const client = newMcpClient();
-    const transport = new StreamableHTTPClientTransport(
-      new URL(httpConfig.url),
-      {
-        fetch: params.fetchImpl,
-        requestInit: {
-          headers: requestHeaders
-        }
+    const transport = new StreamableHTTPClientTransport(new URL(httpConfig.url), {
+      fetch: params.fetchImpl,
+      requestInit: {
+        headers: requestHeaders
       }
-    );
+    });
     await connectOrClose(client, transport, connectOptions);
     return client;
   };
@@ -987,10 +878,7 @@ async function connectClient(params: {
   }
 }
 
-async function collectPaginated<
-  T extends Record<string, unknown>,
-  K extends keyof T & string
->(
+async function collectPaginated<T extends Record<string, unknown>, K extends keyof T & string>(
   request: (cursor?: string) => Promise<T>,
   key: K
 ): Promise<NonNullable<T[K]> extends Array<infer Item> ? Item[] : never> {
@@ -1011,10 +899,7 @@ async function collectPaginated<
 // returns [] when the server did not advertise the capability, or when the
 // list request fails, so one unsupported/faulting capability never fails the
 // whole server connection.
-async function collectPaginatedGated<
-  T extends Record<string, unknown>,
-  K extends keyof T & string
->(
+async function collectPaginatedGated<T extends Record<string, unknown>, K extends keyof T & string>(
   enabled: boolean,
   request: (cursor?: string) => Promise<T>,
   key: K
@@ -1026,14 +911,10 @@ async function collectPaginatedGated<
       // Advertised-but-faulting capability: fall through to an empty list.
     }
   }
-  return [] as unknown as NonNullable<T[K]> extends Array<infer Item>
-    ? Item[]
-    : never;
+  return [] as unknown as NonNullable<T[K]> extends Array<infer Item> ? Item[] : never;
 }
 
-function buildTemplateCapabilities(
-  templates: Record<string, AppConfig["mcp"]["templates"][string]>
-): MCPCapability[] {
+function buildTemplateCapabilities(templates: Record<string, AppConfig["mcp"]["templates"][string]>): MCPCapability[] {
   return Object.entries(templates).map(([templateId, template]) => ({
     access: "api_only" as const,
     annotations: {},
@@ -1047,17 +928,14 @@ function buildTemplateCapabilities(
       prerequisites: template.prerequisites
     },
     name: templateId,
-    source:
-      template.server.provenance?.source === "template" ? "built_in" : "config",
+    source: template.server.provenance?.source === "template" ? "built_in" : "config",
     tags: template.tags,
     title: template.title,
     transport: template.server.type
   }));
 }
 
-function extractAnnotations(
-  value: Record<string, unknown> | undefined
-): Record<string, JsonValue> {
+function extractAnnotations(value: Record<string, unknown> | undefined): Record<string, JsonValue> {
   if (!value) {
     return {};
   }
@@ -1072,9 +950,7 @@ function extractAnnotations(
   ) as Record<string, JsonValue>;
 }
 
-function toJsonRecord(
-  value: Record<string, unknown> | undefined
-): Record<string, JsonValue> {
+function toJsonRecord(value: Record<string, unknown> | undefined): Record<string, JsonValue> {
   if (!value) {
     return {};
   }
@@ -1085,12 +961,8 @@ function buildCapabilityTags(tags: string[], kind: string) {
   return Array.from(new Set([...tags, "mcp", kind]));
 }
 
-function normalizeTaskSupport(
-  value: unknown
-): "forbidden" | "optional" | "required" | undefined {
-  return value === "forbidden" || value === "optional" || value === "required"
-    ? value
-    : undefined;
+function normalizeTaskSupport(value: unknown): "forbidden" | "optional" | "required" | undefined {
+  return value === "forbidden" || value === "optional" || value === "required" ? value : undefined;
 }
 
 function materializeSecrets(
@@ -1131,12 +1003,8 @@ export function shouldFallbackToSse(error: unknown): boolean {
 // when no per-server timeout is configured; otherwise applies the timeout and
 // resets it on progress notifications so long, progress-reporting tools are not
 // killed mid-stream.
-function requestOptions(
-  timeoutMs: number | undefined
-): { resetTimeoutOnProgress: true; timeout: number } | undefined {
-  return typeof timeoutMs === "number"
-    ? { resetTimeoutOnProgress: true, timeout: timeoutMs }
-    : undefined;
+function requestOptions(timeoutMs: number | undefined): { resetTimeoutOnProgress: true; timeout: number } | undefined {
+  return typeof timeoutMs === "number" ? { resetTimeoutOnProgress: true, timeout: timeoutMs } : undefined;
 }
 
 function newMcpClient(): Client {
@@ -1162,25 +1030,16 @@ async function connectOrClose(
 // (GET) and the message POSTs. The SDK derives the EventSource fetch from the
 // transport's `fetch` option, so injecting headers via a fetch wrapper covers
 // the GET stream too — `requestInit.headers` alone only reaches the POSTs.
-function sseTransportOptions(
-  fetchImpl: typeof fetch,
-  headers: Record<string, string>
-): { fetch: typeof fetch } {
+function sseTransportOptions(fetchImpl: typeof fetch, headers: Record<string, string>): { fetch: typeof fetch } {
   return { fetch: withHeaders(fetchImpl, headers) };
 }
 
-function withHeaders(
-  fetchImpl: typeof fetch,
-  headers: Record<string, string>
-): typeof fetch {
+function withHeaders(fetchImpl: typeof fetch, headers: Record<string, string>): typeof fetch {
   const entries = Object.entries(headers);
   if (entries.length === 0) {
     return fetchImpl;
   }
-  return (
-    input: Parameters<typeof fetch>[0],
-    init?: Parameters<typeof fetch>[1]
-  ) => {
+  return (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const merged = new Headers(init?.headers);
     for (const [key, value] of entries) {
       if (!merged.has(key)) {
@@ -1226,11 +1085,7 @@ async function readFileTextIfExists(filePath: string): Promise<string | null> {
   }
 }
 
-function applyJsoncEdit(
-  document: string,
-  pathSegments: (string | number)[],
-  value: unknown
-): string {
+function applyJsoncEdit(document: string, pathSegments: (string | number)[], value: unknown): string {
   const edits = modify(document, pathSegments, value, {
     formattingOptions: {
       insertSpaces: true,

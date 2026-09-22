@@ -18,8 +18,10 @@ describe("image service live", () => {
     const config = createDefaultAppConfig({
       userStateDirectory: path.join(root, "user")
     });
-    const providerId = process.env.AIA_LIVE_IMAGE_PROVIDER_ID ?? process.env.AIA_IMAGE_LIVE_PROVIDER_ID ?? "comfyui_local";
-    const baseUrl = process.env.AIA_LIVE_IMAGE_BASE_URL ?? process.env.AIA_IMAGE_LIVE_BASE_URL ?? "http://localhost:8188";
+    const providerId =
+      process.env.AIA_LIVE_IMAGE_PROVIDER_ID ?? process.env.AIA_IMAGE_LIVE_PROVIDER_ID ?? "comfyui_local";
+    const baseUrl =
+      process.env.AIA_LIVE_IMAGE_BASE_URL ?? process.env.AIA_IMAGE_LIVE_BASE_URL ?? "http://localhost:8188";
     const requestedModel = process.env.AIA_LIVE_IMAGE_MODEL ?? process.env.AIA_IMAGE_LIVE_MODEL;
 
     config.image.artifactRoot = path.join(root, ".aia", "images");

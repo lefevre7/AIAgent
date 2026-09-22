@@ -16,11 +16,7 @@ import type {
   VoiceDeviceDescriptor,
   VoiceDeviceKind
 } from "@/core/contracts";
-import {
-  transcriptionResultSchema,
-  voiceCaptureRecordSchema,
-  voiceDeviceDescriptorSchema
-} from "@/core/contracts";
+import { transcriptionResultSchema, voiceCaptureRecordSchema, voiceDeviceDescriptorSchema } from "@/core/contracts";
 
 import { APPLE_NATIVE_VOICE_HELPER_SOURCE } from "@/core/voice/apple-helper-source";
 import {

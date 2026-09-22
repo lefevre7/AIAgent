@@ -1,10 +1,20 @@
 import { z } from "zod";
 
 import { approvalRequestSchema, approvalResolutionSchema, steeringInjectionSchema } from "@/core/contracts/approvals";
-import { entityIdSchema, isoTimestampSchema, metadataSchema, structuredErrorSchema, tagsSchema } from "@/core/contracts/common";
+import {
+  entityIdSchema,
+  isoTimestampSchema,
+  metadataSchema,
+  structuredErrorSchema,
+  tagsSchema
+} from "@/core/contracts/common";
 import { messageSchema } from "@/core/contracts/messages";
 import { toolCallRecordSchema } from "@/core/contracts/tools";
-import { voiceCaptureRecordSchema, voicePlaybackRecordSchema, voiceTranscriptionRecordSchema } from "@/core/contracts/voice";
+import {
+  voiceCaptureRecordSchema,
+  voicePlaybackRecordSchema,
+  voiceTranscriptionRecordSchema
+} from "@/core/contracts/voice";
 
 export const sessionIdSchema = entityIdSchema;
 export const turnIdSchema = entityIdSchema;

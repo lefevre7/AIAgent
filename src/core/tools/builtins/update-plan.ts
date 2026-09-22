@@ -148,13 +148,15 @@ export const updatePlanToolDefinition: ToolDefinition = {
   },
   approvalMode: "never",
   descriptor: {
-    approvalNotes: "No operator approval is required because this tool only updates the agent's local task state for the current session.",
+    approvalNotes:
+      "No operator approval is required because this tool only updates the agent's local task state for the current session.",
     examples: [
       "Use after the task goal becomes clear and you need a concrete checklist.",
       "Use after a failed attempt to record the blocker, next step, and revised plan."
     ],
     purpose: "Maintain the canonical task plan and short-lived working memory for the active session.",
-    sideEffectSummary: "Writes plan and working-memory state under the local session directory so later turns and surfaces share the same task view.",
+    sideEffectSummary:
+      "Writes plan and working-memory state under the local session directory so later turns and surfaces share the same task view.",
     whenNotToUse: [
       "Do not use it for durable facts that belong in long-term memory.",
       "Do not use multiple overlapping planning tools when this one canonical task-state path is available."

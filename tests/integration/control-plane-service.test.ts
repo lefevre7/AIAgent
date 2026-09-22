@@ -120,7 +120,9 @@ describe("control-plane service over a real runtime context", () => {
     const sent = await service.sendSessionMessage({ sessionId: created.session.id, text: "hello there" });
     expect(sent).toBeTruthy();
 
-    await expect(service.resolveApproval({ decision: "approved", requestId: "approval.does-not-exist" })).rejects.toBeTruthy();
+    await expect(
+      service.resolveApproval({ decision: "approved", requestId: "approval.does-not-exist" })
+    ).rejects.toBeTruthy();
   });
 });
 

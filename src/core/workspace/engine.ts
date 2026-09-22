@@ -86,12 +86,14 @@ export class WorkspaceMutationEngine {
     return fs.readFile(this.resolveWorkspacePath(targetPath));
   }
 
-  async listFiles(options: {
-    includeHidden?: boolean;
-    maxEntries?: number;
-    path?: string;
-    recursive?: boolean;
-  } = {}): Promise<WorkspaceFileEntry[]> {
+  async listFiles(
+    options: {
+      includeHidden?: boolean;
+      maxEntries?: number;
+      path?: string;
+      recursive?: boolean;
+    } = {}
+  ): Promise<WorkspaceFileEntry[]> {
     const rootPath = this.resolveWorkspacePath(options.path ?? ".");
     const relativeRoot = this.toStoredPath(rootPath);
     const entries: WorkspaceFileEntry[] = [];
@@ -217,7 +219,9 @@ export class WorkspaceMutationEngine {
   }
 
   async appendFileBytes(targetPath: string, chunk: Buffer): Promise<WorkspaceBinaryMutationResult> {
-    return this.commitBinaryMutation(targetPath, "append", async (currentContent) => Buffer.concat([currentContent, chunk]));
+    return this.commitBinaryMutation(targetPath, "append", async (currentContent) =>
+      Buffer.concat([currentContent, chunk])
+    );
   }
 
   async editFile(targetPath: string, edits: WorkspaceTextEdit[]): Promise<WorkspaceMutationResult> {
@@ -227,14 +231,18 @@ export class WorkspaceMutationEngine {
   }
 
   async applyPatch(targetPath: string, operations: WorkspaceRangePatchOperation[]): Promise<WorkspaceMutationResult> {
-    return this.commitMutation(targetPath, "patch", async (currentContent) => applyRangePatch(currentContent, operations));
+    return this.commitMutation(targetPath, "patch", async (currentContent) =>
+      applyRangePatch(currentContent, operations)
+    );
   }
 
-  async listUndoEntries(options: {
-    includeRestored?: boolean;
-    limit?: number;
-    path?: string;
-  } = {}): Promise<WorkspaceUndoEntry[]> {
+  async listUndoEntries(
+    options: {
+      includeRestored?: boolean;
+      limit?: number;
+      path?: string;
+    } = {}
+  ): Promise<WorkspaceUndoEntry[]> {
     const root = this.undoEntriesRoot();
     try {
       const entries = await fs.readdir(root, { withFileTypes: true });
@@ -652,7 +660,12 @@ function renderDiff(filePath: string, before: string, after: string): string {
   const beforeLines = splitLines(before);
   const afterLines = splitLines(after);
   const diffLines = diffLineSequences(beforeLines, afterLines).map((entry) => `${entry.prefix}${entry.text}`);
-  return [`--- a/${normalizeRelativePath(filePath)}`, `+++ b/${normalizeRelativePath(filePath)}`, "@@", ...diffLines].join("\n");
+  return [
+    `--- a/${normalizeRelativePath(filePath)}`,
+    `+++ b/${normalizeRelativePath(filePath)}`,
+    "@@",
+    ...diffLines
+  ].join("\n");
 }
 
 function diffLineSequences(

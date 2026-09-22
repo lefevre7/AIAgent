@@ -1,10 +1,7 @@
 import { Router, type Request, type Response } from "express";
 
 import { mapGatewayErrorToHttpStatusCode, normalizeGatewayError } from "@/gateway/errors";
-import {
-  createControlPlaneAccessMiddleware,
-  type WebAccessOptions
-} from "@/server/web-access";
+import { createControlPlaneAccessMiddleware, type WebAccessOptions } from "@/server/web-access";
 import { ControlPlaneService } from "@/server/control-plane/service";
 
 export type ControlPlaneRouterOptions = {
@@ -145,8 +142,7 @@ export function createControlPlaneRouter(options: ControlPlaneRouterOptions): Ro
     // The browser form models "Other" as a radio with an empty value plus a
     // separate text input, because one HTML form cannot bind a radio group and
     // a free-text field to the same name.
-    const comment =
-      readBodyField(request, "comment") || readBodyField(request, "commentOther");
+    const comment = readBodyField(request, "comment") || readBodyField(request, "commentOther");
     await respondWithAction(request, response, async () => ({
       body: await options.service.resolveApproval({
         comment,

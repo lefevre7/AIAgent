@@ -40,7 +40,10 @@ export function authorizeWebAccessRequest(
   if (options.token) {
     if (!presentedToken) {
       return {
-        error: createGatewayError("authentication_required", "A gateway authentication token is required for remote access."),
+        error: createGatewayError(
+          "authentication_required",
+          "A gateway authentication token is required for remote access."
+        ),
         ok: false,
         statusCode: 401
       };
@@ -223,6 +226,6 @@ function escapeHtml(value: string): string {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;")
+    .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 }

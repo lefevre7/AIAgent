@@ -96,6 +96,8 @@ describe("memory tool execute paths", () => {
     // A missing path, or a bogus extra key, must fail loudly rather than
     // silently reading something else.
     await expect(tool.execute(call({}), {} as never)).rejects.toThrow();
-    await expect(tool.execute(call({ elsewhere: "../../etc/passwd", path: "MEMORY.md" }), {} as never)).rejects.toThrow();
+    await expect(
+      tool.execute(call({ elsewhere: "../../etc/passwd", path: "MEMORY.md" }), {} as never)
+    ).rejects.toThrow();
   });
 });

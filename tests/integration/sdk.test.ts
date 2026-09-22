@@ -14,10 +14,7 @@ import {
   type LoadedAIAgentConfig,
   type ProviderHealth
 } from "@/core";
-import {
-  type GatewayRuntimeLike,
-  type GatewayRuntimeProviderRegistrationHost
-} from "@/gateway";
+import { type GatewayRuntimeLike, type GatewayRuntimeProviderRegistrationHost } from "@/gateway";
 import { createAIAgentSdk, createAIAgentSdkFromConfig } from "@/sdk";
 import {
   approvalRequestSchema,
@@ -65,9 +62,13 @@ describe("node sdk", () => {
     expect(created.handle.sessionId).toBe("session.sdk.1");
     expect(created.run?.run.status).toBe("queued");
 
-    const messageIterator = created.handle.events({
+    // Held in a local first: prettier formats a computed access directly after
+    // a chained call onto its own line, which trips eslint's
+    // no-unexpected-multiline. Naming the intermediate keeps both happy.
+    const messageEvents = created.handle.events({
       topics: ["message.created"]
-    })[Symbol.asyncIterator]();
+    });
+    const messageIterator = messageEvents[Symbol.asyncIterator]();
     runtime.emitEvent(
       buildMessageEvent({
         id: "message.other.1",
@@ -159,9 +160,7 @@ describe("node sdk", () => {
 
     expect(gatewayEvents).toEqual([liveEvent]);
 
-    const response = await sdk.gateway.client.request(
-      buildGatewayRequest("gateway.health", {})
-    );
+    const response = await sdk.gateway.client.request(buildGatewayRequest("gateway.health", {}));
     expect(response.ok).toBe(true);
     expect(response.topic).toBe("gateway.health");
 

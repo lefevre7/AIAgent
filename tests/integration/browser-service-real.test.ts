@@ -13,7 +13,9 @@ import { createPlaywrightBrowserAutomationService } from "@/core/browser/service
 const loadModule = createRequire(import.meta.url);
 const CHROMIUM_AVAILABLE = await (async () => {
   try {
-    const { chromium } = loadModule("playwright") as { chromium: { launch: (o: unknown) => Promise<{ close: () => Promise<void> }> } };
+    const { chromium } = loadModule("playwright") as {
+      chromium: { launch: (o: unknown) => Promise<{ close: () => Promise<void> }> };
+    };
     const browser = await chromium.launch({ headless: true });
     await browser.close();
     return true;
@@ -27,16 +29,23 @@ const realTest = CHROMIUM_AVAILABLE ? test : test.skip;
 const tempRoots: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { force: true, maxRetries: 3, recursive: true, retryDelay: 50 })));
+  await Promise.all(
+    tempRoots.splice(0).map((root) => fs.rm(root, { force: true, maxRetries: 3, recursive: true, retryDelay: 50 }))
+  );
 });
 
-const PAGE = "data:text/html,<html><head><title>Fixture</title></head><body><h1>Hello</h1><button id='go'>Go</button><input id='field' /><a href='#next'>Next</a></body></html>";
+const PAGE =
+  "data:text/html,<html><head><title>Fixture</title></head><body><h1>Hello</h1><button id='go'>Go</button><input id='field' /><a href='#next'>Next</a></body></html>";
 
 describe("PlaywrightBrowserAutomationService against real Chromium", () => {
   realTest("snapshots the live DOM and performs real page actions", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-browser-real-"));
     tempRoots.push(root);
-    const service = createPlaywrightBrowserAutomationService({ actionTimeoutMs: 5_000, artifactRoot: root, headless: true });
+    const service = createPlaywrightBrowserAutomationService({
+      actionTimeoutMs: 5_000,
+      artifactRoot: root,
+      headless: true
+    });
     const sessionId = "session.browser.real";
 
     try {
@@ -87,7 +96,11 @@ describe("PlaywrightBrowserAutomationService snapshot extraction (real Chromium)
   realTest("captures element attributes, labels, and visibility from a rich DOM", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-browser-rich-"));
     tempRoots.push(root);
-    const service = createPlaywrightBrowserAutomationService({ actionTimeoutMs: 5_000, artifactRoot: root, headless: true });
+    const service = createPlaywrightBrowserAutomationService({
+      actionTimeoutMs: 5_000,
+      artifactRoot: root,
+      headless: true
+    });
     const sessionId = "session.browser.rich";
 
     try {

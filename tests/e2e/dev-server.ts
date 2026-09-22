@@ -22,34 +22,30 @@ async function main(): Promise<void> {
     "utf8"
   );
 
-  const child = spawn(
-    process.execPath,
-    ["--import", "tsx", "src/server/start.ts", "--dev", "--port", String(port)],
-    {
-      cwd: projectRoot,
-      env: {
-        ...process.env,
-        AIA_BROWSER_ARTIFACT_ROOT: path.join(e2eRoot, "browser"),
-        AIA_DEFAULT_MODEL: "fake-lm-studio-model",
-        AIA_DEFAULT_PROVIDER: "lm_studio",
-        AIA_EXTERNAL_AGENTS_STATE_ROOT: path.join(e2eRoot, "external-agents"),
-        AIA_LM_STUDIO_BASE_URL: fakeServer.baseUrl,
-        AIA_LOG_LEVEL: "warn",
-        AIA_MEMORY_CHAT_SESSION_ROOT: path.join(e2eRoot, "chat-session-memory"),
-        AIA_MEMORY_EMBEDDINGS_ENABLED: "false",
-        AIA_MEMORY_HARD_FAIL_ON_STARTUP: "false",
-        AIA_MEMORY_SQLITE_PATH: path.join(e2eRoot, "memory.sqlite"),
-        AIA_MEMORY_STATE_ROOT: stateRoot,
-        AIA_MEMORY_USER_GLOBAL_ROOT: path.join(e2eRoot, "user-memory"),
-        AIA_MEMORY_WORKSPACE_ROOT: path.join(e2eRoot, "workspace-memory"),
-        AIA_OLLAMA_BASE_URL: "http://127.0.0.1:9",
-        AIA_WHATSAPP_SESSION_DIRECTORY: path.join(e2eRoot, "channels", "whatsapp"),
-        HOSTNAME: "127.0.0.1",
-        PORT: String(port)
-      },
-      stdio: "inherit"
-    }
-  );
+  const child = spawn(process.execPath, ["--import", "tsx", "src/server/start.ts", "--dev", "--port", String(port)], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      AIA_BROWSER_ARTIFACT_ROOT: path.join(e2eRoot, "browser"),
+      AIA_DEFAULT_MODEL: "fake-lm-studio-model",
+      AIA_DEFAULT_PROVIDER: "lm_studio",
+      AIA_EXTERNAL_AGENTS_STATE_ROOT: path.join(e2eRoot, "external-agents"),
+      AIA_LM_STUDIO_BASE_URL: fakeServer.baseUrl,
+      AIA_LOG_LEVEL: "warn",
+      AIA_MEMORY_CHAT_SESSION_ROOT: path.join(e2eRoot, "chat-session-memory"),
+      AIA_MEMORY_EMBEDDINGS_ENABLED: "false",
+      AIA_MEMORY_HARD_FAIL_ON_STARTUP: "false",
+      AIA_MEMORY_SQLITE_PATH: path.join(e2eRoot, "memory.sqlite"),
+      AIA_MEMORY_STATE_ROOT: stateRoot,
+      AIA_MEMORY_USER_GLOBAL_ROOT: path.join(e2eRoot, "user-memory"),
+      AIA_MEMORY_WORKSPACE_ROOT: path.join(e2eRoot, "workspace-memory"),
+      AIA_OLLAMA_BASE_URL: "http://127.0.0.1:9",
+      AIA_WHATSAPP_SESSION_DIRECTORY: path.join(e2eRoot, "channels", "whatsapp"),
+      HOSTNAME: "127.0.0.1",
+      PORT: String(port)
+    },
+    stdio: "inherit"
+  });
 
   const cleanup = async (exitCode?: number) => {
     child.kill("SIGTERM");

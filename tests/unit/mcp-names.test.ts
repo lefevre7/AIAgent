@@ -6,12 +6,8 @@ describe("sanitizeMcpInvocationName", () => {
   test("builds a stable mcp_<server>_<tool> slug within 64 chars", () => {
     // Hyphens are preserved (allowed in invocation names); other punctuation
     // (e.g. ".") collapses to "_".
-    expect(sanitizeMcpInvocationName("context7", "resolve-library-id")).toBe(
-      "mcp_context7_resolve-library-id"
-    );
-    expect(sanitizeMcpInvocationName("docs", "docs.lookup")).toBe(
-      "mcp_docs_docs_lookup"
-    );
+    expect(sanitizeMcpInvocationName("context7", "resolve-library-id")).toBe("mcp_context7_resolve-library-id");
+    expect(sanitizeMcpInvocationName("docs", "docs.lookup")).toBe("mcp_docs_docs_lookup");
   });
 
   test("hashes over-long names deterministically and keeps distinct inputs distinct", () => {

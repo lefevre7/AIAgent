@@ -87,11 +87,17 @@ export class ToolRuntime implements AgentLoopToolExecutor {
     return this.options.registry.searchDefinitions(query);
   }
 
-  async execute(call: ToolCallRecord, context: { session: SessionRecord; turn: TurnRecord }): Promise<AgentLoopToolExecutionResult> {
+  async execute(
+    call: ToolCallRecord,
+    context: { session: SessionRecord; turn: TurnRecord }
+  ): Promise<AgentLoopToolExecutionResult> {
     return this.executeInternal(call, context);
   }
 
-  async executeApproved(call: ToolCallRecord, context: { session: SessionRecord; turn: TurnRecord }): Promise<AgentLoopToolExecutionResult> {
+  async executeApproved(
+    call: ToolCallRecord,
+    context: { session: SessionRecord; turn: TurnRecord }
+  ): Promise<AgentLoopToolExecutionResult> {
     return this.executeInternal(call, context, {
       skipApproval: true
     });
@@ -373,7 +379,9 @@ function buildToolResultMessageParts(toolCall: ToolCallRecord, result?: RuntimeT
             uri: artifact.uri,
             voice: typeof artifact.metadata.voice === "string" ? artifact.metadata.voice : undefined,
             waveform: Array.isArray(artifact.metadata.waveform)
-              ? artifact.metadata.waveform.filter((value): value is number => typeof value === "number" && value >= 0 && value <= 1)
+              ? artifact.metadata.waveform.filter(
+                  (value): value is number => typeof value === "number" && value >= 0 && value <= 1
+                )
               : undefined
           } as const)
         : ({
@@ -384,12 +392,15 @@ function buildToolResultMessageParts(toolCall: ToolCallRecord, result?: RuntimeT
           } as const)
   );
 
-  const citationParts = (result?.citations ?? []).map((citation) => ({
-    kind: "citation",
-    locator: citation.locator,
-    title: citation.title,
-    uri: citation.uri
-  } as const));
+  const citationParts = (result?.citations ?? []).map(
+    (citation) =>
+      ({
+        kind: "citation",
+        locator: citation.locator,
+        title: citation.title,
+        uri: citation.uri
+      }) as const
+  );
 
   const parts = [...displayParts, ...artifactParts, ...citationParts];
 
@@ -434,11 +445,5 @@ function omitDisplayedResultKeys(result: JsonValue | undefined, displayedKeys: s
 }
 
 function isStructuredError(error: unknown): error is StructuredError {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    "message" in error &&
-    "retriable" in error
-  );
+  return typeof error === "object" && error !== null && "code" in error && "message" in error && "retriable" in error;
 }

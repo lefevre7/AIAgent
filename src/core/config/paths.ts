@@ -2,7 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { APPROVALS_CONFIG_FILE_NAME, APP_CONFIG_FILE_NAME, DEFAULT_GLOBAL_APPROVALS_PATH, GLOBAL_CONFIG_FILE_NAMES, USER_STATE_DIRECTORY_NAME } from "@/core/config/constants";
+import {
+  APPROVALS_CONFIG_FILE_NAME,
+  APP_CONFIG_FILE_NAME,
+  DEFAULT_GLOBAL_APPROVALS_PATH,
+  GLOBAL_CONFIG_FILE_NAMES,
+  USER_STATE_DIRECTORY_NAME
+} from "@/core/config/constants";
 
 export type ResolvedConfigPaths = {
   globalApprovalsPath: string;
@@ -42,7 +48,9 @@ export async function resolveConfigPaths(params: {
   // An explicit AIA_USER_CONFIG_PATH fully replaces global discovery with that single file.
   // Otherwise we read every known global filename in `~/.aia` (base -> override) and write
   // installs back to the highest-precedence file (the legacy `aia.config.jsonc`).
-  const explicitGlobalConfig = env.AIA_USER_CONFIG_PATH ? resolveAbsolutePath(env.AIA_USER_CONFIG_PATH, params.cwd) : null;
+  const explicitGlobalConfig = env.AIA_USER_CONFIG_PATH
+    ? resolveAbsolutePath(env.AIA_USER_CONFIG_PATH, params.cwd)
+    : null;
   const defaultGlobalConfigPaths = GLOBAL_CONFIG_FILE_NAMES.map((name) => path.join(userStateDirectory, name));
   const defaultGlobalConfigWriteTarget = path.join(userStateDirectory, APP_CONFIG_FILE_NAME);
 

@@ -169,9 +169,9 @@ describe("language model runtime", () => {
     const queuedJobs = await runtime.listJobs();
     expect(queuedJobs).toHaveLength(1);
     expect(queuedJobs[0]?.status).toBe("completed");
-    expect(await fs.readFile(path.join(stateRoot, "logs", "lm", "requests", "lm-runtime.request.1.json"), "utf8")).toContain(
-      '"id": "lm-runtime.request.1"'
-    );
+    expect(
+      await fs.readFile(path.join(stateRoot, "logs", "lm", "requests", "lm-runtime.request.1.json"), "utf8")
+    ).toContain('"id": "lm-runtime.request.1"');
     expect(
       await fs.readFile(path.join(stateRoot, "logs", "lm", "responses", "lm-runtime.request.1.json"), "utf8")
     ).toContain('"toolName": "read_file"');

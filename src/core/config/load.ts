@@ -84,7 +84,11 @@ export async function loadAIAgentConfig(params: {
       globalConfigLayers.push({ fragment, path: globalConfigPath });
     }
   }
-  const workspaceConfigFragment = await loadFragment(paths.workspaceConfigPath, "workspace config", appConfigFragmentSchema);
+  const workspaceConfigFragment = await loadFragment(
+    paths.workspaceConfigPath,
+    "workspace config",
+    appConfigFragmentSchema
+  );
   const globalApprovalsFragment = await loadFragment(
     paths.globalApprovalsPath,
     "global approvals",
@@ -98,7 +102,10 @@ export async function loadAIAgentConfig(params: {
   const environmentOverrides = parseEnvironmentOverrides(env);
 
   const mergedConfig = deepMerge(
-    normalizeConfigFragmentPaths(createDefaultAppConfig({ userStateDirectory: paths.userStateDirectory }), paths.workspaceRoot) as unknown,
+    normalizeConfigFragmentPaths(
+      createDefaultAppConfig({ userStateDirectory: paths.userStateDirectory }),
+      paths.workspaceRoot
+    ) as unknown,
     ...globalConfigLayers.map((layer) => normalizeConfigLayer(layer.fragment, layer.path) as unknown),
     normalizeConfigLayer(workspaceConfigFragment, paths.workspaceConfigPath) as unknown,
     normalizeConfigFragmentPaths(environmentOverrides.config, paths.workspaceRoot) as unknown
@@ -159,7 +166,11 @@ function parseEnvironmentOverrides(env: Record<string, string | undefined>) {
   }
 }
 
-async function loadFragment<T>(filePath: string, label: string, schema: ZodType<T, ZodTypeDef, unknown>): Promise<T | null> {
+async function loadFragment<T>(
+  filePath: string,
+  label: string,
+  schema: ZodType<T, ZodTypeDef, unknown>
+): Promise<T | null> {
   const raw = await readJsoncFileIfExists(filePath);
   if (raw === null) {
     return null;

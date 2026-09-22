@@ -42,9 +42,7 @@ describe("workspace config trust (security review H3)", () => {
     });
 
     test("ignores env providers, which can only read the environment we already have", () => {
-      expect(
-        collectTrustGatedProviderNames({ secrets: { providers: { env: { source: "env" } } } })
-      ).toEqual([]);
+      expect(collectTrustGatedProviderNames({ secrets: { providers: { env: { source: "env" } } } })).toEqual([]);
     });
 
     test("tolerates fragments with no secrets section at all", () => {

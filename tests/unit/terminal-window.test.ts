@@ -39,9 +39,9 @@ describe("openTerminalWindow", () => {
   test.skipIf(process.platform === "darwin")(
     "refuses off macOS and tells the operator what to run instead",
     async () => {
-      await expect(
-        openTerminalWindow({ command: "aia attach session.abc", terminalApp: "Terminal" })
-      ).rejects.toThrow(/only supported on macOS.*aia attach session\.abc/su);
+      await expect(openTerminalWindow({ command: "aia attach session.abc", terminalApp: "Terminal" })).rejects.toThrow(
+        /only supported on macOS.*aia attach session\.abc/su
+      );
     }
   );
 });

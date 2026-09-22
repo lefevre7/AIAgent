@@ -10,17 +10,13 @@ const inputSchema = z
   })
   .strict();
 
-export function createMcpStatusTool(params: {
-  mcpManager: MCPManager;
-}): RuntimeTool {
+export function createMcpStatusTool(params: { mcpManager: MCPManager }): RuntimeTool {
   return {
     definition: mcpStatusToolDefinition,
     async execute(call): Promise<RuntimeToolResult> {
       const input = inputSchema.parse(call.arguments as unknown);
       const filter = input.serverNames ? new Set(input.serverNames) : null;
-      const servers = params.mcpManager
-        .summarizeServers()
-        .filter((server) => !filter || filter.has(server.serverName));
+      const servers = params.mcpManager.summarizeServers().filter((server) => !filter || filter.has(server.serverName));
 
       return {
         display: [{ kind: "text", text: renderServers(servers) }],
@@ -30,9 +26,7 @@ export function createMcpStatusTool(params: {
   };
 }
 
-function renderServers(
-  servers: ReturnType<MCPManager["summarizeServers"]>
-): string {
+function renderServers(servers: ReturnType<MCPManager["summarizeServers"]>): string {
   if (servers.length === 0) {
     return "No MCP servers are configured.";
   }
@@ -43,10 +37,7 @@ function renderServers(
       const toolLines =
         server.tools.length > 0
           ? server.tools
-              .map(
-                (tool) =>
-                  `\n  - ${tool.invocationName}${tool.description ? `: ${tool.description}` : ""}`
-              )
+              .map((tool) => `\n  - ${tool.invocationName}${tool.description ? `: ${tool.description}` : ""}`)
               .join("")
           : "\n  (no tools exposed)";
       return `${header}${errorLine}${toolLines}`;
@@ -67,16 +58,13 @@ export const mcpStatusToolDefinition: ToolDefinition = {
   },
   approvalMode: "never",
   descriptor: {
-    approvalNotes:
-      "No operator approval is required because this tool only reports the local MCP server state.",
+    approvalNotes: "No operator approval is required because this tool only reports the local MCP server state.",
     examples: [
       'Answer "what MCP servers do you have and what are their tools?".',
       "Check whether a configured MCP server connected or failed before relying on its tools."
     ],
-    purpose:
-      "List the configured MCP servers, their connection state, and the tools each one exposes.",
-    sideEffectSummary:
-      "Reads the local MCP server status and tool catalog only.",
+    purpose: "List the configured MCP servers, their connection state, and the tools each one exposes.",
+    sideEffectSummary: "Reads the local MCP server status and tool catalog only.",
     whenNotToUse: [
       "Do not use it to search MCP resources, prompts, or installable templates; use `mcp_search` for that.",
       "Do not use it to call an MCP tool; call the MCP tool directly once you know it is connected."
@@ -115,15 +103,7 @@ export const mcpStatusToolDefinition: ToolDefinition = {
     type: "object"
   },
   retryable: true,
-  searchTags: [
-    "catalog",
-    "connected",
-    "discover",
-    "mcp",
-    "servers",
-    "status",
-    "tools"
-  ],
+  searchTags: ["catalog", "connected", "discover", "mcp", "servers", "status", "tools"],
   sideEffects: ["none"],
   source: {
     displayName: "Built-in Tools",

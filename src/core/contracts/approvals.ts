@@ -66,8 +66,7 @@ export const approvalResolutionSchema = z
 // backtracking shape such as `(a+)+` or `(\w*\s+)*`). Security review H8.
 export const APPROVAL_PATTERN_MAX_LENGTH = 512;
 
-const NESTED_QUANTIFIER_PATTERN =
-  /\((?:[^()\\]|\\.)*(?:[+*]|\{\d+(?:,\d*)?\})(?:[^()\\]|\\.)*\)(?:[+*]|\{\d)/u;
+const NESTED_QUANTIFIER_PATTERN = /\((?:[^()\\]|\\.)*(?:[+*]|\{\d+(?:,\d*)?\})(?:[^()\\]|\\.)*\)(?:[+*]|\{\d)/u;
 
 export function validateApprovalPattern(pattern: string): string | null {
   if (pattern.length === 0) {

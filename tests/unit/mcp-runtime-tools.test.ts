@@ -14,17 +14,12 @@ import {
   type MCPManager,
   type MCPToolCapability
 } from "@/core";
-import type {
-  RuntimeToolContext,
-  RuntimeToolResult
-} from "@/core/tools/runtime";
+import type { RuntimeToolContext, RuntimeToolResult } from "@/core/tools/runtime";
 
 const tempRoots: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(
-    tempRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true }))
-  );
+  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
 });
 
 function makeCap(overrides: Partial<MCPToolCapability> = {}): MCPToolCapability {
@@ -76,10 +71,7 @@ const context = {} as unknown as RuntimeToolContext;
 describe("buildMcpToolDefinition", () => {
   test("always requires approval, even for server-declared read-only tools", () => {
     const mgr = stubManager();
-    const readOnly = createMcpRuntimeTool(
-      mgr,
-      makeCap({ annotations: { readOnlyHint: true } })
-    );
+    const readOnly = createMcpRuntimeTool(mgr, makeCap({ annotations: { readOnlyHint: true } }));
     expect(readOnly.definition.kind).toBe("mcp");
     expect(readOnly.definition.approvalMode).toBe("ask");
     expect(readOnly.definition.approvalMode).not.toBe("never");
@@ -92,9 +84,7 @@ describe("buildMcpToolDefinition", () => {
       createMcpRuntimeTool(mgr, makeCap({ annotations })).definition.sideEffects;
 
     expect(sideEffectsFor({ readOnlyHint: true })).toEqual(["none"]);
-    expect(sideEffectsFor({ readOnlyHint: true, openWorldHint: true })).toEqual([
-      "network_read"
-    ]);
+    expect(sideEffectsFor({ readOnlyHint: true, openWorldHint: true })).toEqual(["network_read"]);
     expect(sideEffectsFor({ destructiveHint: true })).toEqual(["remote_mutation"]);
     expect(sideEffectsFor({ openWorldHint: true })).toEqual(["network_write"]);
     expect(sideEffectsFor({})).toEqual(["remote_mutation"]);
@@ -139,9 +129,7 @@ describe("createMcpRuntimeTool.execute", () => {
     expect(payload.structuredContent).toEqual({ ok: true });
     expect((result.metadata?.rawContent as unknown[]).length).toBe(5);
 
-    const texts = (result.display ?? []).map((part) =>
-      part.kind === "text" ? part.text : `<${part.kind}>`
-    );
+    const texts = (result.display ?? []).map((part) => (part.kind === "text" ? part.text : `<${part.kind}>`));
     expect(texts).toEqual([
       "hello",
       "[image: image/png]",
@@ -151,11 +139,7 @@ describe("createMcpRuntimeTool.execute", () => {
     ]);
 
     const artifacts = result.artifacts ?? [];
-    expect(artifacts.map((a) => a.kind).sort()).toEqual([
-      "audio",
-      "document",
-      "image"
-    ]);
+    expect(artifacts.map((a) => a.kind).sort()).toEqual(["audio", "document", "image"]);
     for (const artifact of artifacts) {
       await expect(fs.stat(artifact.uri)).resolves.toBeDefined();
     }
@@ -217,9 +201,7 @@ describe("createMcpRuntimeTool.execute", () => {
     const tool = createMcpRuntimeTool(mgr, makeCap());
     const result: RuntimeToolResult = await tool.execute(makeCall(), context);
     expect(result.artifacts ?? []).toHaveLength(0);
-    expect((result.display ?? []).map((p) => (p.kind === "text" ? p.text : ""))).toEqual([
-      "[image: image/png]"
-    ]);
+    expect((result.display ?? []).map((p) => (p.kind === "text" ? p.text : ""))).toEqual(["[image: image/png]"]);
   });
 });
 
@@ -272,20 +254,16 @@ describe("DynamicMcpToolRegistry", () => {
 
   test("skips duplicate invocation names instead of throwing so one bad server cannot break the catalog", () => {
     const mgr = stubManager();
-    const first = createMcpRuntimeTool(
-      mgr,
-      makeCap({ id: "mcp.tool.a.x", name: "x", rawName: "x", serverName: "a" }),
-      { invocationName: "dup" }
-    );
+    const first = createMcpRuntimeTool(mgr, makeCap({ id: "mcp.tool.a.x", name: "x", rawName: "x", serverName: "a" }), {
+      invocationName: "dup"
+    });
     const second = createMcpRuntimeTool(
       mgr,
       makeCap({ id: "mcp.tool.b.y", name: "y", rawName: "y", serverName: "b" }),
       { invocationName: "dup" }
     );
 
-    expect(() => createExecutableToolRegistry([first, second])).toThrow(
-      /already registered/
-    );
+    expect(() => createExecutableToolRegistry([first, second])).toThrow(/already registered/);
 
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const registry = createExecutableToolRegistry([first, second], {

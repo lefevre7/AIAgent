@@ -24,7 +24,9 @@ describe("voice service live", () => {
     const service = createVoiceServiceFromConfig(config);
     try {
       const providerHealth = await service.listProviderHealth();
-      expect(providerHealth.some((entry) => entry.providerId === "local_system" && entry.status === "healthy")).toBe(true);
+      expect(providerHealth.some((entry) => entry.providerId === "local_system" && entry.status === "healthy")).toBe(
+        true
+      );
 
       const voices = await service.listVoices({
         providerId: "local_system"

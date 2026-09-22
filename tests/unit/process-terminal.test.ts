@@ -82,7 +82,8 @@ describe("TerminalTurnWatcher", () => {
     watcher.dispose();
   });
 
-  test("ends the turn when the rendered screen stops changing and bytes stop arriving", async () => {    const watcher = new TerminalTurnWatcher({ cols: 40, idleMs: 150, rows: 4, stabilityMs: 150 });
+  test("ends the turn when the rendered screen stops changing and bytes stop arriving", async () => {
+    const watcher = new TerminalTurnWatcher({ cols: 40, idleMs: 150, rows: 4, stabilityMs: 150 });
     watcher.write("settled output\r\n");
 
     const result = await watcher.waitForTurnEnd({ timeoutMs: 5_000 });

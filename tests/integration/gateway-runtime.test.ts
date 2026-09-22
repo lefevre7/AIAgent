@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 
-import { ScriptedLanguageModelAdapter, buildScriptedResponse, buildToolCall, withExampleSdk } from "../../examples/shared";
+import {
+  ScriptedLanguageModelAdapter,
+  buildScriptedResponse,
+  buildToolCall,
+  withExampleSdk
+} from "../../examples/shared";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -95,7 +100,9 @@ describe("gateway runtime request dispatch", () => {
         })) as { run: { id: string } };
         await Promise.race([sdk.waitForRun(approvalExec.run as never).catch(() => null), sleep(1_500)]);
 
-        const pendingAfter = (await sdk.request("approval.list", {})) as { approvals: Array<{ request: { id: string } }> };
+        const pendingAfter = (await sdk.request("approval.list", {})) as {
+          approvals: Array<{ request: { id: string } }>;
+        };
         expect(pendingAfter.approvals.length).toBeGreaterThanOrEqual(1);
         const pausedSnap = (await sdk.request("session.snapshot", { sessionId })) as {
           snapshot: { session: { status: string } };
@@ -103,7 +110,9 @@ describe("gateway runtime request dispatch", () => {
         expect(pausedSnap.snapshot.session.status).toBe("awaiting_approval");
 
         // gateway.subscribe dispatch returns the normalized subscription
-        const sub = (await sdk.request("gateway.subscribe", { topics: ["message.delta"] })) as { subscription: unknown };
+        const sub = (await sdk.request("gateway.subscribe", { topics: ["message.delta"] })) as {
+          subscription: unknown;
+        };
         expect(sub.subscription).toBeTruthy();
       }
     });
@@ -150,7 +159,9 @@ describe("gateway runtime request dispatch", () => {
           buildScriptedResponse({
             request,
             text: "I wrote the plan and finished.",
-            toolCalls: [{ arguments: { summary: "done" }, callId: "tool.complete.compact", toolName: "attempt_complete" }]
+            toolCalls: [
+              { arguments: { summary: "done" }, callId: "tool.complete.compact", toolName: "attempt_complete" }
+            ]
           })
       ]
     });
@@ -255,7 +266,11 @@ describe("gateway runtime request dispatch", () => {
   });
 
   test("synthesizes channel statuses from config when no channel service is attached", async () => {
-    const adapter = new ScriptedLanguageModelAdapter({ modelId: "example-gw-3", providerId: "example_lm", responses: [] });
+    const adapter = new ScriptedLanguageModelAdapter({
+      modelId: "example-gw-3",
+      providerId: "example_lm",
+      responses: []
+    });
 
     await withExampleSdk({
       configureConfig: (config) => {

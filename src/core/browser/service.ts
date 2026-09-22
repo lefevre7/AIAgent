@@ -159,11 +159,7 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
         };
 
         const normalizeText = (value: string | null | undefined) =>
-          value
-            ? value
-                .replace(/\s+/gu, " ")
-                .trim()
-            : undefined;
+          value ? value.replace(/\s+/gu, " ").trim() : undefined;
 
         const buildLocatorHint = (element: HTMLElement) => {
           if (element.id) {
@@ -212,7 +208,9 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
             const label =
               normalizeText(
                 element.getAttribute("aria-label") ||
-                  (element.id ? document.querySelector(`label[for="${CSS.escape(element.id)}"]`)?.textContent : undefined)
+                  (element.id
+                    ? document.querySelector(`label[for="${CSS.escape(element.id)}"]`)?.textContent
+                    : undefined)
               )?.slice(0, 512) ?? undefined;
 
             return {
@@ -225,7 +223,9 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
               label,
               locatorHint: buildLocatorHint(element),
               placeholder: normalizeText(
-                element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.placeholder : undefined
+                element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+                  ? element.placeholder
+                  : undefined
               )?.slice(0, 512),
               ref,
               role: normalizeText(element.getAttribute("role")) ?? undefined,
@@ -367,24 +367,22 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
     const session = await this.ensureSession(params.sessionId);
     const runtimePage = await this.resolvePage(params);
     const locator = this.resolveRequiredLocator(runtimePage, params);
-    const optionValues = await locator.evaluate(
-      (element, requestedValues) => {
-        if (!(element instanceof HTMLSelectElement)) {
-          throw new Error("Target element is not a <select> element.");
-        }
+    const optionValues = await locator.evaluate((element, requestedValues) => {
+      if (!(element instanceof HTMLSelectElement)) {
+        throw new Error("Target element is not a <select> element.");
+      }
 
-        const resolved = requestedValues.map((requested) => {
-          const normalized = requested.trim().toLowerCase();
-          const directMatch = Array.from(element.options).find(
-            (option) => option.value.trim().toLowerCase() === normalized || option.label.trim().toLowerCase() === normalized
-          );
-          return directMatch?.value ?? requested;
-        });
+      const resolved = requestedValues.map((requested) => {
+        const normalized = requested.trim().toLowerCase();
+        const directMatch = Array.from(element.options).find(
+          (option) =>
+            option.value.trim().toLowerCase() === normalized || option.label.trim().toLowerCase() === normalized
+        );
+        return directMatch?.value ?? requested;
+      });
 
-        return Array.from(new Set(resolved));
-      },
-      params.values
-    );
+      return Array.from(new Set(resolved));
+    }, params.values);
 
     await locator.selectOption(optionValues, {
       timeout: this.actionTimeoutMs()
@@ -435,9 +433,12 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
         timeout: params.timeoutMs ?? this.navigationTimeoutMs()
       });
     } else if (params.text) {
-      await runtimePage.page.getByText(params.text, { exact: false }).first().waitFor({
-        timeout: params.timeoutMs ?? this.actionTimeoutMs()
-      });
+      await runtimePage.page
+        .getByText(params.text, { exact: false })
+        .first()
+        .waitFor({
+          timeout: params.timeoutMs ?? this.actionTimeoutMs()
+        });
     } else if (params.textGone) {
       await waitForTextGone(runtimePage.page, params.textGone, params.timeoutMs ?? this.actionTimeoutMs());
     } else {
@@ -494,7 +495,9 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
       session.activePageId = Array.from(session.pages.keys())[0] ?? null;
     }
 
-    const pages = await Promise.all(Array.from(session.pages.values()).map((page) => this.serializePage(session, page)));
+    const pages = await Promise.all(
+      Array.from(session.pages.values()).map((page) => this.serializePage(session, page))
+    );
 
     return {
       activePageId: session.activePageId,
@@ -648,17 +651,25 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
     const session = await this.ensureSession(params.sessionId);
     const pageId = params.pageId ?? session.activePageId;
     if (!pageId) {
-      throw browserError("browser_page_missing", "No browser page is open for this session yet. Use browser_open first.", {
-        sessionId: params.sessionId
-      });
+      throw browserError(
+        "browser_page_missing",
+        "No browser page is open for this session yet. Use browser_open first.",
+        {
+          sessionId: params.sessionId
+        }
+      );
     }
 
     const runtimePage = session.pages.get(pageId);
     if (!runtimePage || runtimePage.page.isClosed()) {
-      throw browserError("browser_page_not_found", `No open browser page with id "${pageId}" exists for this session.`, {
-        pageId,
-        sessionId: params.sessionId
-      });
+      throw browserError(
+        "browser_page_not_found",
+        `No open browser page with id "${pageId}" exists for this session.`,
+        {
+          pageId,
+          sessionId: params.sessionId
+        }
+      );
     }
 
     return runtimePage;
@@ -687,7 +698,10 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
     return this.resolveLocator(runtimePage, locator, true) as Locator;
   }
 
-  private async serializePage(session: RuntimeBrowserSession, runtimePage: RuntimeBrowserPage): Promise<BrowserPageRecord> {
+  private async serializePage(
+    session: RuntimeBrowserSession,
+    runtimePage: RuntimeBrowserPage
+  ): Promise<BrowserPageRecord> {
     let title: string | undefined;
     try {
       title = (await runtimePage.page.title()) || undefined;
@@ -715,7 +729,11 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
     return directory;
   }
 
-  private async captureDownload(session: RuntimeBrowserSession, runtimePage: RuntimeBrowserPage, download: Download): Promise<void> {
+  private async captureDownload(
+    session: RuntimeBrowserSession,
+    runtimePage: RuntimeBrowserPage,
+    download: Download
+  ): Promise<void> {
     const id = `browser.download.${crypto.randomUUID()}`;
     const createdAt = new Date().toISOString();
     const record: RuntimeBrowserDownload = {
@@ -741,7 +759,10 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
     record: RuntimeBrowserDownload
   ): Promise<void> {
     try {
-      const downloadsRoot = await this.ensureBrowserArtifactDirectory(session.sessionId, path.join("downloads", runtimePage.id));
+      const downloadsRoot = await this.ensureBrowserArtifactDirectory(
+        session.sessionId,
+        path.join("downloads", runtimePage.id)
+      );
       const fileName = sanitizeSegment(record.suggestedFilename ?? `download-${record.id}`);
       const filePath = path.join(downloadsRoot, fileName);
       await download.saveAs(filePath);

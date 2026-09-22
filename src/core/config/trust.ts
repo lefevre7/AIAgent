@@ -122,9 +122,7 @@ export async function readConfigTrustStore(userStateDirectory: string): Promise<
 }
 
 export function isConfigTrusted(store: ConfigTrustStore, fingerprint: ConfigFingerprint): boolean {
-  return store.trustedConfigs.some(
-    (entry) => entry.path === fingerprint.path && entry.sha256 === fingerprint.sha256
-  );
+  return store.trustedConfigs.some((entry) => entry.path === fingerprint.path && entry.sha256 === fingerprint.sha256);
 }
 
 /**

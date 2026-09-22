@@ -60,7 +60,10 @@ function buildDirectoryChain(projectRoot: string, cwd: string): string[] {
   return directories.reverse();
 }
 
-async function readAgentsDocument(filePath: string, scope: "project" | "user"): Promise<AgentsInstructionDocument | null> {
+async function readAgentsDocument(
+  filePath: string,
+  scope: "project" | "user"
+): Promise<AgentsInstructionDocument | null> {
   try {
     const content = (await fs.readFile(filePath, "utf8")).trim();
     if (!content) {

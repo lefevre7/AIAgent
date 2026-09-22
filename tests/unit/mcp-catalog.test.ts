@@ -2,12 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { MCPCapabilityCatalog, type MCPCapability } from "@/core";
 
-function toolCap(params: {
-  name: string;
-  serverName: string;
-  tags?: string[];
-  displayName?: string;
-}): MCPCapability {
+function toolCap(params: { name: string; serverName: string; tags?: string[]; displayName?: string }): MCPCapability {
   return {
     access: "model_and_api",
     annotations: {},

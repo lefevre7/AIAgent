@@ -53,7 +53,9 @@ export function attachGatewayWebSocketServer(options: AttachGatewayWebSocketServ
     noServer: true
   });
   const upgradeHandler = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const pathname = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`).pathname : null;
+    const pathname = request.url
+      ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`).pathname
+      : null;
     if (pathname !== options.websocketPath) {
       if (options.fallbackUpgradeHandler) {
         void Promise.resolve(options.fallbackUpgradeHandler(request, socket, head)).catch(() => {

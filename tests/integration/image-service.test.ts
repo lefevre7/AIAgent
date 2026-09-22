@@ -240,5 +240,4 @@ function parseJsonBody(body: BodyInit | null | undefined): Record<string, unknow
   return JSON.parse(body) as Record<string, unknown>;
 }
 
-const TINY_PNG_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9pQhR7QAAAAASUVORK5CYII=";
+const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9pQhR7QAAAAASUVORK5CYII=";

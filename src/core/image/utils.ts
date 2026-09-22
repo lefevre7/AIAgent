@@ -125,13 +125,9 @@ export function imageArtifactPathFromArtifact(artifact: ArtifactReference): stri
 
 export function imageInputPathFromUri(uri: string): string {
   if (!/^file:\/\//u.test(uri)) {
-    throw createImageError(
-      "image_input_uri_unsupported",
-      "Image inputs must use local file:// URIs.",
-      {
-        uri
-      }
-    );
+    throw createImageError("image_input_uri_unsupported", "Image inputs must use local file:// URIs.", {
+      uri
+    });
   }
 
   return fileURLToPath(uri);
@@ -167,7 +163,11 @@ export async function probeImageFile(filePath: string): Promise<ImageProbeResult
     };
   }
 
-  if (buffer.length >= 16 && buffer.subarray(0, 4).equals(RIFF_SIGNATURE) && buffer.subarray(8, 12).equals(WEBP_SIGNATURE)) {
+  if (
+    buffer.length >= 16 &&
+    buffer.subarray(0, 4).equals(RIFF_SIGNATURE) &&
+    buffer.subarray(8, 12).equals(WEBP_SIGNATURE)
+  ) {
     return {
       format: "webp",
       mediaType: "image/webp",
@@ -175,13 +175,9 @@ export async function probeImageFile(filePath: string): Promise<ImageProbeResult
     };
   }
 
-  throw createImageError(
-    "image_probe_unsupported_format",
-    `Unsupported image format for "${filePath}".`,
-    {
-      extension
-    }
-  );
+  throw createImageError("image_probe_unsupported_format", `Unsupported image format for "${filePath}".`, {
+    extension
+  });
 }
 
 export function probeImageSizeMetadata(artifact: ArtifactReference): { height: number; width: number } | null {
@@ -272,13 +268,7 @@ function probeWebpDimensions(buffer: Buffer): { height: number; width: number } 
 }
 
 function isJpegSizeMarker(marker: number): boolean {
-  return (
-    marker >= 0xc0 &&
-    marker <= 0xcf &&
-    marker !== 0xc4 &&
-    marker !== 0xc8 &&
-    marker !== 0xcc
-  );
+  return marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
 }
 
 function readUInt24LE(buffer: Buffer, offset: number): number {

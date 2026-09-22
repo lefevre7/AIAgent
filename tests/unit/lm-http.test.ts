@@ -23,7 +23,11 @@ describe("lm http fetchJson", () => {
   });
 
   test("returns null data for empty bodies", async () => {
-    const result = await fetchJson<unknown>({ fetchImpl: jsonResponse(""), timeoutMs: 1000, url: "https://provider.test/empty" });
+    const result = await fetchJson<unknown>({
+      fetchImpl: jsonResponse(""),
+      timeoutMs: 1000,
+      url: "https://provider.test/empty"
+    });
     expect(result.data).toBeNull();
   });
 
@@ -41,20 +45,41 @@ describe("lm http fetchJson", () => {
 
   test("maps HTTP errors to structured provider errors and extracts messages", async () => {
     await expect(
-      fetchJson({ fetchImpl: jsonResponse('{"error":"bad input"}', { status: 400 }), maxAttempts: 1, timeoutMs: 1000, url: "u" })
-    ).rejects.toMatchObject({ structuredError: { code: "provider_http_error", message: "bad input", retriable: false } });
+      fetchJson({
+        fetchImpl: jsonResponse('{"error":"bad input"}', { status: 400 }),
+        maxAttempts: 1,
+        timeoutMs: 1000,
+        url: "u"
+      })
+    ).rejects.toMatchObject({
+      structuredError: { code: "provider_http_error", message: "bad input", retriable: false }
+    });
 
     await expect(
-      fetchJson({ fetchImpl: jsonResponse('{"error":{"message":"deep"}}', { status: 503 }), maxAttempts: 1, timeoutMs: 1000, url: "u" })
+      fetchJson({
+        fetchImpl: jsonResponse('{"error":{"message":"deep"}}', { status: 503 }),
+        maxAttempts: 1,
+        timeoutMs: 1000,
+        url: "u"
+      })
     ).rejects.toMatchObject({ structuredError: { message: "deep", retriable: true } });
 
     await expect(
-      fetchJson({ fetchImpl: jsonResponse("plain failure", { status: 418 }), maxAttempts: 1, timeoutMs: 1000, url: "u" })
+      fetchJson({
+        fetchImpl: jsonResponse("plain failure", { status: 418 }),
+        maxAttempts: 1,
+        timeoutMs: 1000,
+        url: "u"
+      })
     ).rejects.toMatchObject({ structuredError: { code: "provider_http_error" } });
   });
 
   test("fetchStream returns the raw response", async () => {
-    const response = await fetchStream({ fetchImpl: jsonResponse("stream", { status: 200 }), timeoutMs: 1000, url: "u" });
+    const response = await fetchStream({
+      fetchImpl: jsonResponse("stream", { status: 200 }),
+      timeoutMs: 1000,
+      url: "u"
+    });
     expect(await response.text()).toBe("stream");
   });
 

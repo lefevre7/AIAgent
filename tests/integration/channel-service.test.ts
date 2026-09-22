@@ -105,9 +105,13 @@ describe("ChannelService", () => {
       parts: [{ kind: "text", text: "Outbound response" }],
       sessionId: session.id
     });
-    const inbound = await service.handleWebhook("teams", {
-      text: "Inbound webhook"
-    }, {});
+    const inbound = await service.handleWebhook(
+      "teams",
+      {
+        text: "Inbound webhook"
+      },
+      {}
+    );
     const route = await service.getRouteForSession(session.id);
     const deliveries = await service.listDeliveries({
       sessionId: session.id
@@ -142,7 +146,9 @@ describe("ChannelService", () => {
 
   async function buildService(options: {
     adapters: ChannelAdapter[];
-    channelsConfig?: (base: ReturnType<typeof createDefaultAppConfig>["channels"]) => ReturnType<typeof createDefaultAppConfig>["channels"];
+    channelsConfig?: (
+      base: ReturnType<typeof createDefaultAppConfig>["channels"]
+    ) => ReturnType<typeof createDefaultAppConfig>["channels"];
   }) {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aia-channels-err-"));
     tempRoots.push(tempRoot);
@@ -156,7 +162,11 @@ describe("ChannelService", () => {
     });
   }
 
-  function adapterFor(channel: "discord" | "teams", capabilities: ChannelAdapter["capabilities"], send?: ChannelAdapter["send"]): ChannelAdapter {
+  function adapterFor(
+    channel: "discord" | "teams",
+    capabilities: ChannelAdapter["capabilities"],
+    send?: ChannelAdapter["send"]
+  ): ChannelAdapter {
     return {
       capabilities,
       channel,

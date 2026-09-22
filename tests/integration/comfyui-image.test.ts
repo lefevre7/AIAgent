@@ -50,7 +50,10 @@ function fakeComfy(
       return jsonResponse({ name: "uploaded-source.png", subfolder: "" }, options.uploadStatus ?? 200);
     }
     if (url.pathname === "/view") {
-      return new Response(Buffer.from(TINY_PNG, "base64"), { headers: { "content-type": "image/png" }, status: options.viewStatus ?? 200 });
+      return new Response(Buffer.from(TINY_PNG, "base64"), {
+        headers: { "content-type": "image/png" },
+        status: options.viewStatus ?? 200
+      });
     }
     return new Response("not found", { status: 404 });
   };
@@ -72,7 +75,12 @@ async function buildService(fetchImpl: typeof fetch) {
 }
 
 function request() {
-  return { id: "image.req.1", metadata: {}, parameters: { prompt: "render a clean badge" }, providerId: "comfyui_local" };
+  return {
+    id: "image.req.1",
+    metadata: {},
+    parameters: { prompt: "render a clean badge" },
+    providerId: "comfyui_local"
+  };
 }
 
 describe("ComfyUI image generation", () => {
@@ -92,12 +100,16 @@ describe("ComfyUI image generation", () => {
     ]);
 
     const degraded = await buildService(fakeComfy({ systemStatsStatus: 500 }) as unknown as typeof fetch);
-    await expect(degraded.listProviderHealth("comfyui_local")).resolves.toMatchObject([{ status: expect.stringMatching(/degraded|unavailable/u) }]);
+    await expect(degraded.listProviderHealth("comfyui_local")).resolves.toMatchObject([
+      { status: expect.stringMatching(/degraded|unavailable/u) }
+    ]);
   });
 
   test("fails when ComfyUI returns no prompt id", async () => {
     const service = await buildService(fakeComfy({ promptId: null }) as unknown as typeof fetch);
-    await expect(service.generate(request() as never)).rejects.toMatchObject({ code: "image_prompt_submission_failed" });
+    await expect(service.generate(request() as never)).rejects.toMatchObject({
+      code: "image_prompt_submission_failed"
+    });
   });
 
   test("times out when ComfyUI never returns a completed prompt", async () => {
@@ -221,12 +233,16 @@ describe("ComfyUI image-to-image", () => {
 
 describe("ComfyUI generation error branches", () => {
   test("fails when ComfyUI reports no output images", async () => {
-    const service = await buildService(fakeComfy({ historyOutputs: { "prompt-1": { outputs: {} } } }) as unknown as typeof fetch);
+    const service = await buildService(
+      fakeComfy({ historyOutputs: { "prompt-1": { outputs: {} } } }) as unknown as typeof fetch
+    );
     await expect(service.generate(request() as never)).rejects.toMatchObject({ code: "image_generation_no_outputs" });
   });
 
   test("fails when a generated image cannot be downloaded", async () => {
     const service = await buildService(fakeComfy({ viewStatus: 500 }) as unknown as typeof fetch);
-    await expect(service.generate(request() as never)).rejects.toMatchObject({ code: "image_generation_download_failed" });
+    await expect(service.generate(request() as never)).rejects.toMatchObject({
+      code: "image_generation_download_failed"
+    });
   });
 });

@@ -284,7 +284,7 @@ export class WhatsAppChannelAdapter implements ChannelAdapter {
     const baseNameSource =
       resolvedName && extension.length > 0
         ? resolvedName.slice(0, -extension.length)
-        : resolvedName ?? path.basename(sourcePath, extension);
+        : (resolvedName ?? path.basename(sourcePath, extension));
     const baseName = sanitizeFileName(baseNameSource || `${messageId}-${index + 1}`);
     const targetPath = path.join(
       this.inboundMediaDirectory(),
@@ -341,9 +341,7 @@ export class WhatsAppChannelAdapter implements ChannelAdapter {
         await this.pollInboundDirectory(context);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        console.warn(
-          `AIA_CHANNEL_POLL_FAILED: could not read the WhatsApp inbound directory (${reason}); retrying.`
-        );
+        console.warn(`AIA_CHANNEL_POLL_FAILED: could not read the WhatsApp inbound directory (${reason}); retrying.`);
       }
 
       if (this.closed) {
@@ -367,15 +365,19 @@ function collectArtifactsFromParts(parts: MessagePart[]): ArtifactReference[] {
   });
 }
 
-function collectOutboundAttachments(message: ChannelMessage): Array<z.infer<typeof whatsappBridgeOutboundAttachmentSchema>> {
+function collectOutboundAttachments(
+  message: ChannelMessage
+): Array<z.infer<typeof whatsappBridgeOutboundAttachmentSchema>> {
   const seen = new Set<string>();
   const artifacts = dedupeArtifacts([...message.attachments, ...collectArtifactsFromParts(message.parts)]);
-  const fromArtifacts = artifacts.map((artifact) => toOutboundAttachment({
-    kind: mapArtifactKindToOutboundKind(artifact.kind),
-    mediaType: artifact.mediaType,
-    name: artifact.name,
-    uri: artifact.uri
-  }));
+  const fromArtifacts = artifacts.map((artifact) =>
+    toOutboundAttachment({
+      kind: mapArtifactKindToOutboundKind(artifact.kind),
+      mediaType: artifact.mediaType,
+      name: artifact.name,
+      uri: artifact.uri
+    })
+  );
   const fromParts = message.parts.flatMap((part) => {
     switch (part.kind) {
       case "audio":
@@ -432,7 +434,9 @@ function dedupeArtifacts(artifacts: ArtifactReference[]): ArtifactReference[] {
   });
 }
 
-function mapArtifactKindToOutboundKind(kind: z.infer<typeof artifactKindSchema>): "audio" | "document" | "image" | "video" {
+function mapArtifactKindToOutboundKind(
+  kind: z.infer<typeof artifactKindSchema>
+): "audio" | "document" | "image" | "video" {
   switch (kind) {
     case "audio":
       return "audio";
@@ -446,7 +450,9 @@ function mapArtifactKindToOutboundKind(kind: z.infer<typeof artifactKindSchema>)
   }
 }
 
-function mapMediaKindToArtifactKind(kind: z.infer<typeof whatsappBridgeMediaSchema>["kind"]): z.infer<typeof artifactKindSchema> {
+function mapMediaKindToArtifactKind(
+  kind: z.infer<typeof whatsappBridgeMediaSchema>["kind"]
+): z.infer<typeof artifactKindSchema> {
   switch (kind) {
     case "audio":
       return "audio";
@@ -521,11 +527,21 @@ function renderMessagePartsToText(parts: MessagePart[]): string | undefined {
 }
 
 function sanitizeFileName(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "media";
+  return (
+    value
+      .replace(/[^A-Za-z0-9._-]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 80) || "media"
+  );
 }
 
 function sanitizeSegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 120) || "entry";
+  return (
+    value
+      .replace(/[^A-Za-z0-9._-]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 120) || "entry"
+  );
 }
 
 function toOutboundAttachment(input: {

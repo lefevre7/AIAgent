@@ -207,7 +207,14 @@ function createFakeImageService(
     generate: async (request) => {
       options.onGenerate?.(request);
 
-      const outputPath = path.join(artifactRoot, "outputs", "mock_image", request.sessionId ?? "shared", request.id, "generated.png");
+      const outputPath = path.join(
+        artifactRoot,
+        "outputs",
+        "mock_image",
+        request.sessionId ?? "shared",
+        request.id,
+        "generated.png"
+      );
       await fs.mkdir(path.dirname(outputPath), { recursive: true });
       await writeFakePng(outputPath, 128, 128);
       const outputImage = await buildImageArtifactFromFile({

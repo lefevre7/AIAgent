@@ -2,12 +2,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import type {
-  ArtifactReference,
-  ImageService,
-  JsonValue,
-  ToolDefinition
-} from "@/core/contracts";
+import type { ArtifactReference, ImageService, JsonValue, ToolDefinition } from "@/core/contracts";
 import {
   artifactReferenceSchema,
   imageGenerationParametersSchema,

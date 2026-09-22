@@ -85,8 +85,10 @@ export function looksLikeTextFile(content: Buffer): boolean {
 
 export function inferMediaType(filePath: string, isBinary: boolean): string {
   const extension = path.extname(filePath).toLowerCase();
-  return (isBinary ? BINARY_MEDIA_TYPES.get(extension) : TEXT_MEDIA_TYPES.get(extension)) ??
-    (isBinary ? "application/octet-stream" : "text/plain");
+  return (
+    (isBinary ? BINARY_MEDIA_TYPES.get(extension) : TEXT_MEDIA_TYPES.get(extension)) ??
+    (isBinary ? "application/octet-stream" : "text/plain")
+  );
 }
 
 export function decodeBase64Content(value: string): Buffer {

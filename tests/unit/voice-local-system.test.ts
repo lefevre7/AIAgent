@@ -90,7 +90,12 @@ describe("LocalSystemVoiceAdapter", () => {
       sayPath
     });
 
-    const result = await adapter.synthesize({ id: "synthesis.1", metadata: {}, providerId: "local_system", text: "hello" });
+    const result = await adapter.synthesize({
+      id: "synthesis.1",
+      metadata: {},
+      providerId: "local_system",
+      text: "hello"
+    });
     expect(result.audio.kind).toBe("audio");
     expect(result.audio.mediaType).toBe("audio/aiff");
 
@@ -108,7 +113,11 @@ describe("LocalSystemVoiceAdapter", () => {
   darwinTest("rejects audio playback to a specific output device", async () => {
     const root = await tempRoot();
     const sayPath = await writeScript(root, "say-dev.mjs", OK_SCRIPT);
-    const adapter = new LocalSystemVoiceAdapter({ artifactRoot: path.join(root, "artifacts"), providerId: "local_system", sayPath });
+    const adapter = new LocalSystemVoiceAdapter({
+      artifactRoot: path.join(root, "artifacts"),
+      providerId: "local_system",
+      sayPath
+    });
 
     await expect(
       adapter.playback({
@@ -141,15 +150,17 @@ describe("LocalSystemVoiceAdapter", () => {
     });
 
     const devices = await adapter.listDevices();
-    expect(devices).toEqual([
-      expect.objectContaining({ default: true, name: "Configured Speaker" })
-    ]);
+    expect(devices).toEqual([expect.objectContaining({ default: true, name: "Configured Speaker" })]);
   });
 
   darwinTest("surfaces failures from the say binary", async () => {
     const root = await tempRoot();
     const sayPath = await writeScript(root, "say-fail.mjs", FAIL_SCRIPT);
-    const adapter = new LocalSystemVoiceAdapter({ artifactRoot: path.join(root, "artifacts"), providerId: "local_system", sayPath });
+    const adapter = new LocalSystemVoiceAdapter({
+      artifactRoot: path.join(root, "artifacts"),
+      providerId: "local_system",
+      sayPath
+    });
 
     await expect(adapter.health()).resolves.toMatchObject({ status: "degraded" });
     await expect(adapter.listVoices()).rejects.toMatchObject({ code: "voice_list_voices_failed" });

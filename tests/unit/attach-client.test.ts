@@ -2,11 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { describe, expect, test } from "vitest";
 
-import {
-  attachToExternalAgentSession,
-  type AttachStreams,
-  type AttachWebSocketClient
-} from "@/gateway/attach-client";
+import { attachToExternalAgentSession, type AttachStreams, type AttachWebSocketClient } from "@/gateway/attach-client";
 
 type SentRequest = { payload: Record<string, unknown>; topic: string };
 
@@ -86,10 +82,7 @@ describe("attachToExternalAgentSession", () => {
 
     // The relay must subscribe before anything else, or output produced
     // between connect and subscribe is lost.
-    expect(socket.sent.map((entry) => entry.topic)).toEqual([
-      "gateway.subscribe",
-      "external_agent.session.read"
-    ]);
+    expect(socket.sent.map((entry) => entry.topic)).toEqual(["gateway.subscribe", "external_agent.session.read"]);
     expect(socket.sent[1]?.payload).toMatchObject({
       externalSessionId: "external-agent-session.abc",
       includeScrollback: true

@@ -11,9 +11,7 @@ import {
 // reissue the same read forever, and the no-progress nudge counter never fires
 // because each call "succeeds". runtime.maxIdenticalToolCalls bounds that.
 
-function scriptedAdapter(
-  calls: Array<{ args: Record<string, unknown>; name: string }>
-): ScriptedLanguageModelAdapter {
+function scriptedAdapter(calls: Array<{ args: Record<string, unknown>; name: string }>): ScriptedLanguageModelAdapter {
   return new ScriptedLanguageModelAdapter({
     modelId: "repeat-model",
     providerId: "example_lm",
@@ -41,9 +39,7 @@ describe("identical tool call guard", () => {
     await withExampleSdk({
       name: "repeated-tool-calls",
       providers: {
-        languageModelAdapters: [
-          { adapter, defaultModel: "repeat-model", enabled: true }
-        ]
+        languageModelAdapters: [{ adapter, defaultModel: "repeat-model", enabled: true }]
       },
       run: async ({ sdk, workspaceRoot }) => {
         const created = await sdk.sessions.create({
@@ -61,16 +57,9 @@ describe("identical tool call guard", () => {
           .map((call) => call.status);
 
         // Three executions allowed by the default cap, then a refusal.
-        expect(listCalls).toEqual([
-          "succeeded",
-          "succeeded",
-          "succeeded",
-          "failed"
-        ]);
+        expect(listCalls).toEqual(["succeeded", "succeeded", "succeeded", "failed"]);
 
-        const refused = (await created.handle.snapshot()).snapshot.toolCalls.at(
-          3
-        );
+        const refused = (await created.handle.snapshot()).snapshot.toolCalls.at(3);
         expect(refused?.error?.code).toBe("repeated_tool_call");
         expect(refused?.error?.message).toContain("Do not repeat it");
       }
@@ -89,9 +78,7 @@ describe("identical tool call guard", () => {
     await withExampleSdk({
       name: "repeated-tool-calls-distinct",
       providers: {
-        languageModelAdapters: [
-          { adapter, defaultModel: "repeat-model", enabled: true }
-        ]
+        languageModelAdapters: [{ adapter, defaultModel: "repeat-model", enabled: true }]
       },
       run: async ({ sdk, workspaceRoot }) => {
         const created = await sdk.sessions.create({
@@ -111,12 +98,7 @@ describe("identical tool call guard", () => {
         // Two distinct argument sets, each well under the cap. Calls 2 and 3
         // are the same arguments in a different key order, which the identity
         // key normalizes — but that is still only two of the three allowed.
-        expect(statuses).toEqual([
-          "succeeded",
-          "succeeded",
-          "succeeded",
-          "succeeded"
-        ]);
+        expect(statuses).toEqual(["succeeded", "succeeded", "succeeded", "succeeded"]);
       }
     });
   });

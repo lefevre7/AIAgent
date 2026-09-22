@@ -15,24 +15,24 @@ before editing.
 
 Fixed in this repo, each with regression tests:
 
-| # | Fix | Where |
-|---|-----|-------|
-| H1 | Default rule patterns use single-escaped `\s`/`\b` again, so the destructive-command deny actually fires; the deny set was broadened into separate `rule.command.destructive.{rm,disk,system,permissions,forkbomb}.deny` rules (root/home/cwd/glob recursive deletes, `--no-preserve-root`, `mkfs`, `dd`/`shred` to `/dev`, redirects onto disk devices, shutdown/reboot/halt/poweroff as the command, recursive chmod/chown of `/`, fork bomb). The read-allow rule matches flagged commands like `ls -la` again. | `src/core/config/schema.ts`, `tests/unit/approval-defaults.test.ts` |
-| H5 | `web_fetch` follows redirects manually and re-validates every hop against the public-host rules; hostnames are resolved and refused when any address is loopback/private/link-local/CGNAT/multicast (including IPv4-mapped IPv6); IPv6 literals are bracket-stripped so `[::1]` is caught. Redirect chains are capped (5). | `src/core/research/fetch.ts`, `tests/unit/research-fetch.test.ts` |
-| H7 | Policy precedence is now deny-wins: every deny rule is evaluated on every target before any allow/ask rule, regardless of rule/target order. Allow vs ask still follows target order (specific `command`/`path` before generic `tool`). | `src/core/approvals/policy.ts` (`RegexApprovalPolicy.evaluateTargets`), `tests/unit/approval-policy.test.ts` |
-| H8 | Patterns are validated at parse time and at policy construction (max 512 chars, must compile, no quantified group containing a quantifier), compiled once and cached, and model-controlled values longer than 8,192 chars are matched on their prefix with `allow` downgraded to `ask`. | `src/core/contracts/approvals.ts` (`validateApprovalPattern`, `approvalPatternSchema`), `src/core/approvals/policy.ts` |
-| H9 | Path targets are canonicalized with the same `resolveLocalPath` the file tools use (`file://`, `~`, relative, `..`) against the session cwd before matching, `file://` values are included, and path rules match case-insensitively on macOS/Windows. | `src/core/approvals/policy.ts` (`extractApprovalTargets` + `cwd` option), `tests/unit/approval-policy.test.ts` |
-| M6 | `exec_command` argv is appended to the `command` target (`git push --force 'my branch'`) so command allow/deny rules see the whole command line. | `src/core/approvals/policy.ts` (`stringifyArgv`) |
+| #   | Fix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Where                                                                                                                  |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| H1  | Default rule patterns use single-escaped `\s`/`\b` again, so the destructive-command deny actually fires; the deny set was broadened into separate `rule.command.destructive.{rm,disk,system,permissions,forkbomb}.deny` rules (root/home/cwd/glob recursive deletes, `--no-preserve-root`, `mkfs`, `dd`/`shred` to `/dev`, redirects onto disk devices, shutdown/reboot/halt/poweroff as the command, recursive chmod/chown of `/`, fork bomb). The read-allow rule matches flagged commands like `ls -la` again. | `src/core/config/schema.ts`, `tests/unit/approval-defaults.test.ts`                                                    |
+| H5  | `web_fetch` follows redirects manually and re-validates every hop against the public-host rules; hostnames are resolved and refused when any address is loopback/private/link-local/CGNAT/multicast (including IPv4-mapped IPv6); IPv6 literals are bracket-stripped so `[::1]` is caught. Redirect chains are capped (5).                                                                                                                                                                                         | `src/core/research/fetch.ts`, `tests/unit/research-fetch.test.ts`                                                      |
+| H7  | Policy precedence is now deny-wins: every deny rule is evaluated on every target before any allow/ask rule, regardless of rule/target order. Allow vs ask still follows target order (specific `command`/`path` before generic `tool`).                                                                                                                                                                                                                                                                            | `src/core/approvals/policy.ts` (`RegexApprovalPolicy.evaluateTargets`), `tests/unit/approval-policy.test.ts`           |
+| H8  | Patterns are validated at parse time and at policy construction (max 512 chars, must compile, no quantified group containing a quantifier), compiled once and cached, and model-controlled values longer than 8,192 chars are matched on their prefix with `allow` downgraded to `ask`.                                                                                                                                                                                                                            | `src/core/contracts/approvals.ts` (`validateApprovalPattern`, `approvalPatternSchema`), `src/core/approvals/policy.ts` |
+| H9  | Path targets are canonicalized with the same `resolveLocalPath` the file tools use (`file://`, `~`, relative, `..`) against the session cwd before matching, `file://` values are included, and path rules match case-insensitively on macOS/Windows.                                                                                                                                                                                                                                                              | `src/core/approvals/policy.ts` (`extractApprovalTargets` + `cwd` option), `tests/unit/approval-policy.test.ts`         |
+| M6  | `exec_command` argv is appended to the `command` target (`git push --force 'my branch'`) so command allow/deny rules see the whole command line.                                                                                                                                                                                                                                                                                                                                                                   | `src/core/approvals/policy.ts` (`stringifyArgv`)                                                                       |
 
 Fixed in the 2026-09-22 pass, each with regression tests:
 
-| # | Fix | Where |
-|---|-----|-------|
-| H2 | `X-Forwarded-For` is no longer consulted at all; the peer address comes from the socket only, on both the gateway and the control-plane/web path. The header is client-supplied, so trusting it let any remote caller present `X-Forwarded-For: 127.0.0.1` and be treated as loopback. | `src/gateway/auth.ts`, `src/server/web-access.ts`, `tests/unit/gateway-auth.test.ts` |
-| M13 | `assertGatewayExposureIsAuthenticated` now **refuses to start** an untokened gateway whenever the bind host is routable or unspecified (`0.0.0.0`/`::`), or a tunnel is enabled. This was previously only a warning, so the insecure configuration still came up and served traffic. It also closes the case header handling cannot: a tunnel terminating in front of us forwards to the loopback socket, so remote traffic *is* genuinely loopback by the time we see it. | `src/gateway/auth.ts`, `src/server/start.ts` |
-| H3 | Workspace configs must be explicitly trusted before their `exec`/`file` secret providers are honoured. Trust is keyed on the config file's path **and** the SHA-256 of its exact contents, recorded in `~/.aia/trust.json` (never in the workspace — a record stored there could be shipped pre-populated). Editing a trusted file revokes trust. Untrusted providers are withheld with an `AIA_UNTRUSTED_CONFIG` warning and the load continues; only a config value that actually *references* one fails. `aia trust` grants or revokes. | `src/core/config/trust.ts`, `src/core/config/load.ts`, `src/core/config/secrets.ts`, `src/cli.ts`, `tests/unit/config-trust.test.ts`, `tests/integration/config-loader.test.ts` |
-| H4 | The `command` approval target now renders the **full resolved argv**, including the model-supplied `args`, using the same `stringifyArgv` the M6 fix introduced. A model could previously pass `--dangerously-bypass-approvals-and-sandbox` while the operator saw only "run codex", and no deny rule written against the command line could match. | `src/core/external-agents/service.ts`, `src/core/approvals/policy.ts`, `tests/integration/external-agent-tool.test.ts` |
-| H6 | Channel control commands (`/approve`, `/deny`, `/cancel`, `/steer`) are refused unless the sender is listed in `channels.<kind>.operatorIdentities`. **Fails closed**: an empty allowlist authorizes nobody. The refusal names the setting, because the likeliest reader is an operator who has not configured it yet. Parsing and authorization were extracted into `src/gateway/channel-commands.ts` so the rule lives next to the parser it guards. | `src/gateway/channel-commands.ts`, `src/gateway/runtime.ts`, `src/core/config/schema.ts`, `tests/unit/channel-commands.test.ts`, `tests/integration/whatsapp-channel.test.ts` |
+| #   | Fix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Where                                                                                                                                                                           |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| H2  | `X-Forwarded-For` is no longer consulted at all; the peer address comes from the socket only, on both the gateway and the control-plane/web path. The header is client-supplied, so trusting it let any remote caller present `X-Forwarded-For: 127.0.0.1` and be treated as loopback.                                                                                                                                                                                                                                                     | `src/gateway/auth.ts`, `src/server/web-access.ts`, `tests/unit/gateway-auth.test.ts`                                                                                            |
+| M13 | `assertGatewayExposureIsAuthenticated` now **refuses to start** an untokened gateway whenever the bind host is routable or unspecified (`0.0.0.0`/`::`), or a tunnel is enabled. This was previously only a warning, so the insecure configuration still came up and served traffic. It also closes the case header handling cannot: a tunnel terminating in front of us forwards to the loopback socket, so remote traffic _is_ genuinely loopback by the time we see it.                                                                 | `src/gateway/auth.ts`, `src/server/start.ts`                                                                                                                                    |
+| H3  | Workspace configs must be explicitly trusted before their `exec`/`file` secret providers are honoured. Trust is keyed on the config file's path **and** the SHA-256 of its exact contents, recorded in `~/.aia/trust.json` (never in the workspace — a record stored there could be shipped pre-populated). Editing a trusted file revokes trust. Untrusted providers are withheld with an `AIA_UNTRUSTED_CONFIG` warning and the load continues; only a config value that actually _references_ one fails. `aia trust` grants or revokes. | `src/core/config/trust.ts`, `src/core/config/load.ts`, `src/core/config/secrets.ts`, `src/cli.ts`, `tests/unit/config-trust.test.ts`, `tests/integration/config-loader.test.ts` |
+| H4  | The `command` approval target now renders the **full resolved argv**, including the model-supplied `args`, using the same `stringifyArgv` the M6 fix introduced. A model could previously pass `--dangerously-bypass-approvals-and-sandbox` while the operator saw only "run codex", and no deny rule written against the command line could match.                                                                                                                                                                                        | `src/core/external-agents/service.ts`, `src/core/approvals/policy.ts`, `tests/integration/external-agent-tool.test.ts`                                                          |
+| H6  | Channel control commands (`/approve`, `/deny`, `/cancel`, `/steer`) are refused unless the sender is listed in `channels.<kind>.operatorIdentities`. **Fails closed**: an empty allowlist authorizes nobody. The refusal names the setting, because the likeliest reader is an operator who has not configured it yet. Parsing and authorization were extracted into `src/gateway/channel-commands.ts` so the rule lives next to the parser it guards.                                                                                     | `src/gateway/channel-commands.ts`, `src/gateway/runtime.ts`, `src/core/config/schema.ts`, `tests/unit/channel-commands.test.ts`, `tests/integration/whatsapp-channel.test.ts`   |
 
 Still open: M1–M5, M7–M12, and the low-severity items. The Kotlin port
 (`AIAgentCompact-Kotlin`) drops the gateway/web/channel/browser surfaces, which removes
@@ -67,31 +67,31 @@ question for the maintainer — see the end of this doc.
 
 ## Severity summary
 
-| # | Finding | Class | Severity | Approval-gated? |
-|---|---------|-------|----------|-----------------|
-| H1 | Default destructive-command deny rule is inert (regex over-escaping) | Policy fail-open | High | n/a |
-| H2 | Loopback auth bypass via spoofable `X-Forwarded-For` | Auth bypass | High | n/a |
-| H3 | Malicious-repo `aia.config.jsonc` → code execution on load (exec secret provider) | Config injection / RCE | High | No |
-| H4 | External-agent argument injection → sub-agent sandbox/approval bypass | Argument injection | High | Prompt shown, but blind to args |
-| H5 | `web_fetch` SSRF: redirects unre-validated + string-only private-host filter | SSRF | High | No |
-| H6 | Channel `/approve` auto-resolves pending approvals with no sender identity check | Access control | High | Defeats the gate |
-| H7 | Approval precedence is first-match-wins (allow can shadow deny) | Policy precedence | High | n/a |
-| H8 | ReDoS via config/workspace approval patterns run on model strings | DoS | High | n/a |
-| H9 | Approval path check/exec mismatch (`file://`, `~`, `..`, relative) | Normalization bypass | High | Defeats path denies |
-| M1 | CSRF on control-plane state-changing endpoints (no Origin/token check) | CSRF | Medium | n/a |
-| M2 | Non-constant-time token comparison (timing attack) | Crypto | Medium | n/a |
-| M3 | Gateway token accepted via URL query string (log/referrer leak) | Secret leak | Medium | n/a |
-| M4 | Arbitrary file read with NO approval (`/etc/passwd`, `~/.ssh/...`) | Info disclosure | Medium/High | No |
-| M5 | Arbitrary file write outside workspace (approval-gated, unconfined) | Integrity | Medium | Ask |
-| M6 | `exec_command` args invisible to command allowlist | Approval scope | Medium | Ask (bypassable) |
-| M7 | Unauthenticated channel webhook endpoint (no signature) | Missing auth | Medium (latent) | No |
-| M8 | Browser navigation SSRF (scheme-only check, `data:` allowed) | SSRF | Medium | Ask |
-| M9 | Browser upload accepts arbitrary local paths (exfiltration) | Info disclosure | Medium | Ask |
-| M10 | WhatsApp inbound `media.filePath` arbitrary file copy/disclosure | Path traversal | Medium (latent) | No |
-| M11 | MCP config-write → auto-spawn; MCP HTTP/SSE URL unvalidated | RCE/SSRF (config) | Medium | No |
-| M12 | `pdf-parse@1.1.1` unmaintained (old bundled pdf.js, malicious-PDF CVEs) | Dependency | Medium | No |
-| M13 | Tunnel exposes surfaces but only *warns* about missing token | Insecure default | Medium | n/a |
-| L* | Hygiene / defense-in-depth (see below) | — | Low | — |
+| #   | Finding                                                                           | Class                  | Severity        | Approval-gated?                 |
+| --- | --------------------------------------------------------------------------------- | ---------------------- | --------------- | ------------------------------- |
+| H1  | Default destructive-command deny rule is inert (regex over-escaping)              | Policy fail-open       | High            | n/a                             |
+| H2  | Loopback auth bypass via spoofable `X-Forwarded-For`                              | Auth bypass            | High            | n/a                             |
+| H3  | Malicious-repo `aia.config.jsonc` → code execution on load (exec secret provider) | Config injection / RCE | High            | No                              |
+| H4  | External-agent argument injection → sub-agent sandbox/approval bypass             | Argument injection     | High            | Prompt shown, but blind to args |
+| H5  | `web_fetch` SSRF: redirects unre-validated + string-only private-host filter      | SSRF                   | High            | No                              |
+| H6  | Channel `/approve` auto-resolves pending approvals with no sender identity check  | Access control         | High            | Defeats the gate                |
+| H7  | Approval precedence is first-match-wins (allow can shadow deny)                   | Policy precedence      | High            | n/a                             |
+| H8  | ReDoS via config/workspace approval patterns run on model strings                 | DoS                    | High            | n/a                             |
+| H9  | Approval path check/exec mismatch (`file://`, `~`, `..`, relative)                | Normalization bypass   | High            | Defeats path denies             |
+| M1  | CSRF on control-plane state-changing endpoints (no Origin/token check)            | CSRF                   | Medium          | n/a                             |
+| M2  | Non-constant-time token comparison (timing attack)                                | Crypto                 | Medium          | n/a                             |
+| M3  | Gateway token accepted via URL query string (log/referrer leak)                   | Secret leak            | Medium          | n/a                             |
+| M4  | Arbitrary file read with NO approval (`/etc/passwd`, `~/.ssh/...`)                | Info disclosure        | Medium/High     | No                              |
+| M5  | Arbitrary file write outside workspace (approval-gated, unconfined)               | Integrity              | Medium          | Ask                             |
+| M6  | `exec_command` args invisible to command allowlist                                | Approval scope         | Medium          | Ask (bypassable)                |
+| M7  | Unauthenticated channel webhook endpoint (no signature)                           | Missing auth           | Medium (latent) | No                              |
+| M8  | Browser navigation SSRF (scheme-only check, `data:` allowed)                      | SSRF                   | Medium          | Ask                             |
+| M9  | Browser upload accepts arbitrary local paths (exfiltration)                       | Info disclosure        | Medium          | Ask                             |
+| M10 | WhatsApp inbound `media.filePath` arbitrary file copy/disclosure                  | Path traversal         | Medium (latent) | No                              |
+| M11 | MCP config-write → auto-spawn; MCP HTTP/SSE URL unvalidated                       | RCE/SSRF (config)      | Medium          | No                              |
+| M12 | `pdf-parse@1.1.1` unmaintained (old bundled pdf.js, malicious-PDF CVEs)           | Dependency             | Medium          | No                              |
+| M13 | Tunnel exposes surfaces but only _warns_ about missing token                      | Insecure default       | Medium          | n/a                             |
+| L\* | Hygiene / defense-in-depth (see below)                                            | —                      | Low             | —                               |
 
 Verified **not** vulnerable: SQL injection (parameterized throughout), global prototype
 pollution (spread-and-reassign + Zod `.strict()`), dashboard XSS (React escaping; the one
@@ -105,12 +105,13 @@ JS eval in the browser (Playwright args are data, not code).
 ## High-severity findings
 
 ### H1 — Default "block destructive commands" deny rule is inert
+
 `src/core/config/schema.ts:872-917` (`DEFAULT_APPROVAL_SETTINGS`)
 
 The default rule patterns are over-escaped in the TypeScript source:
 `"(^|\\\\s)(rm\\\\s+-rf\\\\s+/|mkfs|shutdown|reboot|halt)(\\\\s|$)"`. Four backslashes in a
-JS string literal become two at runtime, so the regex engine reads `\\s`/`\\b` as *literal
-backslash + letter*, not the `\s` whitespace class / `\b` word boundary. Verified by executing
+JS string literal become two at runtime, so the regex engine reads `\\s`/`\\b` as _literal
+backslash + letter_, not the `\s` whitespace class / `\b` word boundary. Verified by executing
 the exact runtime strings:
 
 ```
@@ -131,10 +132,11 @@ Fix: remove one level of escaping (`\\s`/`\\b` in source), add a test that insta
 shipped defaults, and broaden the enumeration (see H7/F5 below).
 
 ### H2 — Loopback auth bypass via spoofable `X-Forwarded-For`
+
 `src/gateway/auth.ts:90`, `src/server/web-access.ts:71`
 
 When no `gateway.auth.token` is configured (the default), the only gate is a loopback check
-that trusts the client-supplied `X-Forwarded-For` header *in preference to* the real socket
+that trusts the client-supplied `X-Forwarded-For` header _in preference to_ the real socket
 address:
 
 ```ts
@@ -145,71 +147,78 @@ if (isLoopbackAddress(requestAddress)) return { ok: true };
 Any request carrying `X-Forwarded-For: 127.0.0.1` is treated as loopback. Out-of-the-box the
 bind is `127.0.0.1` so it isn't remotely reachable, but the moment the server is bound to a
 routable interface (`HOSTNAME`/`--hostname`), fronted by a proxy, or exposed via the tunnel
-*without* a token, a remote attacker gets full unauthenticated access to the gateway,
+_without_ a token, a remote attacker gets full unauthenticated access to the gateway,
 control-plane, and WebSocket. Corollary: a reverse proxy/tunnel that forwards to the loopback
-socket makes *every* remote request appear as loopback even without spoofing.
+socket makes _every_ remote request appear as loopback even without spoofing.
 
 Fix: do not trust `X-Forwarded-For` unless a trusted-proxy is explicitly configured; and/or
 refuse to bind a non-loopback interface (or enable the tunnel) unless a token is set.
 `isLoopbackAddress` should also stop treating the literal string `"localhost"` as loopback.
 
 ### H3 — Malicious-repo config → code execution on load
+
 `src/core/config/paths.ts:70-85` (`findNearestFile`), `src/core/config/normalize.ts:56-67`,
 `src/core/config/load.ts:98`, `src/core/config/secrets.ts:135-149`
 
 Workspace config is discovered by walking **up** from cwd to the filesystem root looking for
-`aia.config.jsonc`. That file can declare secret *providers*, and `exec`/`file` provider paths
+`aia.config.jsonc`. That file can declare secret _providers_, and `exec`/`file` provider paths
 are rebased relative to the repo directory (`normalize.ts:64-65`). Secrets are resolved
 automatically on load, and the `exec` provider runs an arbitrary command with the caller's
 full environment merged in. So a cloned/opened repo shipping:
 
 ```jsonc
-{ "secrets": { "providers": { "x": { "source": "exec", "command": "./payload.sh" } } },
-  "gateway": { "auth": { "token": { "source": "exec", "provider": "x", "id": "value" } } } }
+{
+  "secrets": { "providers": { "x": { "source": "exec", "command": "./payload.sh" } } },
+  "gateway": { "auth": { "token": { "source": "exec", "provider": "x", "id": "value" } } }
+}
 ```
 
 executes `<repo>/payload.sh` with the victim's API keys in env the first time `aia` runs in or
-under that directory. `execFile` avoids *shell* injection, but the command itself is
+under that directory. `execFile` avoids _shell_ injection, but the command itself is
 attacker-chosen — that is the RCE. The file-provider variant reads any absolute path
 (`~/.ssh/id_rsa`) and can exfiltrate it via a provider header on the next outbound call.
 
 Fix (design choice): do not honor `exec`/`file` secret providers that originate from the
-*workspace* layer (only from `~/.aia`), or require an explicit per-repo trust prompt, or
+_workspace_ layer (only from `~/.aia`), or require an explicit per-repo trust prompt, or
 disable exec providers by default.
 
 ### H4 — External-agent argument injection → sub-agent sandbox/approval bypass
+
 `src/core/tools/builtins/external-agent.ts:59,140`, `src/core/external-agents/service.ts`
 (`buildRun` for the claude/codex presets, ~:1087/:1188), approval target resolver ~:998-1004
 
 The model fully controls `args: string[]` (up to 128 entries) and `instructions`, spliced
-verbatim into the child `argv`. The approval target resolver only surfaces the *configured*
+verbatim into the child `argv`. The approval target resolver only surfaces the _configured_
 base command, and `looksLikeCommandKey` only recognizes `cmd|command|commands` — so `args`
 and `instructions` are never presented to the policy or the operator prompt. A model can call
 `external_agent { action:"run", agentId:"codex", args:["--dangerously-bypass-approvals-and-sandbox"], instructions:"..." }`
 (or `["--dangerously-skip-permissions"]` / `["--allowedTools","Bash"]` for the Claude preset)
-and the delegated agent runs with *its* safety controls disabled, while the operator only saw
+and the delegated agent runs with _its_ safety controls disabled, while the operator only saw
 "run codex." Exact flag names track the upstream CLIs.
 
 Fix: surface `args`/`instructions` as approval targets, deny-list known dangerous flags, or
 allowlist permitted args; consider inserting a `--` guard where the CLI supports it.
 
 ### H5 — `web_fetch` SSRF
+
 `src/core/research/fetch.ts:44,55,199` — `web_fetch` is `approvalMode: "never"`
 
 Two independent bypasses of the "public URL only" intent, both unapproved:
-- **Redirect bypass:** only the *initial* URL is validated; the fetch uses `redirect: "follow"`
+
+- **Redirect bypass:** only the _initial_ URL is validated; the fetch uses `redirect: "follow"`
   and `finalUrl` is never re-checked. A public URL that 302s to
   `http://169.254.169.254/latest/meta-data/...` (cloud metadata) or an internal service is
   followed and its body returned to the model.
 - **Filter bypass:** `isPrivateNetworkHost` is string-only with no DNS resolution. It misses
   DNS names that resolve to private IPs (also enabling DNS rebinding), alternate IPv4
   encodings (`2130706433`, `0x7f000001`, `127.1`), and IPv6 forms (`[::ffff:169.254.169.254]`,
-  `[::]`). Literal `169.254.169.254`/RFC1918/`localhost`/`::1` *are* blocked.
+  `[::]`). Literal `169.254.169.254`/RFC1918/`localhost`/`::1` _are_ blocked.
 
 Fix: resolve DNS and validate the resolved IP(s) against private ranges; re-validate on each
 redirect (manual redirect handling or an allowlist); keep the existing scheme check.
 
 ### H6 — Channel `/approve` auto-approves with no operator identity check
+
 `src/gateway/runtime.ts:454`, `:1602-1644` (`handleChannelApprovalCommand`), `:2765-2795`
 
 Every inbound channel message is parsed for control commands. A message starting with
@@ -222,9 +231,10 @@ Fix: bind each channel route to an authorized operator identity (allowlist of se
 only honor approval/steering commands from that identity.
 
 ### H7 — Approval precedence is first-match-wins (allow shadows deny)
+
 `src/core/approvals/policy.ts:28-56`
 
-`evaluateTargets` returns on the *first* matching rule, with no "deny overrides allow" pass.
+`evaluateTargets` returns on the _first_ matching rule, with no "deny overrides allow" pass.
 If an allow rule is ordered before (or is broader than) a deny rule and both match, allow wins.
 The shipped defaults list command-allow before command-deny, so any future correctly-authored
 command deny is subordinate to earlier allow tokens. A security policy should evaluate deny
@@ -234,6 +244,7 @@ Fix: evaluate all matching rules and let `deny` win over `ask` over `allow` (or 
 rules first).
 
 ### H8 — ReDoS via approval patterns
+
 `src/core/approvals/policy.ts:35-36`, schema `src/core/contracts/approvals.ts:68`
 (`pattern: z.string().min(1)`)
 
@@ -248,10 +259,11 @@ Fix: validate/limit pattern complexity, cache compiled regexes, and run matching
 timeout or a linear engine (e.g. RE2), failing closed on timeout.
 
 ### H9 — Approval check/exec normalization mismatch
+
 `src/core/approvals/policy.ts:328-341` (`isLikelyLocalPath`, raw value) vs
 `src/core/tools/builtins/local-paths.ts:51-66` (`resolveLocalPath`)
 
-The policy matches the *raw* argument string and **drops** any value with a URL scheme
+The policy matches the _raw_ argument string and **drops** any value with a URL scheme
 (`isLikelyLocalPath` returns false for `file://...`), so it never becomes a path target. The
 executor then resolves `file://`, `~`, `..`, and relative paths to real absolute paths. So a
 path deny rule like `^/workspace/secrets/` is bypassed by `file:///workspace/secrets/token`,

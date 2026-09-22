@@ -17,10 +17,7 @@ import { createBrowserTools } from "@/core/tools/builtins/browser";
 import { createChannelSendTool } from "@/core/tools/builtins/channel-send";
 import { CommandRuntime } from "@/core/tools/builtins/command-runtime";
 import { createCommandTools } from "@/core/tools/builtins/commands";
-import {
-  createExternalAgentTool,
-  type ExternalAgentSessionHost
-} from "@/core/tools/builtins/external-agent";
+import { createExternalAgentTool, type ExternalAgentSessionHost } from "@/core/tools/builtins/external-agent";
 import { createImageGenerateTool } from "@/core/tools/builtins/image";
 import { createMemoryGetTool } from "@/core/tools/builtins/memory-get";
 import { createMemoryIndexTool } from "@/core/tools/builtins/memory-index";
@@ -42,10 +39,7 @@ import { createVoiceTools } from "@/core/tools/builtins/voice";
 import { createWebFetchTool } from "@/core/tools/builtins/web-fetch";
 import { createWebSearchTool } from "@/core/tools/builtins/web-search";
 import { createWorkspaceTools } from "@/core/tools/builtins/workspace";
-import {
-  combineToolRegistries,
-  ToolRegistryBuilder
-} from "@/core/tools/registry";
+import { combineToolRegistries, ToolRegistryBuilder } from "@/core/tools/registry";
 import { ToolRuntime } from "@/core/tools/runtime";
 import type { ChannelService } from "@/core/channels";
 import type { FileBackedMemoryService } from "@/core/memory";
@@ -104,11 +98,7 @@ export function resolveVisibleToolDefinitions(params: {
     ...params.toolsConfig.include,
     ...(params.alwaysInclude ?? [])
   ]);
-  return all.filter(
-    (definition) =>
-      allowed.has(definition.invocationName) &&
-      !excluded.has(definition.invocationName)
-  );
+  return all.filter((definition) => allowed.has(definition.invocationName) && !excluded.has(definition.invocationName));
 }
 
 export function createDefaultToolRegistry(
@@ -241,9 +231,7 @@ export function createDefaultToolRegistry(
   }
 
   if (options.channelService) {
-    builder.register(
-      createChannelSendTool({ channelService: options.channelService })
-    );
+    builder.register(createChannelSendTool({ channelService: options.channelService }));
   }
 
   if (options.voiceService) {

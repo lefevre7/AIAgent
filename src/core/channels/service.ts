@@ -94,7 +94,9 @@ export class ChannelService {
   }): Promise<ChannelRoute> {
     const identity = channelIdentitySchema.parse(input.identity);
     const routesState = await this.readRoutesState();
-    const existing = routesState.routes.find((route) => this.identityKey(route.identity) === this.identityKey(identity));
+    const existing = routesState.routes.find(
+      (route) => this.identityKey(route.identity) === this.identityKey(identity)
+    );
     const now = new Date().toISOString();
 
     const route = channelRouteSchema.parse(
@@ -132,9 +134,7 @@ export class ChannelService {
 
   async getRouteForIdentity(identity: ChannelIdentity): Promise<ChannelRoute | null> {
     const routesState = await this.readRoutesState();
-    return (
-      routesState.routes.find((route) => this.identityKey(route.identity) === this.identityKey(identity)) ?? null
-    );
+    return routesState.routes.find((route) => this.identityKey(route.identity) === this.identityKey(identity)) ?? null;
   }
 
   async getRouteForSession(sessionId: string): Promise<ChannelRoute | null> {
@@ -193,11 +193,13 @@ export class ChannelService {
     );
   }
 
-  async listDeliveries(query: {
-    channel?: ChannelKind;
-    limit?: number;
-    sessionId?: string;
-  } = {}): Promise<ChannelDeliveryRecord[]> {
+  async listDeliveries(
+    query: {
+      channel?: ChannelKind;
+      limit?: number;
+      sessionId?: string;
+    } = {}
+  ): Promise<ChannelDeliveryRecord[]> {
     const deliveries: ChannelDeliveryRecord[] = await this.readLatestJsonLines(
       this.deliveriesFile(),
       channelDeliveryRecordSchema
@@ -278,9 +280,7 @@ export class ChannelService {
 
   async recordInboundMessage(message: ChannelMessage): Promise<ChannelMessage> {
     const adapter = this.adaptersByChannel.get(message.identity.channel);
-    const normalized = channelMessageSchema.parse(
-      adapter ? await adapter.normalizeInboundMessage(message) : message
-    );
+    const normalized = channelMessageSchema.parse(adapter ? await adapter.normalizeInboundMessage(message) : message);
     const route = await this.getRouteForIdentity(normalized.identity);
     const recordedMessage = channelMessageSchema.parse({
       ...normalized,
@@ -318,7 +318,9 @@ export class ChannelService {
   async send(input: ChannelSendRequest): Promise<ChannelMessage> {
     const request = channelSendRequestSchema.parse(input);
     const channel = request.identity.channel;
-    const route = request.sessionId ? await this.getRouteForSession(request.sessionId) : await this.getRouteForIdentity(request.identity);
+    const route = request.sessionId
+      ? await this.getRouteForSession(request.sessionId)
+      : await this.getRouteForIdentity(request.identity);
     const now = new Date().toISOString();
     const message = channelMessageSchema.parse({
       attachments: request.attachments,
@@ -520,7 +522,10 @@ export class ChannelService {
     try {
       const raw = await fs.readFile(filePath, "utf8");
       const latestById = new Map<string, z.output<TSchema>>();
-      for (const line of raw.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
+      for (const line of raw
+        .split("\n")
+        .map((entry) => entry.trim())
+        .filter(Boolean)) {
         const parsed = schema.parse(JSON.parse(line) as unknown);
         if (typeof parsed === "object" && parsed !== null && "id" in parsed && typeof parsed.id === "string") {
           latestById.set(parsed.id, parsed);
@@ -610,13 +615,7 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 function normalizeStructuredError(error: unknown, fallbackMessage: string): StructuredError {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    "message" in error &&
-    "retriable" in error
-  ) {
+  if (typeof error === "object" && error !== null && "code" in error && "message" in error && "retriable" in error) {
     return structuredErrorSchema.parse(error);
   }
 

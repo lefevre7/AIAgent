@@ -137,10 +137,7 @@ export function isAuthorizedChannelOperator(identity: ChannelIdentity, operatorI
     return false;
   }
 
-  const candidates = new Set([
-    identity.userId.toLowerCase(),
-    `${identity.channel}:${identity.userId}`.toLowerCase()
-  ]);
+  const candidates = new Set([identity.userId.toLowerCase(), `${identity.channel}:${identity.userId}`.toLowerCase()]);
 
   return operatorIdentities.some((entry) => candidates.has(entry.trim().toLowerCase()));
 }

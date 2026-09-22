@@ -128,13 +128,21 @@ describe("lm shared transforms", () => {
       "fallback",
       [
         thinkToolDefinition,
-        { ...thinkToolDefinition, execution: { ...thinkToolDefinition.execution, inputMode: "either" }, invocationName: "either_tool" }
+        {
+          ...thinkToolDefinition,
+          execution: { ...thinkToolDefinition.execution, inputMode: "either" },
+          invocationName: "either_tool"
+        }
       ]
     );
 
     expect(normalized.proposals).toHaveLength(2);
     expect(normalized.proposals[0]).toMatchObject({ arguments: { thought: "x" }, callId: "call-1", toolName: "think" });
-    expect(normalized.proposals[1]).toMatchObject({ arguments: { a: 1 }, inputText: "free text", toolName: "either_tool" });
+    expect(normalized.proposals[1]).toMatchObject({
+      arguments: { a: 1 },
+      inputText: "free text",
+      toolName: "either_tool"
+    });
     expect(normalized.rejected).toHaveLength(2);
   });
 

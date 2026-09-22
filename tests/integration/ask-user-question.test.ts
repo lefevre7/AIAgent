@@ -98,7 +98,9 @@ describe("ask_user_question end-to-end through the gateway runtime", () => {
           buildScriptedResponse({
             request,
             text: "Using REST as requested; the task is complete.",
-            toolCalls: [buildToolCall("attempt_complete", { summary: "Implemented the REST design per the operator's answer." })]
+            toolCalls: [
+              buildToolCall("attempt_complete", { summary: "Implemented the REST design per the operator's answer." })
+            ]
           })
       ]
     });
@@ -168,7 +170,9 @@ describe("denied approval resume through the gateway runtime", () => {
           buildScriptedResponse({
             request,
             text: "Understood — I will not deploy without an answer; stopping here.",
-            toolCalls: [buildToolCall("attempt_complete", { summary: "Halted because the operator declined to choose a target." })]
+            toolCalls: [
+              buildToolCall("attempt_complete", { summary: "Halted because the operator declined to choose a target." })
+            ]
           })
       ]
     });

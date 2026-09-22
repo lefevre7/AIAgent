@@ -113,7 +113,10 @@ function parseSkillFile(content: string, fallbackName: string): { description: s
           continue;
         }
         const key = line.slice(0, separator).trim().toLowerCase();
-        const value = line.slice(separator + 1).trim().replace(/^["']|["']$/g, "");
+        const value = line
+          .slice(separator + 1)
+          .trim()
+          .replace(/^["']|["']$/g, "");
         if (key === "name" && value) {
           name = value;
         }

@@ -129,11 +129,7 @@ export class CommandRuntime {
     }
   }
 
-  async runShellCommand(params: {
-    command: string;
-    cwd?: string;
-    timeoutMs?: number;
-  }): Promise<ShellCommandRunResult> {
+  async runShellCommand(params: { command: string; cwd?: string; timeoutMs?: number }): Promise<ShellCommandRunResult> {
     const cwd = resolveLocalPath(params.cwd ?? this.options.baseDirectory, this.options.baseDirectory);
     const id = `command.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`;
     const attemptRoot = this.commandRoot(id);
@@ -245,11 +241,7 @@ export class CommandRuntime {
     return startedSession.record;
   }
 
-  async writeStdin(params: {
-    sessionId: string;
-    submit?: boolean;
-    text: string;
-  }): Promise<CommandSessionRecord> {
+  async writeStdin(params: { sessionId: string; submit?: boolean; text: string }): Promise<CommandSessionRecord> {
     const session = this.requireRunningSession(params.sessionId);
     session.handle.write(params.text, params.submit);
     session.record = {
@@ -260,10 +252,7 @@ export class CommandRuntime {
     return session.record;
   }
 
-  async waitForCommand(params: {
-    sessionId: string;
-    timeoutMs?: number;
-  }): Promise<{
+  async waitForCommand(params: { sessionId: string; timeoutMs?: number }): Promise<{
     record: CommandSessionRecord;
     timedOut: boolean;
   }> {
@@ -299,11 +288,7 @@ export class CommandRuntime {
     };
   }
 
-  async killCommand(params: {
-    sessionId: string;
-    signal?: string;
-    timeoutMs?: number;
-  }): Promise<{
+  async killCommand(params: { sessionId: string; signal?: string; timeoutMs?: number }): Promise<{
     record: CommandSessionRecord;
     timedOut: boolean;
   }> {
@@ -316,9 +301,11 @@ export class CommandRuntime {
     });
   }
 
-  async listCommandSessions(params: {
-    limit?: number;
-  } = {}): Promise<CommandSessionRecord[]> {
+  async listCommandSessions(
+    params: {
+      limit?: number;
+    } = {}
+  ): Promise<CommandSessionRecord[]> {
     const stored = await this.readStoredRecords();
     const next = new Map(stored.map((record) => [record.id, record]));
 
@@ -347,9 +334,7 @@ export class CommandRuntime {
 
     const raw = await fs.readFile(targetPath, "utf8");
     if (params.query) {
-      const matches = raw
-        .split(/\r?\n/u)
-        .filter((line) => line.toLowerCase().includes(params.query!.toLowerCase()));
+      const matches = raw.split(/\r?\n/u).filter((line) => line.toLowerCase().includes(params.query!.toLowerCase()));
 
       return {
         artifact: await createArtifactReferenceFromFile(targetPath, "log", {

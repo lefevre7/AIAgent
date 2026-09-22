@@ -95,6 +95,7 @@ export const mcpReadResourceToolDefinition: ToolDefinition = {
   },
   streamingMode: "none",
   toolId: "tool.builtin.mcp_read_resource",
-  usageGuidance: "Use this for exact MCP resource URIs. If you only know a template, search first and then instantiate the template.",
+  usageGuidance:
+    "Use this for exact MCP resource URIs. If you only know a template, search first and then instantiate the template.",
   version: "1.0.0"
 };

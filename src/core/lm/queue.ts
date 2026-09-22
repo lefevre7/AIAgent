@@ -215,7 +215,9 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
         try {
           const sink = this.deltaSinks.get(claimedJob.id);
           const response =
-            sink && adapter.stream ? await this.streamJob(adapter, claimedJob.request, sink) : await adapter.generate(claimedJob.request);
+            sink && adapter.stream
+              ? await this.streamJob(adapter, claimedJob.request, sink)
+              : await adapter.generate(claimedJob.request);
           finalizedJob = languageModelQueueJobSchema.parse({
             ...claimedJob,
             completedAt: new Date().toISOString(),

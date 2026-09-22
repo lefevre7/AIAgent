@@ -5,7 +5,11 @@ import next from "next";
 
 import { assertGatewayExposureIsAuthenticated, attachGatewayWebSocketServer } from "@/gateway";
 import { ControlPlaneService } from "@/server/control-plane/service";
-import { closeServerRuntimeContext, createServerRuntimeContext, primeServerRuntimeContext } from "@/server/runtime-context";
+import {
+  closeServerRuntimeContext,
+  createServerRuntimeContext,
+  primeServerRuntimeContext
+} from "@/server/runtime-context";
 import { createHttpApp } from "@/server/create-http-app";
 import { resolveServerRuntimeConfig } from "@/server/env";
 
@@ -101,8 +105,7 @@ export async function startServer(argv: string[] = process.argv.slice(2)) {
 }
 
 const isDirectExecution =
-  process.argv[1] !== undefined &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href;
+  process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 
 if (isDirectExecution) {
   // A refusal to start (an exposed gateway with no token) is a deliberate

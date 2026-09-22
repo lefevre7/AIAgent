@@ -193,9 +193,13 @@ export class ComfyUIImageGenerationAdapter implements ImageGenerationAdapter {
 
     const generatedImages = extractGeneratedImages(history);
     if (generatedImages.length === 0) {
-      throw createImageError("image_generation_no_outputs", "ComfyUI completed the request but did not report any images.", {
-        promptId
-      });
+      throw createImageError(
+        "image_generation_no_outputs",
+        "ComfyUI completed the request but did not report any images.",
+        {
+          promptId
+        }
+      );
     }
 
     const images = await Promise.all(
@@ -355,13 +359,13 @@ export class ComfyUIImageGenerationAdapter implements ImageGenerationAdapter {
     const parameters = structuredClone(request.parameters);
     const sourceSize =
       parameters.sourceImage !== undefined
-        ? probeImageSizeMetadata(parameters.sourceImage) ??
-          (await probeImageFile(imageArtifactPathFromArtifact(parameters.sourceImage)))
+        ? (probeImageSizeMetadata(parameters.sourceImage) ??
+          (await probeImageFile(imageArtifactPathFromArtifact(parameters.sourceImage))))
         : null;
     const maskSize =
       parameters.maskImage !== undefined
-        ? probeImageSizeMetadata(parameters.maskImage) ??
-          (await probeImageFile(imageArtifactPathFromArtifact(parameters.maskImage)))
+        ? (probeImageSizeMetadata(parameters.maskImage) ??
+          (await probeImageFile(imageArtifactPathFromArtifact(parameters.maskImage))))
         : null;
 
     if (sourceSize && maskSize && (sourceSize.width !== maskSize.width || sourceSize.height !== maskSize.height)) {
@@ -391,14 +395,12 @@ export class ComfyUIImageGenerationAdapter implements ImageGenerationAdapter {
       sampler: parameters.sampler ?? DEFAULT_SAMPLER,
       scheduler: parameters.scheduler ?? DEFAULT_SCHEDULER,
       seed: parameters.seed ?? Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-      size:
-        parameters.size ??
+      size: parameters.size ??
         sourceSize ?? {
           ...DEFAULT_IMAGE_SIZE
         },
       steps: parameters.steps ?? DEFAULT_STEPS,
-      strength:
-        parameters.mode === "text_to_image" ? undefined : parameters.strength ?? DEFAULT_STRENGTH
+      strength: parameters.mode === "text_to_image" ? undefined : (parameters.strength ?? DEFAULT_STRENGTH)
     };
   }
 
@@ -592,9 +594,7 @@ function buildOutputFileName(index: number, backendFileName: string): string {
 
 function extractGeneratedImages(history: Record<string, JsonValue>): GeneratedImageDescriptor[] {
   const outputs: Record<string, unknown> =
-    typeof history.outputs === "object" && history.outputs !== null
-      ? (history.outputs as Record<string, unknown>)
-      : {};
+    typeof history.outputs === "object" && history.outputs !== null ? (history.outputs as Record<string, unknown>) : {};
   const images: GeneratedImageDescriptor[] = [];
 
   for (const [nodeId, nodeOutput] of Object.entries(outputs)) {
@@ -621,14 +621,8 @@ function extractGeneratedImages(history: Record<string, JsonValue>): GeneratedIm
       const descriptor: GeneratedImageDescriptor = {
         filename: filenameValue,
         nodeId,
-        subfolder:
-          typeof candidateRecord.subfolder === "string"
-            ? candidateRecord.subfolder
-            : undefined,
-        type:
-          typeof candidateRecord.type === "string"
-            ? candidateRecord.type
-            : undefined
+        subfolder: typeof candidateRecord.subfolder === "string" ? candidateRecord.subfolder : undefined,
+        type: typeof candidateRecord.type === "string" ? candidateRecord.type : undefined
       };
       images.push(descriptor);
     }

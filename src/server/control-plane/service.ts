@@ -182,7 +182,7 @@ export class ControlPlaneService {
     goal: string;
     initialMessage?: string;
     title: string;
-  }): Promise<z.infer<typeof gatewayResponsePayloadSchemas["session.create"]>> {
+  }): Promise<z.infer<(typeof gatewayResponsePayloadSchemas)["session.create"]>> {
     return this.dispatch("session.create", {
       cwd: input.cwd,
       goal: input.goal,
@@ -248,10 +248,7 @@ export class ControlPlaneService {
     });
   }
 
-  async getMemory(query: {
-    sessionId?: string;
-    text?: string;
-  }): Promise<ControlPlaneMemorySummary> {
+  async getMemory(query: { sessionId?: string; text?: string }): Promise<ControlPlaneMemorySummary> {
     const status = await this.context.gatewayRuntime.getMemoryStatus();
     const text = query.text?.trim();
 
@@ -352,10 +349,7 @@ export class ControlPlaneService {
     };
   }
 
-  async injectSteering(input: {
-    message: string;
-    sessionId: string;
-  }): Promise<SteeringInjection> {
+  async injectSteering(input: { message: string; sessionId: string }): Promise<SteeringInjection> {
     return this.dispatch("steering.inject", {
       createdAt: new Date().toISOString(),
       id: `steering.web.${crypto.randomUUID()}`,
@@ -386,7 +380,7 @@ export class ControlPlaneService {
     comment?: string;
     decision: "approved" | "cancelled" | "denied" | "expired";
     requestId: string;
-  }): Promise<z.infer<typeof gatewayResponsePayloadSchemas["approval.resolve"]>> {
+  }): Promise<z.infer<(typeof gatewayResponsePayloadSchemas)["approval.resolve"]>> {
     return this.dispatch("approval.resolve", {
       actor: "web",
       comment: input.comment,
@@ -398,7 +392,7 @@ export class ControlPlaneService {
   async sendSessionMessage(input: {
     sessionId: string;
     text: string;
-  }): Promise<z.infer<typeof gatewayResponsePayloadSchemas["session.message"]>> {
+  }): Promise<z.infer<(typeof gatewayResponsePayloadSchemas)["session.message"]>> {
     return this.dispatch("session.message", {
       metadata: {
         surface: "web_control_plane"

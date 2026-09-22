@@ -115,12 +115,13 @@ Long-lived external-agent terminals are driven through:
 - `external_agent.session.write` — relays one raw keystroke from an attached human terminal
 
 `write` is deliberately separate from `send`: a human's bytes are not a turn. They are not
-summarized, not counted, and they soft-lock *agent* writes rather than being blocked by that
+summarized, not counted, and they soft-lock _agent_ writes rather than being blocked by that
 lock. `aia attach <id>` is a thin client over these topics plus the `tool.output.delta` stream,
 so an attached window inherits gateway auth and works over a tunnel. See
 [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md).
 
 ### Approvals
+
 The gateway exposes:
 
 - `approval.get`
@@ -158,7 +159,7 @@ Live-only (never persisted) topics: `message.delta`, `message.reasoning` deltas,
 - `tool.output.delta` carries a raw chunk of a running process's output
   (`{ chunk, sessionId?, sourceId, sourceKind, stream }`). It is unpersisted because the
   process's combined log on disk is the durable copy; persisting per-chunk events would
-  bloat the log without adding information. `sessionId` is the *agent* session that owns
+  bloat the log without adding information. `sessionId` is the _agent_ session that owns
   the process, so session-filtered subscribers only see their own output. `sourceKind` is
   `command` for `exec_command` processes and `external_agent` for interactive external-agent
   sessions; `sourceId` is the command id or external session id respectively.

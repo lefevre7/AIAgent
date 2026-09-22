@@ -166,7 +166,10 @@ describe("file-backed memory service", () => {
     });
 
     const sessionSummary = await fs.readFile(path.join(chatSessionRoot, `${session.id}.md`), "utf8");
-    const compactionHistory = await fs.readFile(path.join(stateRoot, "memory", "compactions", `${session.id}.jsonl`), "utf8");
+    const compactionHistory = await fs.readFile(
+      path.join(stateRoot, "memory", "compactions", `${session.id}.jsonl`),
+      "utf8"
+    );
     const promptContext = await memory.getPromptContext(session.id);
 
     expect(sessionSummary).toContain("Session Summary");
@@ -195,7 +198,10 @@ describe("file-backed memory service", () => {
     expect(manual.summary).toContain("Session Summary");
     expect(manual.summaryPath).toBe(path.join(chatSessionRoot, `${session.id}.md`));
     expect(manual.sourceTokenCount).toBeGreaterThan(0);
-    const historyAfterManual = await fs.readFile(path.join(stateRoot, "memory", "compactions", `${session.id}.jsonl`), "utf8");
+    const historyAfterManual = await fs.readFile(
+      path.join(stateRoot, "memory", "compactions", `${session.id}.jsonl`),
+      "utf8"
+    );
     expect(historyAfterManual).toContain('"phase":"manual"');
     expect((await memory.getMemoryStatus()).lastCompaction?.trigger).toBe("manual");
 

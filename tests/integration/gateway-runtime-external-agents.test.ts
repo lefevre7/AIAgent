@@ -20,7 +20,9 @@ const closers: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   await Promise.all(closers.splice(0).map((close) => close().catch(() => undefined)));
-  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 50 })));
+  await Promise.all(
+    tempRoots.splice(0).map((root) => fs.rm(root, { force: true, maxRetries: 5, recursive: true, retryDelay: 50 }))
+  );
 });
 
 async function buildRuntime(options: { withExternalAgents: boolean }) {
@@ -31,7 +33,10 @@ async function buildRuntime(options: { withExternalAgents: boolean }) {
   const sessions = new FileSessionStore(config.memory.stateRoot);
 
   const externalAgentService = options.withExternalAgents
-    ? new FileExternalAgentService({ agents: { codex: createMockCodexConfig() }, stateRoot: path.join(root, ".aia", "external-agents") })
+    ? new FileExternalAgentService({
+        agents: { codex: createMockCodexConfig() },
+        stateRoot: path.join(root, ".aia", "external-agents")
+      })
     : undefined;
 
   const runtime = new GatewayRuntime({
@@ -46,7 +51,11 @@ async function buildRuntime(options: { withExternalAgents: boolean }) {
       registerEmbeddingAdapter: () => undefined,
       setDefaultEmbeddingProvider: () => undefined
     },
-    modelRuntime: { generate: async () => ({}), health: async () => ({ status: "healthy" }), registerAdapter: () => undefined },
+    modelRuntime: {
+      generate: async () => ({}),
+      health: async () => ({ status: "healthy" }),
+      registerAdapter: () => undefined
+    },
     sessions,
     taskStateService: { getTaskState: async () => null },
     toolRuntime: createDefaultToolRuntime({}),
@@ -73,7 +82,9 @@ describe("gateway external-agent dispatch", () => {
 
     const list = await runtime.request(gwRequest("external_agent.list", {}));
     expect(list.ok).toBe(true);
-    expect((list.payload as { definitions: Array<{ id: string }> }).definitions.some((d) => d.id === "codex")).toBe(true);
+    expect((list.payload as { definitions: Array<{ id: string }> }).definitions.some((d) => d.id === "codex")).toBe(
+      true
+    );
 
     const jobId = "external-agent.codex.gw.1";
     const run = await runtime.request(
@@ -93,7 +104,9 @@ describe("gateway external-agent dispatch", () => {
     const got = await runtime.request(gwRequest("external_agent.get", { jobId }));
     expect((got.payload as { id: string }).id).toBe(jobId);
 
-    const resumed = await runtime.request(gwRequest("external_agent.resume", { instructions: "second pass", jobId, mode: "blocking" }));
+    const resumed = await runtime.request(
+      gwRequest("external_agent.resume", { instructions: "second pass", jobId, mode: "blocking" })
+    );
     expect((resumed.payload as { status: string }).status).toBe("succeeded");
 
     const cancelled = await runtime.request(gwRequest("external_agent.cancel", { jobId }));

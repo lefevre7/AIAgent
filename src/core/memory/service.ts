@@ -313,7 +313,8 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
           const score = entry.confidence * 50 + entry.recencyScore * 25 + occurrences * 25;
           return {
             entry,
-            explanation: occurrences > 0 ? "Matched lexical memory content." : "Returned as a confidence/recency fallback.",
+            explanation:
+              occurrences > 0 ? "Matched lexical memory content." : "Returned as a confidence/recency fallback.",
             score
           };
         })
@@ -365,11 +366,7 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
     this.retrievalEngine?.markDirty();
   }
 
-  async getMemoryFile(params: {
-    lineCount?: number;
-    path: string;
-    startLine?: number;
-  }): Promise<{
+  async getMemoryFile(params: { lineCount?: number; path: string; startLine?: number }): Promise<{
     content: string;
     endLine: number;
     missing: boolean;
@@ -791,7 +788,8 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
       if (normalizedPath !== source.displayPrefix && !normalizedPath.startsWith(`${source.displayPrefix}/`)) {
         continue;
       }
-      const relativeWithinSource = normalizedPath === source.displayPrefix ? "" : normalizedPath.slice(source.displayPrefix.length + 1);
+      const relativeWithinSource =
+        normalizedPath === source.displayPrefix ? "" : normalizedPath.slice(source.displayPrefix.length + 1);
       if (relativeWithinSource.length === 0) {
         throw new Error(`Memory path "${relativeFilePath}" points to a directory. Use a Markdown file path instead.`);
       }
@@ -880,7 +878,10 @@ function buildSessionSummary(
   const readLatestText = (messages: SessionSnapshot["messages"]): string | undefined =>
     messages
       .flatMap((message) => message.parts)
-      .filter((part): part is Extract<(typeof assistantMessages)[number]["parts"][number], { kind: "text" }> => part.kind === "text")
+      .filter(
+        (part): part is Extract<(typeof assistantMessages)[number]["parts"][number], { kind: "text" }> =>
+          part.kind === "text"
+      )
       .map((part) => part.text)
       .at(-1);
 
@@ -1003,7 +1004,10 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 function normalizeDisplayPath(value: string): string {
-  return value.replace(/\\/gu, "/").replace(/^\.\/+/u, "").replace(/^\/+/u, "");
+  return value
+    .replace(/\\/gu, "/")
+    .replace(/^\.\/+/u, "")
+    .replace(/^\/+/u, "");
 }
 
 async function safeRealPath(filePath: string): Promise<string | null> {

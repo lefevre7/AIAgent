@@ -170,7 +170,7 @@ export function createExternalAgentTool(params: {
           return buildJobResult("get", job);
         }
         case "list": {
-          const sessionId = input.allSessions ? undefined : input.sessionId ?? context.session.id;
+          const sessionId = input.allSessions ? undefined : (input.sessionId ?? context.session.id);
           const [definitions, jobs, interactiveSessions] = await Promise.all([
             params.externalAgentService.listDefinitions(),
             params.externalAgentService.listJobs({

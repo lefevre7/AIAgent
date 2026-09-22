@@ -44,7 +44,8 @@ export const memoryGetToolDefinition: ToolDefinition = {
       "After memory_search finds a note, read only the needed lines."
     ],
     purpose: "Read a specific allowed memory Markdown file by canonical memory path and optional line window.",
-    sideEffectSummary: "Reads local memory files only and returns an empty payload instead of throwing when the target file does not exist yet.",
+    sideEffectSummary:
+      "Reads local memory files only and returns an empty payload instead of throwing when the target file does not exist yet.",
     whenNotToUse: ["Do not use when you need discovery; use memory_search first."],
     whenToUse: ["Use when you already know which memory file you need to inspect and want to keep context small."]
   },

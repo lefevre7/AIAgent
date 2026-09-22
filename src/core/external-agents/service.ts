@@ -166,7 +166,10 @@ export class FileExternalAgentService implements ExternalAgentService {
 
     const runtimeMetadata = getRuntimeMetadata(job);
     if (!runtimeMetadata) {
-      throw externalAgentError("external_agent_cancel_failed", "The job is missing runtime metadata and cannot be cancelled.");
+      throw externalAgentError(
+        "external_agent_cancel_failed",
+        "The job is missing runtime metadata and cannot be cancelled."
+      );
     }
 
     const taggedJob = externalAgentJobRecordSchema.parse({
@@ -398,7 +401,10 @@ export class FileExternalAgentService implements ExternalAgentService {
     return this.launchProcess(queued, prepared);
   }
 
-  private async launchProcess(job: ExternalAgentJobRecord, prepared: PreparedExecution): Promise<ExternalAgentJobRecord> {
+  private async launchProcess(
+    job: ExternalAgentJobRecord,
+    prepared: PreparedExecution
+  ): Promise<ExternalAgentJobRecord> {
     await fs.mkdir(path.dirname(prepared.stdoutPath), { recursive: true });
 
     if (job.request.mode === "blocking") {
@@ -408,7 +414,10 @@ export class FileExternalAgentService implements ExternalAgentService {
     return this.launchDetachedProcess(job, prepared);
   }
 
-  private async launchBlockingProcess(job: ExternalAgentJobRecord, prepared: PreparedExecution): Promise<ExternalAgentJobRecord> {
+  private async launchBlockingProcess(
+    job: ExternalAgentJobRecord,
+    prepared: PreparedExecution
+  ): Promise<ExternalAgentJobRecord> {
     const stdoutStream = fsSync.createWriteStream(prepared.stdoutPath, { flags: "a" });
     const stderrStream = fsSync.createWriteStream(prepared.stderrPath, { flags: "a" });
 
@@ -469,7 +478,10 @@ export class FileExternalAgentService implements ExternalAgentService {
     return running;
   }
 
-  private async launchDetachedProcess(job: ExternalAgentJobRecord, prepared: PreparedExecution): Promise<ExternalAgentJobRecord> {
+  private async launchDetachedProcess(
+    job: ExternalAgentJobRecord,
+    prepared: PreparedExecution
+  ): Promise<ExternalAgentJobRecord> {
     if (prepared.stdinText) {
       throw externalAgentError(
         "external_agent_stdin_unsupported",
@@ -539,7 +551,8 @@ export class FileExternalAgentService implements ExternalAgentService {
     });
   }
 
-  private configureTimeout(job: ExternalAgentJobRecord, monitor: RunningJobMonitor): void {    const timeoutMs = job.request.timeoutMs ?? this.requireRuntime(job.request.agentId).config.timeoutMs;
+  private configureTimeout(job: ExternalAgentJobRecord, monitor: RunningJobMonitor): void {
+    const timeoutMs = job.request.timeoutMs ?? this.requireRuntime(job.request.agentId).config.timeoutMs;
     if (!timeoutMs) {
       return;
     }
@@ -859,7 +872,10 @@ export class FileExternalAgentService implements ExternalAgentService {
   private requireRuntime(agentId: string): ExternalAgentRuntime {
     const runtime = this.runtimes.get(agentId);
     if (!runtime) {
-      throw externalAgentError("external_agent_not_configured", `External agent "${agentId}" is not enabled in configuration.`);
+      throw externalAgentError(
+        "external_agent_not_configured",
+        `External agent "${agentId}" is not enabled in configuration.`
+      );
     }
     return runtime;
   }
@@ -868,7 +884,9 @@ export class FileExternalAgentService implements ExternalAgentService {
     try {
       const entries = await fs.readdir(this.jobsRoot(), { withFileTypes: true });
       const jobs = await Promise.all(
-        entries.filter((entry) => entry.isDirectory()).map(async (entry) => this.readJobFile(path.join(this.jobsRoot(), entry.name, "job.json")))
+        entries
+          .filter((entry) => entry.isDirectory())
+          .map(async (entry) => this.readJobFile(path.join(this.jobsRoot(), entry.name, "job.json")))
       );
       return jobs.filter((job): job is ExternalAgentJobRecord => job !== null);
     } catch (error) {
@@ -936,7 +954,10 @@ export class FileExternalAgentService implements ExternalAgentService {
     while (true) {
       const current = await this.readJob(jobId);
       if (!current) {
-        throw externalAgentError("external_agent_job_not_found", `External-agent job "${jobId}" disappeared before completion.`);
+        throw externalAgentError(
+          "external_agent_job_not_found",
+          `External-agent job "${jobId}" disappeared before completion.`
+        );
       }
       if (current.status !== "running") {
         if (isTerminalJob(current.status) || current.status === "awaiting_resume") {
@@ -985,7 +1006,8 @@ const UNGATED_EXTERNAL_AGENT_ACTIONS = new Set(["attach", "get", "list", "read",
 
 export function createExternalAgentApprovalTargetResolver(params: {
   service: Pick<ExternalAgentService, "getDefinition" | "getJob">;
-}) {  return async (input: ToolApprovalDeciderParams): Promise<ApprovalEvaluationTarget[]> => {
+}) {
+  return async (input: ToolApprovalDeciderParams): Promise<ApprovalEvaluationTarget[]> => {
     if (input.definition.kind !== "external_agent") {
       return [];
     }
@@ -1021,9 +1043,7 @@ export function createExternalAgentApprovalTargetResolver(params: {
       // and an approval-policy regex written against the command could never
       // match `--dangerously-skip-permissions`.
       const spawnArgs =
-        action === "start"
-          ? [...definition.defaultArgs, ...definition.interactiveArgs]
-          : definition.defaultArgs;
+        action === "start" ? [...definition.defaultArgs, ...definition.interactiveArgs] : definition.defaultArgs;
       // Security review H4: the model fully controls `args`, and every preset
       // splices them into the child argv. Leaving them out meant a model could
       // pass `--dangerously-bypass-approvals-and-sandbox` (or
@@ -1034,8 +1054,7 @@ export function createExternalAgentApprovalTargetResolver(params: {
         kind: "command",
         label: "command",
         value:
-          stringifyArgv([definition.command, ...spawnArgs, ...readModelSuppliedArgs(input.call)]) ??
-          definition.command
+          stringifyArgv([definition.command, ...spawnArgs, ...readModelSuppliedArgs(input.call)]) ?? definition.command
       });
     }
 
@@ -1167,7 +1186,13 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
           `The Claude preset only supports instructionMode "arg"; received "${config.instructionMode}".`
         );
       }
-      const args = [...config.args, config.printFlag, ...params.request.args, config.outputFormatFlag, config.outputFormatValue];
+      const args = [
+        ...config.args,
+        config.printFlag,
+        ...params.request.args,
+        config.outputFormatFlag,
+        config.outputFormatValue
+      ];
       args.push(config.resumeFlag, extractResumeSessionId(params));
       appendInstructions(args, params.request.instructions, config.instructionMode);
 
@@ -1191,7 +1216,13 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
           `The Claude preset only supports instructionMode "arg"; received "${config.instructionMode}".`
         );
       }
-      const args = [...config.args, config.printFlag, ...params.request.args, config.outputFormatFlag, config.outputFormatValue];
+      const args = [
+        ...config.args,
+        config.printFlag,
+        ...params.request.args,
+        config.outputFormatFlag,
+        config.outputFormatValue
+      ];
       appendInstructions(args, params.request.instructions, config.instructionMode);
 
       return {
@@ -1209,7 +1240,8 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
     async harvest(params) {
       const stdoutText = params.job.logPaths.stdout ? await readFileIfExists(params.job.logPaths.stdout) : null;
       const parsed = stdoutText ? parseClaudeStdout(stdoutText) : {};
-      const resultPath = params.job.logPaths.result ?? path.join(params.runtimeMetadata.attemptRoot, "final-output.txt");
+      const resultPath =
+        params.job.logPaths.result ?? path.join(params.runtimeMetadata.attemptRoot, "final-output.txt");
       let summary = parsed.result ?? (stdoutText ? stdoutText.trim() : undefined);
       let resultArtifact: ArtifactReference | undefined;
 
@@ -1250,7 +1282,10 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
           `The Codex preset only supports instructionMode "arg"; received "${config.instructionMode}".`
         );
       }
-      const resultPath = path.join(params.attemptRoot, params.request.resultSchema ? "final-output.json" : "final-output.txt");
+      const resultPath = path.join(
+        params.attemptRoot,
+        params.request.resultSchema ? "final-output.json" : "final-output.txt"
+      );
       const schemaPath = params.request.resultSchema ? path.join(params.attemptRoot, "result-schema.json") : undefined;
       if (params.request.resultSchema && schemaPath) {
         await writeJsonAtomic(schemaPath, params.request.resultSchema);
@@ -1291,7 +1326,10 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
           `The Codex preset only supports instructionMode "arg"; received "${config.instructionMode}".`
         );
       }
-      const resultPath = path.join(params.attemptRoot, params.request.resultSchema ? "final-output.json" : "final-output.txt");
+      const resultPath = path.join(
+        params.attemptRoot,
+        params.request.resultSchema ? "final-output.json" : "final-output.txt"
+      );
       const schemaPath = params.request.resultSchema ? path.join(params.attemptRoot, "result-schema.json") : undefined;
       if (params.request.resultSchema && schemaPath) {
         await writeJsonAtomic(schemaPath, params.request.resultSchema);
@@ -1444,7 +1482,8 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
       let resultArtifact: ArtifactReference | undefined;
 
       if (stdoutText && stdoutText.trim().length > 0) {
-        const resultPath = params.job.logPaths.result ?? path.join(params.runtimeMetadata.attemptRoot, "final-output.json");
+        const resultPath =
+          params.job.logPaths.result ?? path.join(params.runtimeMetadata.attemptRoot, "final-output.json");
         try {
           parsedJson = jsonValueSchema.parse(JSON.parse(stdoutText) as unknown);
           await writeTextFile(resultPath, JSON.stringify(parsedJson, null, 2));
@@ -1453,7 +1492,8 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
             name: path.basename(resultPath)
           });
         } catch {
-          const fallbackPath = params.job.logPaths.result ?? path.join(params.runtimeMetadata.attemptRoot, "final-output.txt");
+          const fallbackPath =
+            params.job.logPaths.result ?? path.join(params.runtimeMetadata.attemptRoot, "final-output.txt");
           await writeTextFile(fallbackPath, stdoutText.trim());
           resultArtifact = await createArtifactReference(fallbackPath, "text", {
             mediaType: "text/plain",
@@ -1800,7 +1840,8 @@ function parseCodexStdout(stdout: string): {
       if (parsed.type === "thread.started" && typeof parsed.thread_id === "string") {
         threadId = parsed.thread_id;
       }
-      const item = typeof parsed.item === "object" && parsed.item !== null ? (parsed.item as Record<string, unknown>) : null;
+      const item =
+        typeof parsed.item === "object" && parsed.item !== null ? (parsed.item as Record<string, unknown>) : null;
       if (parsed.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string") {
         lastAssistantText = item.text;
       }
@@ -1926,7 +1967,11 @@ function extractContentText(value: unknown): string | undefined {
         if (typeof entry === "string") {
           return entry;
         }
-        if (typeof entry === "object" && entry !== null && typeof (entry as Record<string, unknown>).text === "string") {
+        if (
+          typeof entry === "object" &&
+          entry !== null &&
+          typeof (entry as Record<string, unknown>).text === "string"
+        ) {
           return (entry as Record<string, string>).text;
         }
         return null;

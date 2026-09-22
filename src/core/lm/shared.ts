@@ -92,11 +92,7 @@ export function buildAssistantMessageText(content: unknown): string {
         if (typeof item === "string") {
           return item;
         }
-        if (
-          isPlainObject(item) &&
-          item.type === "text" &&
-          typeof item.text === "string"
-        ) {
+        if (isPlainObject(item) && item.type === "text" && typeof item.text === "string") {
           return item.text;
         }
         return "";
@@ -112,9 +108,7 @@ export function buildAssistantMessageText(content: unknown): string {
 export async function serializeOpenAICompatibleMessages(
   request: LanguageModelRequest
 ): Promise<OpenAICompatibleMessage[]> {
-  const messages: OpenAICompatibleMessage[] = [
-    { content: request.instructions, role: "system" }
-  ];
+  const messages: OpenAICompatibleMessage[] = [{ content: request.instructions, role: "system" }];
   const emittedToolCallIds = new Set<string>();
   // Tool-role messages cannot carry images in the OpenAI-compatible schema, so
   // image output is forwarded (when the model supports vision) as a follow-up
@@ -126,9 +120,7 @@ export async function serializeOpenAICompatibleMessages(
     if (pendingToolImages.length === 0) {
       return;
     }
-    const parts: OpenAIContentPart[] = [
-      { text: "Image output from the preceding tool result(s).", type: "text" }
-    ];
+    const parts: OpenAIContentPart[] = [{ text: "Image output from the preceding tool result(s).", type: "text" }];
     for (const imagePart of pendingToolImages) {
       parts.push({
         image_url: { url: await resolveImageDataUrl(imagePart.uri) },
@@ -147,9 +139,7 @@ export async function serializeOpenAICompatibleMessages(
         emittedToolCallIds.add(part.callId);
       }
       messages.push({
-        content: renderMessagePartsToText(
-          stripToolCallParts(message.parts)
-        ).trim(),
+        content: renderMessagePartsToText(stripToolCallParts(message.parts)).trim(),
         role: "assistant",
         tool_calls: toolCallParts.map((part) => ({
           function: {
@@ -163,15 +153,10 @@ export async function serializeOpenAICompatibleMessages(
       continue;
     }
 
-    const pairedToolCallId = resolvePairedToolCallId(
-      message,
-      emittedToolCallIds
-    );
+    const pairedToolCallId = resolvePairedToolCallId(message, emittedToolCallIds);
     if (pairedToolCallId) {
       messages.push({
-        content:
-          renderMessagePartsToText(message.parts).trim() ||
-          "(empty tool result)",
+        content: renderMessagePartsToText(message.parts).trim() || "(empty tool result)",
         role: "tool",
         tool_call_id: pairedToolCallId
       });
@@ -185,8 +170,7 @@ export async function serializeOpenAICompatibleMessages(
     const role = resolveProviderRole(message);
     const text = renderMessagePartsToText(message.parts).trim();
     const imageUris = message.parts.filter(
-      (part): part is Extract<MessagePart, { kind: "image" }> =>
-        part.kind === "image"
+      (part): part is Extract<MessagePart, { kind: "image" }> => part.kind === "image"
     );
 
     if (imageUris.length === 0) {
@@ -198,10 +182,7 @@ export async function serializeOpenAICompatibleMessages(
     }
 
     const parts: OpenAIContentPart[] = [];
-    const messageText = prefixRoleIfNeeded(
-      message,
-      text || "Attached image input."
-    );
+    const messageText = prefixRoleIfNeeded(message, text || "Attached image input.");
     parts.push({
       text: messageText,
       type: "text"
@@ -226,13 +207,8 @@ export async function serializeOpenAICompatibleMessages(
   return messages;
 }
 
-function extractImageParts(
-  parts: MessagePart[]
-): Array<Extract<MessagePart, { kind: "image" }>> {
-  return parts.filter(
-    (part): part is Extract<MessagePart, { kind: "image" }> =>
-      part.kind === "image"
-  );
+function extractImageParts(parts: MessagePart[]): Array<Extract<MessagePart, { kind: "image" }>> {
+  return parts.filter((part): part is Extract<MessagePart, { kind: "image" }> => part.kind === "image");
 }
 
 // Forward image content to the model unless the operator explicitly marked the
@@ -242,12 +218,8 @@ function shouldForwardImages(request: LanguageModelRequest): boolean {
   return request.settings.supportsVision !== false;
 }
 
-export async function serializeOllamaMessages(
-  request: LanguageModelRequest
-): Promise<OllamaChatMessage[]> {
-  const messages: OllamaChatMessage[] = [
-    { content: request.instructions, role: "system" }
-  ];
+export async function serializeOllamaMessages(request: LanguageModelRequest): Promise<OllamaChatMessage[]> {
+  const messages: OllamaChatMessage[] = [{ content: request.instructions, role: "system" }];
   const emittedToolCallIds = new Map<string, string>();
   // Buffer tool-result image output and flush it as a follow-up user message
   // only once the run of tool-result messages ends, keeping the tool-call/tool
@@ -259,9 +231,7 @@ export async function serializeOllamaMessages(
     }
     messages.push({
       content: "Image output from the preceding tool result(s).",
-      images: await Promise.all(
-        pendingToolImages.map((imagePart) => resolveOllamaImage(imagePart.uri))
-      ),
+      images: await Promise.all(pendingToolImages.map((imagePart) => resolveOllamaImage(imagePart.uri))),
       role: "user"
     });
     pendingToolImages.length = 0;
@@ -275,9 +245,7 @@ export async function serializeOllamaMessages(
         emittedToolCallIds.set(part.callId, part.toolName);
       }
       messages.push({
-        content: renderMessagePartsToText(
-          stripToolCallParts(message.parts)
-        ).trim(),
+        content: renderMessagePartsToText(stripToolCallParts(message.parts)).trim(),
         role: "assistant",
         tool_calls: toolCallParts.map((part) => ({
           function: {
@@ -289,15 +257,10 @@ export async function serializeOllamaMessages(
       continue;
     }
 
-    const pairedToolCallId = resolvePairedToolCallId(
-      message,
-      new Set(emittedToolCallIds.keys())
-    );
+    const pairedToolCallId = resolvePairedToolCallId(message, new Set(emittedToolCallIds.keys()));
     if (pairedToolCallId) {
       messages.push({
-        content:
-          renderMessagePartsToText(message.parts).trim() ||
-          "(empty tool result)",
+        content: renderMessagePartsToText(message.parts).trim() || "(empty tool result)",
         role: "tool",
         tool_call_id: pairedToolCallId,
         tool_name: emittedToolCallIds.get(pairedToolCallId)
@@ -310,19 +273,13 @@ export async function serializeOllamaMessages(
 
     await flushPendingToolImages();
     const imageParts = message.parts.filter(
-      (part): part is Extract<MessagePart, { kind: "image" }> =>
-        part.kind === "image"
+      (part): part is Extract<MessagePart, { kind: "image" }> => part.kind === "image"
     );
-    const text = prefixRoleIfNeeded(
-      message,
-      renderMessagePartsToText(message.parts).trim() || "Attached image input."
-    );
+    const text = prefixRoleIfNeeded(message, renderMessagePartsToText(message.parts).trim() || "Attached image input.");
     const images =
       imageParts.length === 0
         ? undefined
-        : await Promise.all(
-            imageParts.map((imagePart) => resolveOllamaImage(imagePart.uri))
-          );
+        : await Promise.all(imageParts.map((imagePart) => resolveOllamaImage(imagePart.uri)));
 
     messages.push({
       content: text,
@@ -335,23 +292,15 @@ export async function serializeOllamaMessages(
   return messages;
 }
 
-function extractToolCallParts(
-  message: Message
-): Array<Extract<MessagePart, { kind: "tool_call" }>> {
-  return message.parts.filter(
-    (part): part is Extract<MessagePart, { kind: "tool_call" }> =>
-      part.kind === "tool_call"
-  );
+function extractToolCallParts(message: Message): Array<Extract<MessagePart, { kind: "tool_call" }>> {
+  return message.parts.filter((part): part is Extract<MessagePart, { kind: "tool_call" }> => part.kind === "tool_call");
 }
 
 function stripToolCallParts(parts: MessagePart[]): MessagePart[] {
   return parts.filter((part) => part.kind !== "tool_call");
 }
 
-function resolvePairedToolCallId(
-  message: Message,
-  emittedToolCallIds: Set<string>
-): string | null {
+function resolvePairedToolCallId(message: Message, emittedToolCallIds: Set<string>): string | null {
   if (message.role !== "tool") {
     return null;
   }
@@ -364,9 +313,7 @@ function resolvePairedToolCallId(
   return emittedToolCallIds.has(toolCallId) ? toolCallId : null;
 }
 
-export function serializeToolDefinitions(
-  definitions: ToolDefinition[]
-): OpenAICompatibleToolDefinition[] {
+export function serializeToolDefinitions(definitions: ToolDefinition[]): OpenAICompatibleToolDefinition[] {
   return definitions.map((definition) => ({
     function: {
       description: renderToolDescription(definition),
@@ -416,9 +363,7 @@ export function normalizeToolCallProposals(
   fallbackPrefix: string,
   definitions: ToolDefinition[] = []
 ): NormalizedToolCallProposals {
-  const definitionsByInvocationName = new Map(
-    definitions.map((definition) => [definition.invocationName, definition])
-  );
+  const definitionsByInvocationName = new Map(definitions.map((definition) => [definition.invocationName, definition]));
   const proposals: ModelToolCallProposal[] = [];
   const rejected: RejectedToolCallProposal[] = [];
 
@@ -430,14 +375,9 @@ export function normalizeToolCallProposals(
       return;
     }
 
-    const functionData = isPlainObject(toolCall.function)
-      ? toolCall.function
-      : null;
+    const functionData = isPlainObject(toolCall.function) ? toolCall.function : null;
     const toolName =
-      typeof functionData?.name === "string" &&
-      functionData.name.trim().length > 0
-        ? functionData.name
-        : null;
+      typeof functionData?.name === "string" && functionData.name.trim().length > 0 ? functionData.name : null;
     if (!toolName || !functionData) {
       rejected.push({
         reason: `Tool call ${index + 1} was missing a function name (received ${describeRawToolCall(toolCall)}).`
@@ -496,9 +436,7 @@ export type StreamGuardOptions = {
 //     prompt evaluation is not mistaken for a stall.
 //   * repetition: the model emits the same line many times in a row (a decode
 //     loop). Both abort the shared AbortController so the fetch unwinds.
-export function createStreamGuard(
-  options: StreamGuardOptions = {}
-): StreamGuard {
+export function createStreamGuard(options: StreamGuardOptions = {}): StreamGuard {
   const controller = new AbortController();
   const idleMs = options.idleTimeoutMs ?? 0;
   const firstTokenMs = options.firstTokenTimeoutMs ?? idleMs;
@@ -575,10 +513,7 @@ export function createStreamGuard(
   };
 }
 
-export function buildStreamAbortError(
-  providerId: string,
-  reason: StreamGuardAbortReason
-): StructuredError {
+export function buildStreamAbortError(providerId: string, reason: StreamGuardAbortReason): StructuredError {
   return {
     code: `provider_stream_${reason}`,
     details: { provider: providerId, reason },
@@ -590,9 +525,7 @@ export function buildStreamAbortError(
   };
 }
 
-export function buildRejectedToolCallMetadata(
-  rejected: RejectedToolCallProposal[]
-): Record<string, JsonValue> {
+export function buildRejectedToolCallMetadata(rejected: RejectedToolCallProposal[]): Record<string, JsonValue> {
   if (rejected.length === 0) {
     return {};
   }
@@ -622,11 +555,7 @@ export function resolveToolCallProposals(params: {
   nativeToolCalls: unknown[];
 }): ResolvedToolCallProposals {
   const definitions = params.definitions ?? [];
-  const native = normalizeToolCallProposals(
-    params.nativeToolCalls,
-    params.fallbackPrefix,
-    definitions
-  );
+  const native = normalizeToolCallProposals(params.nativeToolCalls, params.fallbackPrefix, definitions);
   if (native.proposals.length > 0 || params.content.trim().length === 0) {
     return {
       content: params.content,
@@ -648,19 +577,12 @@ export function resolveToolCallProposals(params: {
 
   const asNative = matches.map((match, index) => ({
     function: {
-      arguments:
-        typeof match.arguments === "string"
-          ? match.arguments
-          : JSON.stringify(match.arguments),
+      arguments: typeof match.arguments === "string" ? match.arguments : JSON.stringify(match.arguments),
       name: match.name
     },
     id: `${params.fallbackPrefix}.text.${index + 1}`
   }));
-  const recovered = normalizeToolCallProposals(
-    asNative,
-    `${params.fallbackPrefix}.text`,
-    definitions
-  );
+  const recovered = normalizeToolCallProposals(asNative, `${params.fallbackPrefix}.text`, definitions);
 
   return {
     content: stripSpans(
@@ -684,10 +606,7 @@ type TextToolCallMatch = {
 // can remove only the tool-call markup while preserving surrounding prose and
 // reasoning. Detectors are intentionally conservative: a candidate is only
 // accepted when a tool name can be resolved.
-export function parseTextToolCalls(
-  content: string,
-  definitions: ToolDefinition[] = []
-): TextToolCallMatch[] {
+export function parseTextToolCalls(content: string, definitions: ToolDefinition[] = []): TextToolCallMatch[] {
   const matches: TextToolCallMatch[] = [];
   const claimed: Array<[number, number]> = [];
 
@@ -699,12 +618,7 @@ export function parseTextToolCalls(
     return true;
   };
 
-  const push = (
-    rawName: string,
-    args: Record<string, JsonValue> | string,
-    start: number,
-    end: number
-  ): void => {
+  const push = (rawName: string, args: Record<string, JsonValue> | string, start: number, end: number): void => {
     const name = resolveKnownToolName(rawName, definitions) ?? rawName.trim();
     if (name.length === 0 || !claim(start, end)) {
       return;
@@ -714,18 +628,10 @@ export function parseTextToolCalls(
 
   // Qwen3-Coder: <function=NAME><parameter=key>value</parameter>...</function>
   const functionBlock = /<function\s*=\s*([^>\s]+)\s*>([\s\S]*?)<\/function>/gu;
-  for (
-    let match = functionBlock.exec(content);
-    match;
-    match = functionBlock.exec(content)
-  ) {
+  for (let match = functionBlock.exec(content); match; match = functionBlock.exec(content)) {
     const args: Record<string, JsonValue> = {};
     const parameter = /<parameter\s*=\s*([^>\s]+)\s*>([\s\S]*?)<\/parameter>/gu;
-    for (
-      let param = parameter.exec(match[2]);
-      param;
-      param = parameter.exec(match[2])
-    ) {
+    for (let param = parameter.exec(match[2]); param; param = parameter.exec(match[2])) {
       args[param[1].trim()] = coerceParameterValue(param[2]);
     }
     push(match[1], args, match.index, match.index + match[0].length);
@@ -733,53 +639,26 @@ export function parseTextToolCalls(
 
   // Hermes / generic: <tool_call>{ "name": "...", "arguments": {...} }</tool_call>
   const toolCallTag = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gu;
-  for (
-    let match = toolCallTag.exec(content);
-    match;
-    match = toolCallTag.exec(content)
-  ) {
+  for (let match = toolCallTag.exec(content); match; match = toolCallTag.exec(content)) {
     const parsed = parseJsonToolCall(match[1], definitions);
     if (parsed) {
-      push(
-        parsed.name,
-        parsed.arguments,
-        match.index,
-        match.index + match[0].length
-      );
+      push(parsed.name, parsed.arguments, match.index, match.index + match[0].length);
     }
   }
 
   // GPT-OSS Harmony: <|channel|>commentary to=functions.NAME ... <|message|>{...}<|call|>
   const harmony =
     /<\|channel\|>commentary[\s\S]*?to=functions\.([\w.-]+)[\s\S]*?<\|message\|>([\s\S]*?)(?:<\|call\|>|<\|end\|>|<\|return\|>|$)/gu;
-  for (
-    let match = harmony.exec(content);
-    match;
-    match = harmony.exec(content)
-  ) {
-    push(
-      match[1],
-      parseArgumentsBody(match[2]),
-      match.index,
-      match.index + match[0].length
-    );
+  for (let match = harmony.exec(content); match; match = harmony.exec(content)) {
+    push(match[1], parseArgumentsBody(match[2]), match.index, match.index + match[0].length);
   }
 
   // LM Studio default fallback: [TOOL_REQUEST]{ "name": "...", "arguments": {...} }[END_TOOL_REQUEST]
   const toolRequest = /\[TOOL_REQUEST\]\s*([\s\S]*?)\s*\[END_TOOL_REQUEST\]/gu;
-  for (
-    let match = toolRequest.exec(content);
-    match;
-    match = toolRequest.exec(content)
-  ) {
+  for (let match = toolRequest.exec(content); match; match = toolRequest.exec(content)) {
     const parsed = parseJsonToolCall(match[1], definitions);
     if (parsed) {
-      push(
-        parsed.name,
-        parsed.arguments,
-        match.index,
-        match.index + match[0].length
-      );
+      push(parsed.name, parsed.arguments, match.index, match.index + match[0].length);
     }
   }
 
@@ -801,19 +680,11 @@ function parseJsonToolCall(
   }
 
   const explicitName =
-    typeof parsed.name === "string"
-      ? parsed.name
-      : typeof parsed.tool === "string"
-        ? parsed.tool
-        : null;
+    typeof parsed.name === "string" ? parsed.name : typeof parsed.tool === "string" ? parsed.tool : null;
   if (explicitName) {
     const args = parsed.arguments ?? parsed.parameters ?? {};
     return {
-      arguments: isPlainObject(args)
-        ? sanitizeJsonRecord(args)
-        : typeof args === "string"
-          ? args
-          : {},
+      arguments: isPlainObject(args) ? sanitizeJsonRecord(args) : typeof args === "string" ? args : {},
       name: explicitName
     };
   }
@@ -873,10 +744,7 @@ function coerceParameterValue(raw: string): JsonValue {
   return trimmed;
 }
 
-function resolveKnownToolName(
-  rawName: string,
-  definitions: ToolDefinition[]
-): string | null {
+function resolveKnownToolName(rawName: string, definitions: ToolDefinition[]): string | null {
   const name = rawName.trim();
   if (name.length === 0) {
     return null;
@@ -912,9 +780,7 @@ function describeRawToolCall(value: unknown): string {
   try {
     const serialized = JSON.stringify(value);
     if (typeof serialized === "string") {
-      return serialized.length > 200
-        ? `${serialized.slice(0, 200)}…`
-        : serialized;
+      return serialized.length > 200 ? `${serialized.slice(0, 200)}…` : serialized;
     }
   } catch {
     // fall through to String()
@@ -941,33 +807,19 @@ export function mapStopReason(reason: unknown): LanguageModelStopReason {
   return "end_turn";
 }
 
-export function compactRecord<T extends Record<string, unknown>>(
-  value: T
-): Partial<T> {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, entry]) => entry !== undefined)
-  ) as Partial<T>;
+export function compactRecord<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as Partial<T>;
 }
 
-function resolveProviderRole(
-  message: Message
-): "assistant" | "system" | "user" {
-  if (
-    message.role === "assistant" ||
-    message.role === "system" ||
-    message.role === "user"
-  ) {
+function resolveProviderRole(message: Message): "assistant" | "system" | "user" {
+  if (message.role === "assistant" || message.role === "system" || message.role === "user") {
     return message.role;
   }
   return "user";
 }
 
 function prefixRoleIfNeeded(message: Message, text: string): string {
-  if (
-    message.role === "assistant" ||
-    message.role === "system" ||
-    message.role === "user"
-  ) {
+  if (message.role === "assistant" || message.role === "system" || message.role === "user") {
     return text;
   }
 
@@ -1046,14 +898,9 @@ function normalizeToolArguments(value: unknown): {
   inputText?: string;
 } {
   if (isPlainObject(value)) {
-    if (
-      typeof value.input === "string" &&
-      Object.keys(value).every((key) => key === "arguments" || key === "input")
-    ) {
+    if (typeof value.input === "string" && Object.keys(value).every((key) => key === "arguments" || key === "input")) {
       return {
-        arguments: isPlainObject(value.arguments)
-          ? sanitizeJsonRecord(value.arguments)
-          : {},
+        arguments: isPlainObject(value.arguments) ? sanitizeJsonRecord(value.arguments) : {},
         inputText: value.input
       };
     }
@@ -1087,9 +934,7 @@ function normalizeToolArguments(value: unknown): {
   };
 }
 
-function buildProviderToolParameters(
-  definition: ToolDefinition
-): Record<string, unknown> {
+function buildProviderToolParameters(definition: ToolDefinition): Record<string, unknown> {
   if (definition.execution.inputMode === "text") {
     return {
       additionalProperties: false,
@@ -1121,9 +966,7 @@ function buildProviderToolParameters(
   return ensureObjectSchema(definition.inputSchema);
 }
 
-function ensureObjectSchema(
-  schema: Record<string, unknown>
-): Record<string, unknown> {
+function ensureObjectSchema(schema: Record<string, unknown>): Record<string, unknown> {
   if (schema.type === "object") {
     return {
       ...schema,
@@ -1149,24 +992,13 @@ function renderToolDescription(definition: ToolDefinition): string {
     definition.descriptor.whenNotToUse.length > 0
       ? `When not to use: ${definition.descriptor.whenNotToUse.join(" | ")}`
       : undefined,
-    definition.descriptor.sideEffectSummary
-      ? `Side effects: ${definition.descriptor.sideEffectSummary}`
-      : undefined,
-    definition.descriptor.approvalNotes
-      ? `Approval: ${definition.descriptor.approvalNotes}`
-      : undefined,
-    definition.descriptor.examples.length > 0
-      ? `Examples: ${definition.descriptor.examples.join(" | ")}`
-      : undefined,
+    definition.descriptor.sideEffectSummary ? `Side effects: ${definition.descriptor.sideEffectSummary}` : undefined,
+    definition.descriptor.approvalNotes ? `Approval: ${definition.descriptor.approvalNotes}` : undefined,
+    definition.descriptor.examples.length > 0 ? `Examples: ${definition.descriptor.examples.join(" | ")}` : undefined,
     `Usage guidance: ${definition.usageGuidance}`
   ];
 
-  return lines
-    .filter(
-      (line): line is string =>
-        typeof line === "string" && line.trim().length > 0
-    )
-    .join("\n");
+  return lines.filter((line): line is string => typeof line === "string" && line.trim().length > 0).join("\n");
 }
 
 function extractStringValue(value: unknown): string | undefined {
@@ -1177,21 +1009,15 @@ function extractStringValue(value: unknown): string | undefined {
   return undefined;
 }
 
-function sanitizeJsonRecord(
-  value: Record<string, unknown>
-): Record<string, JsonValue> {
-  return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [key, sanitizeJsonValue(entry)])
-  ) as Record<string, JsonValue>;
+function sanitizeJsonRecord(value: Record<string, unknown>): Record<string, JsonValue> {
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, sanitizeJsonValue(entry)])) as Record<
+    string,
+    JsonValue
+  >;
 }
 
 function sanitizeJsonValue(value: unknown): JsonValue {
-  if (
-    value === null ||
-    typeof value === "boolean" ||
-    typeof value === "number" ||
-    typeof value === "string"
-  ) {
+  if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") {
     return value;
   }
 

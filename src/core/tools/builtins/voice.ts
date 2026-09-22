@@ -3,12 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import type { ToolDefinition, VoiceDescriptor, VoiceService } from "@/core/contracts";
-import {
-  buildVoiceAudioArtifact,
-  createVoiceError,
-  normalizeLocale,
-  voiceInputPathFromUri
-} from "@/core/voice";
+import { buildVoiceAudioArtifact, createVoiceError, normalizeLocale, voiceInputPathFromUri } from "@/core/voice";
 import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
 
 const voiceListVoicesSchema = z
@@ -172,9 +167,7 @@ export const voiceListVoicesToolDefinition: ToolDefinition = {
       "Do not use to record audio or synthesize speech.",
       "Do not use when you already know the exact voice id to pass to voice_synthesize_text."
     ],
-    whenToUse: [
-      "Use when you need to discover available voice names or locales before synthesizing speech."
-    ]
+    whenToUse: ["Use when you need to discover available voice names or locales before synthesizing speech."]
   },
   description: "List available local voice descriptors for speech synthesis.",
   displayName: "List Voices",
@@ -231,13 +224,8 @@ export const voiceTranscribeAudioToolDefinition: ToolDefinition = {
     ],
     purpose: "Convert a local audio artifact into plain text through the configured STT provider.",
     sideEffectSummary: "Reads a local audio artifact and runs a local speech-to-text process.",
-    whenNotToUse: [
-      "Do not use to start live recording.",
-      "Do not use for remote audio URLs or non-local files."
-    ],
-    whenToUse: [
-      "Use when you have a local audio file and need a transcript inside the current session."
-    ]
+    whenNotToUse: ["Do not use to start live recording.", "Do not use for remote audio URLs or non-local files."],
+    whenToUse: ["Use when you have a local audio file and need a transcript inside the current session."]
   },
   description: "Transcribe a local audio artifact into text.",
   displayName: "Transcribe Audio",
@@ -301,9 +289,7 @@ export const voiceSynthesizeTextToolDefinition: ToolDefinition = {
       "Do not use to play audio live through the microphone or speakers.",
       "Do not use when plain text output is sufficient."
     ],
-    whenToUse: [
-      "Use when a surface requested spoken output or an audio attachment for the assistant response."
-    ]
+    whenToUse: ["Use when a surface requested spoken output or an audio attachment for the assistant response."]
   },
   description: "Synthesize text into a local audio artifact.",
   displayName: "Synthesize Speech",
@@ -341,7 +327,8 @@ export const voiceSynthesizeTextToolDefinition: ToolDefinition = {
   },
   streamingMode: "none",
   toolId: "tool.voice.synthesize_text",
-  usageGuidance: "Use for short spoken responses or audio attachments. Pick a voice first if you need a specific locale or timbre.",
+  usageGuidance:
+    "Use for short spoken responses or audio attachments. Pick a voice first if you need a specific locale or timbre.",
   version: "1.0.0"
 };
 

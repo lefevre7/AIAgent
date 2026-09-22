@@ -1,10 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import {
-  LMStudioLanguageModelAdapter,
-  OllamaLanguageModelAdapter,
-  type LanguageModelRequest
-} from "@/core";
+import { LMStudioLanguageModelAdapter, OllamaLanguageModelAdapter, type LanguageModelRequest } from "@/core";
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -28,9 +24,7 @@ function streamResponse(chunks: string[]): Response {
   );
 }
 
-function buildStreamRequest(
-  provider: "lm_studio" | "ollama"
-): LanguageModelRequest {
+function buildStreamRequest(provider: "lm_studio" | "ollama"): LanguageModelRequest {
   return {
     availableTools: [],
     id: "lm.ctx.1",
@@ -79,9 +73,7 @@ describe("getModelContextWindow", () => {
       timeoutMs: 1000
     });
 
-    await expect(adapter.getModelContextWindow("test-model")).resolves.toBe(
-      16384
-    );
+    await expect(adapter.getModelContextWindow("test-model")).resolves.toBe(16384);
     expect(requestedUrl).toBe("http://localhost:1234/api/v0/models");
   });
 
@@ -107,9 +99,7 @@ describe("getModelContextWindow", () => {
       timeoutMs: 1000
     });
 
-    await expect(
-      adapter.getModelContextWindow("configured-name-that-differs")
-    ).resolves.toBe(8192);
+    await expect(adapter.getModelContextWindow("configured-name-that-differs")).resolves.toBe(8192);
   });
 
   test("Ollama reads the arch-prefixed context_length from /api/show model_info", async () => {
@@ -125,9 +115,7 @@ describe("getModelContextWindow", () => {
       timeoutMs: 1000
     });
 
-    await expect(adapter.getModelContextWindow("qwen3:30b")).resolves.toBe(
-      40960
-    );
+    await expect(adapter.getModelContextWindow("qwen3:30b")).resolves.toBe(40960);
   });
 
   test("returns undefined (caller falls back) when the lookup fails", async () => {
@@ -136,9 +124,7 @@ describe("getModelContextWindow", () => {
       fetchImpl: async () => jsonResponse({ model_info: {} }),
       timeoutMs: 1000
     });
-    await expect(
-      adapter.getModelContextWindow("missing")
-    ).resolves.toBeUndefined();
+    await expect(adapter.getModelContextWindow("missing")).resolves.toBeUndefined();
   });
 });
 

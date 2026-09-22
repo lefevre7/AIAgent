@@ -4,7 +4,11 @@ test("renders the bootstrap control plane", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByRole("heading", { level: 1, name: "AIAgent" })).toBeVisible();
-  await expect(page.getByText("One local dashboard for gateway health, sessions, approvals, steering, memory, logs, tunnel exposure, and channel routing.")).toBeVisible();
+  await expect(
+    page.getByText(
+      "One local dashboard for gateway health, sessions, approvals, steering, memory, logs, tunnel exposure, and channel routing."
+    )
+  ).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Create Session" })).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Memory Inspection" })).toBeVisible();
 });

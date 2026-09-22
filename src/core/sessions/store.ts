@@ -244,7 +244,10 @@ export class FileSessionStore {
       toolCalls: await this.readJsonLines(this.sessionToolCallsFile(sessionId), toolCallRecordSchema),
       turns: await this.readJsonLines(this.sessionTurnsFile(sessionId), turnRecordSchema),
       voiceCaptures: await this.readLatestJsonLines(this.sessionVoiceCapturesFile(sessionId), voiceCaptureRecordSchema),
-      voicePlaybacks: await this.readLatestJsonLines(this.sessionVoicePlaybacksFile(sessionId), voicePlaybackRecordSchema),
+      voicePlaybacks: await this.readLatestJsonLines(
+        this.sessionVoicePlaybacksFile(sessionId),
+        voicePlaybackRecordSchema
+      ),
       voiceTranscriptions: await this.readLatestJsonLines(
         this.sessionVoiceTranscriptionsFile(sessionId),
         voiceTranscriptionRecordSchema
@@ -262,9 +265,7 @@ export class FileSessionStore {
     try {
       const entries = await fs.readdir(sessionsDirectory, { withFileTypes: true });
       const sessions = await Promise.all(
-        entries
-          .filter((entry) => entry.isDirectory())
-          .map(async (entry) => this.getSession(entry.name))
+        entries.filter((entry) => entry.isDirectory()).map(async (entry) => this.getSession(entry.name))
       );
       return sessions.filter((session): session is SessionRecord => session !== null);
     } catch {
@@ -452,15 +453,12 @@ export class FileSessionStore {
   }
 
   private async updatePendingApprovalsIndex(
-    update: (
-      current: z.infer<typeof pendingApprovalsIndexSchema>
-    ) => z.infer<typeof pendingApprovalsIndexSchema>
+    update: (current: z.infer<typeof pendingApprovalsIndexSchema>) => z.infer<typeof pendingApprovalsIndexSchema>
   ): Promise<void> {
-    const current =
-      (await this.readJsonFile(this.pendingApprovalsFile(), pendingApprovalsIndexSchema)) ?? {
-        approvals: {},
-        updatedAt: new Date().toISOString()
-      };
+    const current = (await this.readJsonFile(this.pendingApprovalsFile(), pendingApprovalsIndexSchema)) ?? {
+      approvals: {},
+      updatedAt: new Date().toISOString()
+    };
     const next = update({
       ...current,
       updatedAt: new Date().toISOString()

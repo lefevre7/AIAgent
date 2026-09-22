@@ -103,7 +103,10 @@ export const pdfReadToolDefinition: ToolDefinition = {
   approvalMode: "never",
   descriptor: {
     approvalNotes: "No operator approval is required because this tool only reads a local PDF file.",
-    examples: ["Extract the text of a local report.pdf before summarizing it.", "Read a spec PDF to answer a question about it."],
+    examples: [
+      "Extract the text of a local report.pdf before summarizing it.",
+      "Read a spec PDF to answer a question about it."
+    ],
     purpose: "Extract text content from a local PDF file for reading and analysis.",
     sideEffectSummary: "Reads a local PDF file only.",
     whenNotToUse: [

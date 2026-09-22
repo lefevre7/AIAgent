@@ -26,7 +26,9 @@ async function readOutbound(sessionDirectory: string): Promise<Array<Record<stri
     .filter((name) => name.endsWith(".json"))
     .sort();
   return Promise.all(
-    names.map(async (name) => JSON.parse(await fs.readFile(path.join(directory, name), "utf8")) as Record<string, unknown>)
+    names.map(
+      async (name) => JSON.parse(await fs.readFile(path.join(directory, name), "utf8")) as Record<string, unknown>
+    )
   );
 }
 

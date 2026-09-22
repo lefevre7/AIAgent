@@ -519,7 +519,10 @@ export class MemoryRetrievalEngine {
     if (!this.ftsAvailable) {
       const normalized = queryText.toLowerCase();
       return this.getAllChunks(scopes)
-        .filter((chunk) => chunk.content.toLowerCase().includes(normalized) || chunk.filePath.toLowerCase().includes(normalized))
+        .filter(
+          (chunk) =>
+            chunk.content.toLowerCase().includes(normalized) || chunk.filePath.toLowerCase().includes(normalized)
+        )
         .slice(0, limit)
         .map((chunk) => ({
           chunk,
@@ -545,7 +548,10 @@ export class MemoryRetrievalEngine {
     } catch {
       const normalized = queryText.toLowerCase();
       return this.getAllChunks(scopes)
-        .filter((chunk) => chunk.content.toLowerCase().includes(normalized) || chunk.filePath.toLowerCase().includes(normalized))
+        .filter(
+          (chunk) =>
+            chunk.content.toLowerCase().includes(normalized) || chunk.filePath.toLowerCase().includes(normalized)
+        )
         .slice(0, limit)
         .map((chunk) => ({
           chunk,
@@ -585,7 +591,9 @@ export class MemoryRetrievalEngine {
   }
 
   private readMeta(key: string): string | null {
-    const row = this.db.prepare("SELECT value FROM retrieval_meta WHERE key = ?").get(key) as { value?: string } | undefined;
+    const row = this.db.prepare("SELECT value FROM retrieval_meta WHERE key = ?").get(key) as
+      | { value?: string }
+      | undefined;
     if (!row?.value) {
       return null;
     }
@@ -800,7 +808,9 @@ function combineCandidates(params: {
   const selected: ScoredCandidate[] = [];
   const remaining = [...scored];
   while (remaining.length > 0 && selected.length < scored.length) {
-    remaining.sort((left, right) => mmrScore(right, selected, params.mmrLambda) - mmrScore(left, selected, params.mmrLambda));
+    remaining.sort(
+      (left, right) => mmrScore(right, selected, params.mmrLambda) - mmrScore(left, selected, params.mmrLambda)
+    );
     const next = remaining.shift();
     if (!next) {
       break;

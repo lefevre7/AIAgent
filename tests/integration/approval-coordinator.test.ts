@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 describe("approval coordinator", () => {
-  test('converts denied approvals with operator guidance into queued steering', async () => {
+  test("converts denied approvals with operator guidance into queued steering", async () => {
     const root = await createTempRoot();
     const store = new FileSessionStore(path.join(root, ".aia"));
     const session = buildSession();

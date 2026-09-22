@@ -1,7 +1,4 @@
-import type {
-  AppConfig,
-  VoiceProviderConfig
-} from "@/core/config/schema";
+import type { AppConfig, VoiceProviderConfig } from "@/core/config/schema";
 import { sleep } from "@/core/io/files";
 import type {
   ProviderHealth,
@@ -38,12 +35,7 @@ import {
 import type { FileSessionStore } from "@/core/sessions";
 import { AppleNativeVoiceAdapter } from "@/core/voice/apple-native";
 import { LocalSystemVoiceAdapter } from "@/core/voice/local-system";
-import {
-  createVoiceError,
-  isTerminalVoiceStatus,
-  normalizeLocale,
-  normalizeVoiceError
-} from "@/core/voice/utils";
+import { createVoiceError, isTerminalVoiceStatus, normalizeLocale, normalizeVoiceError } from "@/core/voice/utils";
 
 type CaptureTracker = {
   persistedTerminal: boolean;
@@ -92,7 +84,7 @@ export class FileVoiceService implements VoiceService {
     const results = await Promise.all(
       adapters.map(async (adapter) => ({
         adapter,
-        devices: (await adapter.listDevices?.(query.kind) ?? []).filter((device) =>
+        devices: ((await adapter.listDevices?.(query.kind)) ?? []).filter((device) =>
           query.kind ? device.kind === query.kind : true
         )
       }))
@@ -136,7 +128,8 @@ export class FileVoiceService implements VoiceService {
     const startedAt = new Date().toISOString();
     const parsed = voicePlaybackRequestSchema.parse({
       ...request,
-      outputDevice: request.outputDevice ?? this.providerConfig(providerId)?.outputDevice ?? this.options.config.outputDevice,
+      outputDevice:
+        request.outputDevice ?? this.providerConfig(providerId)?.outputDevice ?? this.options.config.outputDevice,
       providerId,
       sessionId: request.sessionId,
       voice: request.voice ?? this.providerConfig(providerId)?.voice ?? this.options.config.defaultVoice
@@ -178,8 +171,11 @@ export class FileVoiceService implements VoiceService {
     const adapter = this.requireCapability(providerId, "capture");
     const parsed = voiceCaptureRequestSchema.parse({
       ...request,
-      inputDevice: request.inputDevice ?? this.providerConfig(providerId)?.inputDevice ?? this.options.config.inputDevice,
-      locale: normalizeLocale(request.locale ?? this.providerConfig(providerId)?.locale ?? this.options.config.defaultLocale),
+      inputDevice:
+        request.inputDevice ?? this.providerConfig(providerId)?.inputDevice ?? this.options.config.inputDevice,
+      locale: normalizeLocale(
+        request.locale ?? this.providerConfig(providerId)?.locale ?? this.options.config.defaultLocale
+      ),
       maxDurationMs: request.maxDurationMs ?? this.options.config.maxCaptureMs,
       providerId,
       sessionId: request.sessionId,
@@ -223,7 +219,9 @@ export class FileVoiceService implements VoiceService {
     const adapter = this.requireCapability(providerId, "synthesis");
     const parsed = synthesisRequestSchema.parse({
       ...request,
-      locale: normalizeLocale(request.locale ?? this.providerConfig(providerId)?.locale ?? this.options.config.defaultLocale),
+      locale: normalizeLocale(
+        request.locale ?? this.providerConfig(providerId)?.locale ?? this.options.config.defaultLocale
+      ),
       providerId,
       sessionId: request.sessionId,
       voice: request.voice ?? this.providerConfig(providerId)?.voice ?? this.options.config.defaultVoice
@@ -237,7 +235,9 @@ export class FileVoiceService implements VoiceService {
     const adapter = this.requireCapability(providerId, "transcription");
     const parsed = transcriptionRequestSchema.parse({
       ...request,
-      locale: normalizeLocale(request.locale ?? this.providerConfig(providerId)?.locale ?? this.options.config.defaultLocale),
+      locale: normalizeLocale(
+        request.locale ?? this.providerConfig(providerId)?.locale ?? this.options.config.defaultLocale
+      ),
       providerId,
       sessionId: request.sessionId
     } satisfies TranscriptionRequest);
@@ -313,11 +313,12 @@ export class FileVoiceService implements VoiceService {
   }
 
   private listAdaptersWithCapability(capability: VoiceCapability, kind?: VoiceDeviceKind): VoiceAdapter[] {
-    const preferred = capability === "transcription" || capability === "capture"
-      ? [this.options.config.defaultTranscriptionProviderId, this.options.config.defaultProviderId]
-      : capability === "device_list" && kind === "input"
+    const preferred =
+      capability === "transcription" || capability === "capture"
         ? [this.options.config.defaultTranscriptionProviderId, this.options.config.defaultProviderId]
-        : [this.options.config.defaultSynthesisProviderId, this.options.config.defaultProviderId];
+        : capability === "device_list" && kind === "input"
+          ? [this.options.config.defaultTranscriptionProviderId, this.options.config.defaultProviderId]
+          : [this.options.config.defaultSynthesisProviderId, this.options.config.defaultProviderId];
     const ordered = new Map<string, VoiceAdapter>();
 
     for (const providerId of preferred) {
@@ -385,19 +386,17 @@ export class FileVoiceService implements VoiceService {
 
     const fallback = Array.from(this.adapters.values()).find((adapter) => adapter.capabilities.includes(capability));
     if (!fallback) {
-      throw createVoiceError(
-        "voice_provider_unavailable",
-        `No configured voice provider supports ${capability}.`,
-        {
-          capability
-        }
-      );
+      throw createVoiceError("voice_provider_unavailable", `No configured voice provider supports ${capability}.`, {
+        capability
+      });
     }
 
     return fallback.providerId;
   }
 
-  private async locateCapture(captureId: string): Promise<{ adapter: VoiceAdapter; record: VoiceCaptureRecord } | null> {
+  private async locateCapture(
+    captureId: string
+  ): Promise<{ adapter: VoiceAdapter; record: VoiceCaptureRecord } | null> {
     const tracker = this.captureTrackers.get(captureId);
     if (tracker) {
       const adapter = this.requireCapability(tracker.providerId, "capture");
@@ -430,7 +429,9 @@ export class FileVoiceService implements VoiceService {
         audio: record.audio,
         completedAt: record.completedAt,
         durationMs:
-          typeof record.audio.metadata.durationMs === "number" ? Math.trunc(record.audio.metadata.durationMs) : undefined,
+          typeof record.audio.metadata.durationMs === "number"
+            ? Math.trunc(record.audio.metadata.durationMs)
+            : undefined,
         error: record.error,
         id: record.transcriptionId,
         locale: record.locale,

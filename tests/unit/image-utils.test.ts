@@ -21,8 +21,7 @@ import {
 } from "@/core/image/utils";
 
 const tempRoots: string[] = [];
-const PNG_1X1 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
@@ -50,13 +49,19 @@ describe("image utils paths and sanitizers", () => {
       path.join("/root", "inputs", "shared", "req_1", "a_b.png")
     );
     expect(
-      buildImageOutputPath({ artifactRoot: "/root", fileName: "out.png", providerId: "comfy", requestId: "r1", sessionId: "s 1" })
+      buildImageOutputPath({
+        artifactRoot: "/root",
+        fileName: "out.png",
+        providerId: "comfy",
+        requestId: "r1",
+        sessionId: "s 1"
+      })
     ).toBe(path.join("/root", "outputs", "comfy", "s_1", "r1", "out.png"));
   });
 
   test("sanitizeFileName and sanitizeSegment strip unsafe characters", () => {
     expect(sanitizeFileName("../../etc/pa$$wd")).toBe("pa__wd");
-    expect(sanitizeFileName("!!!" )).toBe("___");
+    expect(sanitizeFileName("!!!")).toBe("___");
     expect(sanitizeSegment("a/b c")).toBe("a_b_c");
   });
 
@@ -82,7 +87,10 @@ describe("image utils paths and sanitizers", () => {
   });
 
   test("probeImageSizeMetadata reads valid dimensions only", () => {
-    expect(probeImageSizeMetadata(artifact({ metadata: { height: 10, width: 20 } }))).toEqual({ height: 10, width: 20 });
+    expect(probeImageSizeMetadata(artifact({ metadata: { height: 10, width: 20 } }))).toEqual({
+      height: 10,
+      width: 20
+    });
     expect(probeImageSizeMetadata(artifact({ metadata: {} }))).toBeNull();
     expect(probeImageSizeMetadata(artifact({ metadata: { height: 0, width: 5 } }))).toBeNull();
   });

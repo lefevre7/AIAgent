@@ -52,7 +52,9 @@ describe("pdf_read tool logic", () => {
   test("returns extracted text and page count", async () => {
     const root = await tempRoot();
     await fs.writeFile(path.join(root, "doc.pdf"), Buffer.from("%PDF-1.4 fake"));
-    const result = await runDirect(async () => ({ pageCount: 3, text: "  Document body text  " }), root, { path: "doc.pdf" });
+    const result = await runDirect(async () => ({ pageCount: 3, text: "  Document body text  " }), root, {
+      path: "doc.pdf"
+    });
     expect(result.result).toMatchObject({ pageCount: 3, text: "Document body text", truncated: false });
   });
 
@@ -78,9 +80,13 @@ describe("pdf_read tool logic", () => {
     const root = await tempRoot();
     await fs.writeFile(path.join(root, "bad.pdf"), Buffer.from("%PDF-1.4 fake"));
     await expect(
-      runDirect(async () => {
-        throw new Error("encrypted");
-      }, root, { path: "bad.pdf" })
+      runDirect(
+        async () => {
+          throw new Error("encrypted");
+        },
+        root,
+        { path: "bad.pdf" }
+      )
     ).rejects.toThrow(/Could not extract text/u);
   });
 });

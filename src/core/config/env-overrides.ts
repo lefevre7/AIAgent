@@ -60,7 +60,11 @@ export function buildEnvironmentOverrides(environment: Record<string, string | u
   assign(config, ["voice", "defaultVoice"], environment.AIA_VOICE_DEFAULT_VOICE);
   assign(config, ["voice", "inputDevice"], environment.AIA_VOICE_INPUT_DEVICE);
   assign(config, ["voice", "outputDevice"], environment.AIA_VOICE_OUTPUT_DEVICE);
-  assign(config, ["voice", "maxCaptureMs"], parseInteger(environment.AIA_VOICE_MAX_CAPTURE_MS, "AIA_VOICE_MAX_CAPTURE_MS"));
+  assign(
+    config,
+    ["voice", "maxCaptureMs"],
+    parseInteger(environment.AIA_VOICE_MAX_CAPTURE_MS, "AIA_VOICE_MAX_CAPTURE_MS")
+  );
   assign(
     config,
     ["voice", "silenceTimeoutMs"],
@@ -80,14 +84,38 @@ export function buildEnvironmentOverrides(environment: Record<string, string | u
   assign(config, ["memory", "sqlitePath"], environment.AIA_MEMORY_SQLITE_PATH);
   assign(config, ["memory", "embeddingProvider"], environment.AIA_MEMORY_EMBEDDING_PROVIDER);
   assign(config, ["memory", "embeddingModel"], environment.AIA_MEMORY_EMBEDDING_MODEL);
-  assign(config, ["memory", "retrievalLimit"], parseInteger(environment.AIA_MEMORY_RETRIEVAL_LIMIT, "AIA_MEMORY_RETRIEVAL_LIMIT"));
-  assign(config, ["memory", "candidateLimit"], parseInteger(environment.AIA_MEMORY_CANDIDATE_LIMIT, "AIA_MEMORY_CANDIDATE_LIMIT"));
-  assign(config, ["memory", "chunkTargetChars"], parseInteger(environment.AIA_MEMORY_CHUNK_TARGET_CHARS, "AIA_MEMORY_CHUNK_TARGET_CHARS"));
-  assign(config, ["memory", "chunkOverlapChars"], parseInteger(environment.AIA_MEMORY_CHUNK_OVERLAP_CHARS, "AIA_MEMORY_CHUNK_OVERLAP_CHARS"));
+  assign(
+    config,
+    ["memory", "retrievalLimit"],
+    parseInteger(environment.AIA_MEMORY_RETRIEVAL_LIMIT, "AIA_MEMORY_RETRIEVAL_LIMIT")
+  );
+  assign(
+    config,
+    ["memory", "candidateLimit"],
+    parseInteger(environment.AIA_MEMORY_CANDIDATE_LIMIT, "AIA_MEMORY_CANDIDATE_LIMIT")
+  );
+  assign(
+    config,
+    ["memory", "chunkTargetChars"],
+    parseInteger(environment.AIA_MEMORY_CHUNK_TARGET_CHARS, "AIA_MEMORY_CHUNK_TARGET_CHARS")
+  );
+  assign(
+    config,
+    ["memory", "chunkOverlapChars"],
+    parseInteger(environment.AIA_MEMORY_CHUNK_OVERLAP_CHARS, "AIA_MEMORY_CHUNK_OVERLAP_CHARS")
+  );
   assign(config, ["memory", "mmrLambda"], parseNumber(environment.AIA_MEMORY_MMR_LAMBDA, "AIA_MEMORY_MMR_LAMBDA"));
-  assign(config, ["memory", "embeddingsEnabled"], parseBoolean(environment.AIA_MEMORY_EMBEDDINGS_ENABLED, "AIA_MEMORY_EMBEDDINGS_ENABLED"));
+  assign(
+    config,
+    ["memory", "embeddingsEnabled"],
+    parseBoolean(environment.AIA_MEMORY_EMBEDDINGS_ENABLED, "AIA_MEMORY_EMBEDDINGS_ENABLED")
+  );
   assign(config, ["memory", "ftsEnabled"], parseBoolean(environment.AIA_MEMORY_FTS_ENABLED, "AIA_MEMORY_FTS_ENABLED"));
-  assign(config, ["memory", "hardFailOnStartup"], parseBoolean(environment.AIA_MEMORY_HARD_FAIL_ON_STARTUP, "AIA_MEMORY_HARD_FAIL_ON_STARTUP"));
+  assign(
+    config,
+    ["memory", "hardFailOnStartup"],
+    parseBoolean(environment.AIA_MEMORY_HARD_FAIL_ON_STARTUP, "AIA_MEMORY_HARD_FAIL_ON_STARTUP")
+  );
   assign(
     config,
     ["memory", "includeSessionSummaries"],

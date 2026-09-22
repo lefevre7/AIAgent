@@ -54,9 +54,12 @@ export const mcpSearchToolDefinition: ToolDefinition = {
       "Search connected MCP tools before choosing between multiple remote capabilities.",
       "Find prompt, resource, resource-template, or server-template entries exposed by the MCP layer."
     ],
-    purpose: "Search the MCP capability catalog across connected tools, resources, prompts, resource templates, and installable server templates.",
+    purpose:
+      "Search the MCP capability catalog across connected tools, resources, prompts, resource templates, and installable server templates.",
     sideEffectSummary: "Reads the local MCP catalog only.",
-    whenNotToUse: ["Do not use this when you already know the exact MCP tool invocation name or resource URI you need."],
+    whenNotToUse: [
+      "Do not use this when you already know the exact MCP tool invocation name or resource URI you need."
+    ],
     whenToUse: [
       "Use when you need to discover what connected MCP servers expose before acting.",
       "Use when you want to search installable MCP server templates without exposing them as executable tools."

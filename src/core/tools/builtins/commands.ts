@@ -468,18 +468,19 @@ const execCommandToolDefinition: ToolDefinition = createCommandDefinition({
   description:
     "Start a PTY-backed local command session using a command plus argv array, persist its output, and return a session id for later lifecycle tools.",
   descriptor: {
-    approvalNotes: "Approval is required because this tool starts a local process that can continue running after the tool returns.",
-    examples: ["Start `npm` with `['run', 'dev']` in a project directory.", "Launch an interactive CLI and then send input with write_stdin."],
+    approvalNotes:
+      "Approval is required because this tool starts a local process that can continue running after the tool returns.",
+    examples: [
+      "Start `npm` with `['run', 'dev']` in a project directory.",
+      "Launch an interactive CLI and then send input with write_stdin."
+    ],
     purpose: "Start a long-lived or interactive local command session with explicit argv semantics.",
     sideEffectSummary: "Starts a local PTY-backed process and persists command logs.",
     whenNotToUse: [
       "Do not use it for simple one-shot shell strings; use shell_command.",
       "Do not use it when you need shell parsing features like pipes or redirection."
     ],
-    whenToUse: [
-      "Use for long-running commands.",
-      "Use for interactive or PTY-sensitive programs."
-    ]
+    whenToUse: ["Use for long-running commands.", "Use for interactive or PTY-sensitive programs."]
   },
   displayName: "Exec Command",
   idempotent: false,
@@ -496,14 +497,24 @@ const readCommandOutputToolDefinition: ToolDefinition = createCommandDefinition(
   aliases: ["command_output"],
   approvalMode: "never",
   definitionName: "read_command_output",
-  description: "Read persisted output for a command session, optionally paged by offset or filtered by a query substring.",
+  description:
+    "Read persisted output for a command session, optionally paged by offset or filtered by a query substring.",
   descriptor: {
     approvalNotes: "No operator approval is required because this tool only reads persisted local command logs.",
-    examples: ["Read the next chunk of combined output from a running session.", "Filter a command log for lines containing 'error'."],
+    examples: [
+      "Read the next chunk of combined output from a running session.",
+      "Filter a command log for lines containing 'error'."
+    ],
     purpose: "Inspect output from one-shot or live local command sessions without rerunning the command.",
     sideEffectSummary: "Reads persisted local command logs only.",
-    whenNotToUse: ["Do not use it before you have a session id.", "Do not use it to wait for completion; use wait_command."],
-    whenToUse: ["Use to tail or paginate command logs.", "Use to inspect stdout, stderr, or combined output from a stored session."]
+    whenNotToUse: [
+      "Do not use it before you have a session id.",
+      "Do not use it to wait for completion; use wait_command."
+    ],
+    whenToUse: [
+      "Use to tail or paginate command logs.",
+      "Use to inspect stdout, stderr, or combined output from a stored session."
+    ]
   },
   displayName: "Read Command Output",
   idempotent: false,
@@ -520,14 +531,21 @@ const writeStdinToolDefinition: ToolDefinition = createCommandDefinition({
   aliases: ["command_stdin"],
   approvalMode: "ask",
   definitionName: "write_stdin",
-  description: "Write text to the stdin of a running PTY command session, optionally submitting an Enter key afterward.",
+  description:
+    "Write text to the stdin of a running PTY command session, optionally submitting an Enter key afterward.",
   descriptor: {
     approvalNotes: "Approval is required because this tool can drive a live local process.",
     examples: ["Answer a prompt in an interactive CLI.", "Send a command followed by Enter to a running REPL."],
     purpose: "Drive an interactive local command session after it has started.",
     sideEffectSummary: "Writes to a running local process through its PTY.",
-    whenNotToUse: ["Do not use it for one-shot commands that are already complete.", "Do not use it to terminate a process; use kill_command."],
-    whenToUse: ["Use when a running command prompts for input.", "Use when an interactive session needs additional commands."]
+    whenNotToUse: [
+      "Do not use it for one-shot commands that are already complete.",
+      "Do not use it to terminate a process; use kill_command."
+    ],
+    whenToUse: [
+      "Use when a running command prompts for input.",
+      "Use when an interactive session needs additional commands."
+    ]
   },
   displayName: "Write Stdin",
   idempotent: false,
@@ -544,14 +562,21 @@ const waitCommandToolDefinition: ToolDefinition = createCommandDefinition({
   aliases: ["wait_for_command"],
   approvalMode: "never",
   definitionName: "wait_command",
-  description: "Wait for a command session to finish, optionally returning early after a timeout if it is still running.",
+  description:
+    "Wait for a command session to finish, optionally returning early after a timeout if it is still running.",
   descriptor: {
     approvalNotes: "No operator approval is required because this tool only observes command-session state.",
     examples: ["Wait for a background dev server build to settle.", "Poll a live command with a short timeout."],
     purpose: "Observe command completion without reissuing the original command.",
     sideEffectSummary: "Reads local command-session state only.",
-    whenNotToUse: ["Do not use it to inspect logs; use read_command_output.", "Do not use it to stop a process; use kill_command."],
-    whenToUse: ["Use to wait for a command to finish.", "Use a bounded timeout when you only need a quick completion check."]
+    whenNotToUse: [
+      "Do not use it to inspect logs; use read_command_output.",
+      "Do not use it to stop a process; use kill_command."
+    ],
+    whenToUse: [
+      "Use to wait for a command to finish.",
+      "Use a bounded timeout when you only need a quick completion check."
+    ]
   },
   displayName: "Wait Command",
   idempotent: false,
@@ -574,8 +599,14 @@ const killCommandToolDefinition: ToolDefinition = createCommandDefinition({
     examples: ["Stop a runaway dev server.", "Send SIGTERM to a background command and wait for exit."],
     purpose: "Terminate a running local command session when it should no longer continue.",
     sideEffectSummary: "Signals a running local process and may terminate it.",
-    whenNotToUse: ["Do not use it for completed sessions.", "Do not use it when the process only needs more input; use write_stdin."],
-    whenToUse: ["Use to stop background or interactive processes.", "Use when a running session must be terminated before proceeding."]
+    whenNotToUse: [
+      "Do not use it for completed sessions.",
+      "Do not use it when the process only needs more input; use write_stdin."
+    ],
+    whenToUse: [
+      "Use to stop background or interactive processes.",
+      "Use when a running session must be terminated before proceeding."
+    ]
   },
   displayName: "Kill Command",
   idempotent: false,
@@ -598,8 +629,14 @@ const listCommandSessionsToolDefinition: ToolDefinition = createCommandDefinitio
     examples: ["List recent commands to find a session id.", "Inspect which command sessions are still running."],
     purpose: "Discover available command sessions and their current state before reading logs or managing them.",
     sideEffectSummary: "Reads local command-session metadata only.",
-    whenNotToUse: ["Do not use it when you already know the exact session id.", "Do not use it to inspect detailed logs; use read_command_output."],
-    whenToUse: ["Use to discover session ids.", "Use to see whether prior commands are still running or already completed."]
+    whenNotToUse: [
+      "Do not use it when you already know the exact session id.",
+      "Do not use it to inspect detailed logs; use read_command_output."
+    ],
+    whenToUse: [
+      "Use to discover session ids.",
+      "Use to see whether prior commands are still running or already completed."
+    ]
   },
   displayName: "List Command Sessions",
   idempotent: false,

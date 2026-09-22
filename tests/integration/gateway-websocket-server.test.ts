@@ -121,7 +121,12 @@ describe("attachGatewayWebSocketServer", () => {
     cleanups.push(async () => attached.close());
 
     const socket = fakeDuplex();
-    server.emit("upgrade", { headers: {}, socket: { remoteAddress: "127.0.0.1" }, url: "/other" }, socket, Buffer.alloc(0));
+    server.emit(
+      "upgrade",
+      { headers: {}, socket: { remoteAddress: "127.0.0.1" }, url: "/other" },
+      socket,
+      Buffer.alloc(0)
+    );
     expect(socket.destroy).toHaveBeenCalled();
   });
 
@@ -137,7 +142,12 @@ describe("attachGatewayWebSocketServer", () => {
     cleanups.push(async () => attached.close());
 
     const socket = fakeDuplex();
-    server.emit("upgrade", { headers: {}, socket: { remoteAddress: "127.0.0.1" }, url: "/other" }, socket, Buffer.alloc(0));
+    server.emit(
+      "upgrade",
+      { headers: {}, socket: { remoteAddress: "127.0.0.1" }, url: "/other" },
+      socket,
+      Buffer.alloc(0)
+    );
     expect(fallback).toHaveBeenCalledOnce();
   });
 });

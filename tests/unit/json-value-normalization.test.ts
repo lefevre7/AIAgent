@@ -72,9 +72,7 @@ describe("json value normalization", () => {
     expect(toJsonValue(Number.POSITIVE_INFINITY)).toBeNull();
     expect(toJsonValue(undefined)).toBeUndefined();
     expect(toJsonValue(() => undefined)).toBeUndefined();
-    expect(toJsonValue(new Date("2026-09-18T01:46:16.661Z"))).toBe(
-      "2026-09-18T01:46:16.661Z"
-    );
+    expect(toJsonValue(new Date("2026-09-18T01:46:16.661Z"))).toBe("2026-09-18T01:46:16.661Z");
     expect(toJsonValue({ nested: { drop: undefined, keep: [{ a: undefined }] } })).toEqual({
       nested: { keep: [{}] }
     });

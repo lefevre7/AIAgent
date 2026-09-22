@@ -16,9 +16,7 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
   const selectedSnapshot = selectedSession?.snapshot.snapshot;
   const selectedRecord = selectedSnapshot?.session;
   const selectedSessionId = selectedRecord?.id;
-  const selectedApprovals = dashboard.approvals.filter(
-    (approval) => approval.request.sessionId === selectedSessionId
-  );
+  const selectedApprovals = dashboard.approvals.filter((approval) => approval.request.sessionId === selectedSessionId);
 
   return (
     <main className="cp-shell">
@@ -244,7 +242,11 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
               </div>
 
               <div className="session-actions">
-                <form action={`/api/control-plane/sessions/${encodeURIComponent(selectedRecord.id)}/messages`} method="post" className="stack-form">
+                <form
+                  action={`/api/control-plane/sessions/${encodeURIComponent(selectedRecord.id)}/messages`}
+                  method="post"
+                  className="stack-form"
+                >
                   <input type="hidden" name="redirectTo" value={redirectTo} />
                   <label>
                     <span>Message</span>
@@ -253,7 +255,11 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
                   <button type="submit">Queue Message</button>
                 </form>
 
-                <form action={`/api/control-plane/sessions/${encodeURIComponent(selectedRecord.id)}/steering`} method="post" className="stack-form">
+                <form
+                  action={`/api/control-plane/sessions/${encodeURIComponent(selectedRecord.id)}/steering`}
+                  method="post"
+                  className="stack-form"
+                >
                   <input type="hidden" name="redirectTo" value={redirectTo} />
                   <label>
                     <span>Steering</span>
@@ -365,7 +371,9 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
                                     value={option.label}
                                     defaultChecked={index === 0}
                                   />
-                                  <span>{option.description ? `${option.label} — ${option.description}` : option.label}</span>
+                                  <span>
+                                    {option.description ? `${option.label} — ${option.description}` : option.label}
+                                  </span>
                                 </label>
                               ))}
                               {/* "Other" is a radio with an empty value so a plain HTML form can

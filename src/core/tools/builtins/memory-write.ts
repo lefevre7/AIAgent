@@ -72,13 +72,15 @@ export const memoryWriteToolDefinition: ToolDefinition = {
   },
   approvalMode: "never",
   descriptor: {
-    approvalNotes: "No operator approval is required because this tool only updates local durable memory files and indexes.",
+    approvalNotes:
+      "No operator approval is required because this tool only updates local durable memory files and indexes.",
     examples: [
       "Use after confirming a durable workspace convention that should survive the current session.",
       "Use after the operator states a persistent preference that later tasks should remember."
     ],
     purpose: "Persist a durable memory entry for the workspace, the user, or the current session.",
-    sideEffectSummary: "Writes local memory indexes and summary markdown files, including MEMORY.md and session summaries when applicable.",
+    sideEffectSummary:
+      "Writes local memory indexes and summary markdown files, including MEMORY.md and session summaries when applicable.",
     whenNotToUse: [
       "Do not use for temporary task scratch notes; use update_plan for short-lived working memory.",
       "Do not write speculative facts that are not yet verified."

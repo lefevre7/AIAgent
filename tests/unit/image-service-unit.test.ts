@@ -15,7 +15,9 @@ function imageConfig(): AppConfig["image"] {
   return { ...config.image, defaultProviderId: "comfyui_local" };
 }
 
-function fakeAdapter(overrides: Partial<ImageGenerationAdapter> & Pick<ImageGenerationAdapter, "providerId">): ImageGenerationAdapter {
+function fakeAdapter(
+  overrides: Partial<ImageGenerationAdapter> & Pick<ImageGenerationAdapter, "providerId">
+): ImageGenerationAdapter {
   return {
     generate: async () => {
       throw new Error("not used");
@@ -36,8 +38,14 @@ describe("FileImageService", () => {
   test("aggregates and sorts models across adapters", async () => {
     const service = new FileImageService({
       adapters: [
-        fakeAdapter({ listModels: async () => [{ displayName: "Zeta", metadata: {}, modelId: "z", providerId: "comfyui_local" }], providerId: "comfyui_local" }),
-        fakeAdapter({ listModels: async () => [{ displayName: "Alpha", metadata: {}, modelId: "a", providerId: "other" }], providerId: "other" })
+        fakeAdapter({
+          listModels: async () => [{ displayName: "Zeta", metadata: {}, modelId: "z", providerId: "comfyui_local" }],
+          providerId: "comfyui_local"
+        }),
+        fakeAdapter({
+          listModels: async () => [{ displayName: "Alpha", metadata: {}, modelId: "a", providerId: "other" }],
+          providerId: "other"
+        })
       ],
       config: imageConfig()
     });
@@ -53,9 +61,14 @@ describe("FileImageService", () => {
   });
 
   test("reports health for all adapters and rejects unknown providers", async () => {
-    const service = new FileImageService({ adapters: [fakeAdapter({ providerId: "comfyui_local" })], config: imageConfig() });
+    const service = new FileImageService({
+      adapters: [fakeAdapter({ providerId: "comfyui_local" })],
+      config: imageConfig()
+    });
     await expect(service.listProviderHealth()).resolves.toHaveLength(1);
-    await expect(service.listProviderHealth("missing")).rejects.toMatchObject({ code: "image_provider_not_configured" });
+    await expect(service.listProviderHealth("missing")).rejects.toMatchObject({
+      code: "image_provider_not_configured"
+    });
   });
 });
 

@@ -75,8 +75,11 @@ export const memorySearchToolDefinition: ToolDefinition = {
     ],
     purpose:
       "Mandatory recall step for durable context: search the indexed memory corpus with hybrid retrieval when embeddings are healthy and lexical fallback otherwise.",
-    sideEffectSummary: "Reads the local memory index and transparently falls back to lexical retrieval if semantic retrieval is degraded.",
-    whenNotToUse: ["Do not use when you already know the exact memory file and line range you need; use memory_get instead."],
+    sideEffectSummary:
+      "Reads the local memory index and transparently falls back to lexical retrieval if semantic retrieval is degraded.",
+    whenNotToUse: [
+      "Do not use when you already know the exact memory file and line range you need; use memory_get instead."
+    ],
     whenToUse: [
       "Use when you need to recall prior work, decisions, preferences, dates, or TODO context from durable memory.",
       "Use before answering questions that depend on MEMORY.md, memory/, user-memory/, or chat-session-memory/."

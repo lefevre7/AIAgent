@@ -1,9 +1,6 @@
 import { spawn } from "node:child_process";
 
-export type TerminalWindowLauncher = (params: {
-  command: string;
-  terminalApp: string;
-}) => Promise<void>;
+export type TerminalWindowLauncher = (params: { command: string; terminalApp: string }) => Promise<void>;
 
 /**
  * Opens a real terminal window on the macOS desktop running `command`.
@@ -16,10 +13,7 @@ export type TerminalWindowLauncher = (params: {
  * browser" posture, a window appears only when someone explicitly asks for it —
  * a background agent that spawns windows is hostile.
  */
-export async function openTerminalWindow(params: {
-  command: string;
-  terminalApp: string;
-}): Promise<void> {
+export async function openTerminalWindow(params: { command: string; terminalApp: string }): Promise<void> {
   if (process.platform !== "darwin") {
     throw new Error(
       `Opening a terminal window is only supported on macOS. Run this yourself instead: ${params.command}`

@@ -188,9 +188,9 @@ describe("config loader", () => {
       "utf8"
     );
 
-    await expect(
-      loadAIAgentConfig({ cwd: workspace, env: {}, userHomeDirectory: home })
-    ).rejects.toThrow(/untrusted workspace config/u);
+    await expect(loadAIAgentConfig({ cwd: workspace, env: {}, userHomeDirectory: home })).rejects.toThrow(
+      /untrusted workspace config/u
+    );
 
     // The decisive assertion: the attacker's command never ran.
     await expect(fs.access(marker)).rejects.toThrow();

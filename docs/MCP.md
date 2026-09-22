@@ -22,9 +22,9 @@ Last updated: 2026-07-09
 - **`mcp_status`** (canonical) — lists every **configured** server with its connection
   `state`, `transport`, any connection `error`, and the tools it exposes. Crucially it
   includes **disabled and failed** servers, so the agent can answer "what MCP servers do
-  you have?" and explain *why* an expected server has no tools. Aliases:
+  you have?" and explain _why_ an expected server has no tools. Aliases:
   `list_mcp_servers`, `mcp_servers`.
-- **`tool_search`** with `kinds:["mcp"]` — lists connected MCP *tools* (returns
+- **`tool_search`** with `kinds:["mcp"]` — lists connected MCP _tools_ (returns
   `source.serverName`). It does **not** list servers or show connection state, so a
   failed/disabled/toolless server is invisible to it. Use `mcp_status` for the server
   question; use `tool_search` to find a specific tool to call.
@@ -74,7 +74,7 @@ way to see the exact reason (the connection error is recorded in
 
 Per-server (`mcp.servers.<name>`):
 
-- **`timeoutMs`** — request timeout (ms) applied to *every* SDK call for the server
+- **`timeoutMs`** — request timeout (ms) applied to _every_ SDK call for the server
   (connect handshake, `callTool`, `list*`, `getPrompt`, `readResource`). Omitted →
   the SDK default (`DEFAULT_REQUEST_TIMEOUT_MSEC`, 60s). Progress notifications reset
   the timer (`resetTimeoutOnProgress`), so long, progress-reporting tools are not
@@ -104,7 +104,7 @@ or bypasses operator deny rules. Each MCP tool call is evaluated by the approval
 which sees `mcp_server` and `mcp_tool` targets (`extractApprovalTargets`).
 
 To auto-approve a server you trust, set `trust: "trusted"` on it. The gateway
-synthesizes an `mcp_server` **allow** rule for each trusted server and appends it *after*
+synthesizes an `mcp_server` **allow** rule for each trusted server and appends it _after_
 your configured rules (`withMcpTrustRules` in `src/core/approvals/policy.ts`). An explicit
 operator **deny** rule always wins: since 2026-09-14 the policy evaluates deny rules across
 every target (`mcp_tool`, `mcp_server`, `tool`, `command`, `path`) before considering any
@@ -145,7 +145,7 @@ one of its tools with an `mcp_tool` or `tool` deny rule.
 
 ## Non-text tool output
 
-`createMcpRuntimeTool.execute` lifts text and embedded-resource *text* into the display,
+`createMcpRuntimeTool.execute` lifts text and embedded-resource _text_ into the display,
 emits `[image|audio|resource …]` placeholders for binary content, and — when an artifact
 root is configured — persists image/audio/blob blocks as artifacts. Images are forwarded
 to the model as a follow-up user message when `supportsVision` is not false (see above);

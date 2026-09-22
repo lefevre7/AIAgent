@@ -47,7 +47,7 @@ function normalizeImportedServers(
   const candidate =
     format === "generic_mcp_servers_json"
       ? (coerceRecord(root.mcpServers) ?? root)
-      : coerceRecord(root.mcpServers) ?? {};
+      : (coerceRecord(root.mcpServers) ?? {});
 
   const servers: ImportedServerRecord = {};
   for (const [serverName, value] of Object.entries(candidate)) {
@@ -68,8 +68,15 @@ function normalizeImportedServer(value: unknown): ImportedServerRecord[string] |
 
   const enabled = record.enabled === undefined ? record.disabled !== true : Boolean(record.enabled);
   const required = record.required === true;
-  const timeoutMs = typeof record.timeout === "number" ? record.timeout * 1000 : typeof record.timeoutMs === "number" ? record.timeoutMs : undefined;
-  const tags = Array.isArray(record.tags) ? record.tags.filter((entry): entry is string => typeof entry === "string") : [];
+  const timeoutMs =
+    typeof record.timeout === "number"
+      ? record.timeout * 1000
+      : typeof record.timeoutMs === "number"
+        ? record.timeoutMs
+        : undefined;
+  const tags = Array.isArray(record.tags)
+    ? record.tags.filter((entry): entry is string => typeof entry === "string")
+    : [];
   const description = typeof record.description === "string" ? record.description : undefined;
 
   if (typeof record.command === "string" && record.command.trim().length > 0) {

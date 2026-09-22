@@ -1,4 +1,10 @@
-import type { ToolApprovalMode, ToolDefinition, ToolRegistry, ToolSearchMatch, ToolSearchQuery } from "@/core/contracts";
+import type {
+  ToolApprovalMode,
+  ToolDefinition,
+  ToolRegistry,
+  ToolSearchMatch,
+  ToolSearchQuery
+} from "@/core/contracts";
 
 import type { RuntimeTool } from "@/core/tools/runtime";
 
@@ -243,7 +249,10 @@ function scoreTool(
   if (filters.kinds.size > 0 && !filters.kinds.has(definition.kind)) {
     return null;
   }
-  if (filters.sideEffects.size > 0 && !definition.sideEffects.some((sideEffect) => filters.sideEffects.has(sideEffect))) {
+  if (
+    filters.sideEffects.size > 0 &&
+    !definition.sideEffects.some((sideEffect) => filters.sideEffects.has(sideEffect))
+  ) {
     return null;
   }
 

@@ -40,12 +40,14 @@ export const webSearchToolDefinition: ToolDefinition = {
   },
   approvalMode: "never",
   descriptor: {
-    approvalNotes: "No operator approval is required because this tool only performs read-only internet search through configured MCP backends.",
+    approvalNotes:
+      "No operator approval is required because this tool only performs read-only internet search through configured MCP backends.",
     examples: [
       "Search the web for a recent product or API change before answering.",
       "Use this to discover URLs, then follow up with web_fetch for the best source."
     ],
-    purpose: "Search the internet through connected MCP search tools and normalize the results into a model-friendly result set.",
+    purpose:
+      "Search the internet through connected MCP search tools and normalize the results into a model-friendly result set.",
     sideEffectSummary: "Performs public network reads through a connected MCP search backend.",
     whenNotToUse: [
       "Do not use this when you already know the exact page to inspect; use web_fetch instead.",

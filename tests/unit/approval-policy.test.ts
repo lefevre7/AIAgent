@@ -255,9 +255,9 @@ describe("approval policy", () => {
     for (const rule of DEFAULT_APPROVAL_SETTINGS.rules) {
       expect(validateApprovalPattern(rule.pattern)).toBeNull();
     }
-    expect(() => approvalPolicyRuleSchema.parse({ id: "rule.x", mode: "deny", pattern: "^(a+)+$", targetKind: "command" })).toThrow(
-      /catastrophic backtracking/u
-    );
+    expect(() =>
+      approvalPolicyRuleSchema.parse({ id: "rule.x", mode: "deny", pattern: "^(a+)+$", targetKind: "command" })
+    ).toThrow(/catastrophic backtracking/u);
   });
 
   test("canonicalizes path targets against the session cwd so file://, ~, and .. cannot dodge a path rule", () => {
@@ -268,7 +268,9 @@ describe("approval policy", () => {
     });
     const cwd = "/workspace/app";
 
-    const relative = extractApprovalTargets(createCall({ arguments: { path: "../secrets/token" } }), definition, { cwd });
+    const relative = extractApprovalTargets(createCall({ arguments: { path: "../secrets/token" } }), definition, {
+      cwd
+    });
     expect(relative.find((target) => target.kind === "path")?.value).toBe("/workspace/secrets/token");
 
     const fileUri = extractApprovalTargets(
@@ -282,7 +284,9 @@ describe("approval policy", () => {
     expect(home.find((target) => target.kind === "path")?.value).toBe(path.join(os.homedir(), "secrets", "token"));
 
     // Remote URLs are not local paths and must not become path targets.
-    const remote = extractApprovalTargets(createCall({ arguments: { uri: "https://example.com/x" } }), definition, { cwd });
+    const remote = extractApprovalTargets(createCall({ arguments: { uri: "https://example.com/x" } }), definition, {
+      cwd
+    });
     expect(remote.some((target) => target.kind === "path")).toBe(false);
 
     // Without a cwd the raw value is kept (compatibility for direct callers).
@@ -597,7 +601,6 @@ describe("approval policy", () => {
     }
     expect(runDecision.request.target.kind).toBe("external_agent");
     expect(runDecision.request.target.value).toBe("codex");
-
   });
 
   test("evaluates an interactive start against the command it will actually spawn", async () => {

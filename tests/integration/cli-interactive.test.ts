@@ -194,7 +194,12 @@ function createFakeSdk(
     },
     async request(topic: string) {
       if (topic === "model.health") {
-        return { checkedAt: "2026-06-10T12:00:00.000Z", details: {}, providerId: "fake", status: options.modelStatus ?? "healthy" };
+        return {
+          checkedAt: "2026-06-10T12:00:00.000Z",
+          details: {},
+          providerId: "fake",
+          status: options.modelStatus ?? "healthy"
+        };
       }
       throw new Error(`unexpected request topic ${topic}`);
     },
@@ -388,7 +393,9 @@ describe("interactive CLI loop", () => {
   });
 
   test("denies an approval outright without prompting for an explanation", async () => {
-    const fake = createFakeSdk({ pendingApprovals: [{ label: "Run Command", requestId: "approval.2", value: "shell_command" }] });
+    const fake = createFakeSdk({
+      pendingApprovals: [{ label: "Run Command", requestId: "approval.2", value: "shell_command" }]
+    });
     const capture = createCaptureStreams();
 
     const exitCode = await runCli([], capture.streams, {
@@ -405,7 +412,9 @@ describe("interactive CLI loop", () => {
   });
 
   test("`e` denies and sends the explanation as the resolution comment so it becomes steering", async () => {
-    const fake = createFakeSdk({ pendingApprovals: [{ label: "Run Command", requestId: "approval.3", value: "shell_command" }] });
+    const fake = createFakeSdk({
+      pendingApprovals: [{ label: "Run Command", requestId: "approval.3", value: "shell_command" }]
+    });
     const capture = createCaptureStreams();
 
     const exitCode = await runCli([], capture.streams, {
@@ -512,7 +521,9 @@ describe("interactive CLI loop", () => {
   });
 
   test("/compact summarizes the session through the SDK and reports the result", async () => {
-    const fake = createFakeSdk({ compactResult: { hiddenMessageCount: 6, summaryPath: "/tmp/chat-session-memory/session.md" } });
+    const fake = createFakeSdk({
+      compactResult: { hiddenMessageCount: 6, summaryPath: "/tmp/chat-session-memory/session.md" }
+    });
     const capture = createCaptureStreams();
 
     const exitCode = await runCli([], capture.streams, {
@@ -532,7 +543,10 @@ describe("interactive CLI loop", () => {
     const empty = createFakeSdk({ compactResult: { hiddenMessageCount: 0 } });
     const emptyCapture = createCaptureStreams();
     expect(
-      await runCli([], emptyCapture.streams, { createSdk: async () => empty.sdk, interactiveInput: lineSource(["/compact", "/exit"]) })
+      await runCli([], emptyCapture.streams, {
+        createSdk: async () => empty.sdk,
+        interactiveInput: lineSource(["/compact", "/exit"])
+      })
     ).toBe(0);
     expect(emptyCapture.getStdout()).toContain("Nothing to compact yet");
 
@@ -623,7 +637,9 @@ describe("interactive CLI loop", () => {
   });
 });
 
-function createPromptSdk(options: { assistant?: string; lastError?: string; status?: string; throwOnCreate?: boolean } = {}): {
+function createPromptSdk(
+  options: { assistant?: string; lastError?: string; status?: string; throwOnCreate?: boolean } = {}
+): {
   sdk: AIAgentSdk;
   wasClosed: () => boolean;
 } {
@@ -759,14 +775,49 @@ function fakeVoiceService(overrides: Partial<VoiceService> = {}): VoiceService {
   return {
     dispose: async () => undefined,
     getCapture: async () => null,
-    listDevices: async () => [{ default: true, id: "spk", kind: "output", metadata: {}, name: "Speaker", providerId: "local_system" }],
+    listDevices: async () => [
+      { default: true, id: "spk", kind: "output", metadata: {}, name: "Speaker", providerId: "local_system" }
+    ],
     listProviderHealth: async () => [],
-    listVoices: async () => [{ default: true, displayName: "Alex", id: "Alex", locale: "en-US", metadata: {}, providerId: "local_system" }],
-    playback: async () => ({ id: "playback.1", metadata: {}, providerId: "local_system", startedAt: "x", status: "completed" }),
-    startCapture: async () => ({ id: "capture.1", metadata: {}, providerId: "apple_native", startedAt: "x", status: "recording" }),
-    stopCapture: async () => ({ id: "capture.1", metadata: {}, providerId: "apple_native", startedAt: "x", status: "completed" }),
-    synthesize: async () => ({ audio: audioArtifact("file:///tmp/synth.aiff"), completedAt: "x", id: "synthesis.1", metadata: {}, providerId: "local_system" }),
-    transcribe: async () => ({ completedAt: "x", id: "transcription.1", locale: "en-US", metadata: {}, providerId: "apple_native", text: "transcribed words" }),
+    listVoices: async () => [
+      { default: true, displayName: "Alex", id: "Alex", locale: "en-US", metadata: {}, providerId: "local_system" }
+    ],
+    playback: async () => ({
+      id: "playback.1",
+      metadata: {},
+      providerId: "local_system",
+      startedAt: "x",
+      status: "completed"
+    }),
+    startCapture: async () => ({
+      id: "capture.1",
+      metadata: {},
+      providerId: "apple_native",
+      startedAt: "x",
+      status: "recording"
+    }),
+    stopCapture: async () => ({
+      id: "capture.1",
+      metadata: {},
+      providerId: "apple_native",
+      startedAt: "x",
+      status: "completed"
+    }),
+    synthesize: async () => ({
+      audio: audioArtifact("file:///tmp/synth.aiff"),
+      completedAt: "x",
+      id: "synthesis.1",
+      metadata: {},
+      providerId: "local_system"
+    }),
+    transcribe: async () => ({
+      completedAt: "x",
+      id: "transcription.1",
+      locale: "en-US",
+      metadata: {},
+      providerId: "apple_native",
+      text: "transcribed words"
+    }),
     waitForCapture: async () => ({
       audio: audioArtifact(),
       id: "capture.1",
@@ -796,15 +847,23 @@ async function tempAudioFile(): Promise<string> {
 describe("CLI voice subcommands", () => {
   test("lists devices and voices, with empty fallbacks", async () => {
     const cap = createCaptureStreams();
-    expect(await runCli(["voice", "list-devices", "--kind", "output"], cap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(
+      await runCli(["voice", "list-devices", "--kind", "output"], cap.streams, voiceDeps(fakeVoiceService()))
+    ).toBe(0);
     expect(cap.getStdout()).toContain("Speaker");
 
     const voicesCap = createCaptureStreams();
-    expect(await runCli(["voice", "list-voices", "--locale", "en"], voicesCap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(
+      await runCli(["voice", "list-voices", "--locale", "en"], voicesCap.streams, voiceDeps(fakeVoiceService()))
+    ).toBe(0);
     expect(voicesCap.getStdout()).toContain("Alex");
 
     const emptyCap = createCaptureStreams();
-    await runCli(["voice", "list-devices"], emptyCap.streams, voiceDeps(fakeVoiceService({ listDevices: async () => [] })));
+    await runCli(
+      ["voice", "list-devices"],
+      emptyCap.streams,
+      voiceDeps(fakeVoiceService({ listDevices: async () => [] }))
+    );
     expect(emptyCap.getStdout()).toContain("No matching voice devices");
   });
 
@@ -828,23 +887,30 @@ describe("CLI voice subcommands", () => {
 
   test("captures audio and reports failures", async () => {
     const okCap = createCaptureStreams();
-    expect(await runCli(["voice", "capture", "--max-duration-ms", "5000"], okCap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(
+      await runCli(["voice", "capture", "--max-duration-ms", "5000"], okCap.streams, voiceDeps(fakeVoiceService()))
+    ).toBe(0);
     expect(okCap.getStdout()).toContain("captured words");
 
     const failCap = createCaptureStreams();
     const failing = fakeVoiceService({
-      waitForCapture: async () => ({ id: "capture.1", metadata: {}, providerId: "apple_native", startedAt: "x", status: "failed" }) as never
+      waitForCapture: async () =>
+        ({ id: "capture.1", metadata: {}, providerId: "apple_native", startedAt: "x", status: "failed" }) as never
     });
     expect(await runCli(["voice", "capture"], failCap.streams, voiceDeps(failing))).toBe(1);
   });
 
   test("synthesizes and speaks text", async () => {
     const synthCap = createCaptureStreams();
-    expect(await runCli(["voice", "synthesize", "--text", "hello"], synthCap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(
+      await runCli(["voice", "synthesize", "--text", "hello"], synthCap.streams, voiceDeps(fakeVoiceService()))
+    ).toBe(0);
     expect(synthCap.getStdout()).toContain("file:///tmp/synth.aiff");
 
     const speakCap = createCaptureStreams();
-    expect(await runCli(["voice", "speak", "--text", "hello"], speakCap.streams, voiceDeps(fakeVoiceService()))).toBe(0);
+    expect(await runCli(["voice", "speak", "--text", "hello"], speakCap.streams, voiceDeps(fakeVoiceService()))).toBe(
+      0
+    );
     expect(speakCap.getStdout()).toContain("Speech playback completed.");
 
     const noTextCap = createCaptureStreams();

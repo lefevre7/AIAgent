@@ -45,11 +45,7 @@ export type AgentLoopRunResult = {
   approvalRequests: ApprovalRequest[];
   messages: Message[];
   session: SessionRecord;
-  stopReason:
-    | "awaiting_approval"
-    | "completed"
-    | "completion_blocked"
-    | "failed";
+  stopReason: "awaiting_approval" | "completed" | "completion_blocked" | "failed";
   toolCalls: ToolCallRecord[];
   turns: TurnRecord[];
 };
@@ -70,10 +66,7 @@ export type AgentLoopRunParams = {
   userMessages?: Message[];
 };
 
-type AgentLoopModelRequest = Omit<
-  LanguageModelRequest,
-  "modelId" | "provider"
-> & {
+type AgentLoopModelRequest = Omit<LanguageModelRequest, "modelId" | "provider"> & {
   modelId?: string;
   provider?: LanguageModelProvider;
 };
@@ -121,16 +114,8 @@ type AgentLoopOptions = {
     topK?: number;
     topP?: number;
   };
-  onAssistantDelta?: (params: {
-    delta: string;
-    sessionId: string;
-    turnId: string;
-  }) => void;
-  onAssistantReasoning?: (params: {
-    delta: string;
-    sessionId: string;
-    turnId: string;
-  }) => void;
+  onAssistantDelta?: (params: { delta: string; sessionId: string; turnId: string }) => void;
+  onAssistantReasoning?: (params: { delta: string; sessionId: string; turnId: string }) => void;
   onStatus?: (params: {
     session: SessionRecord;
     summary: string;
@@ -140,10 +125,7 @@ type AgentLoopOptions = {
   // the run is still going instead of receiving it all after the run ends. The
   // host is expected to swallow its own failures: progress reporting must never
   // be able to abort the run it is reporting on.
-  onToolUpdated?: (params: {
-    sessionId: string;
-    toolCall: ToolCallRecord;
-  }) => Promise<void> | void;
+  onToolUpdated?: (params: { sessionId: string; toolCall: ToolCallRecord }) => Promise<void> | void;
   promptBudgets?: {
     instructionDocChars?: number;
     memorySummaryChars?: number;
@@ -194,10 +176,8 @@ export class AgentLoop {
       ? await this.options.taskStateProvider.getTaskState(params.session.id)
       : null;
     const maxTurns = params.maxTurns ?? "unlimited";
-    const maxConsecutiveNudges =
-      params.maxConsecutiveNudges ?? DEFAULT_MAX_CONSECUTIVE_NUDGES;
-    const maxIdenticalToolCalls =
-      params.maxIdenticalToolCalls ?? DEFAULT_MAX_IDENTICAL_TOOL_CALLS;
+    const maxConsecutiveNudges = params.maxConsecutiveNudges ?? DEFAULT_MAX_CONSECUTIVE_NUDGES;
+    const maxIdenticalToolCalls = params.maxIdenticalToolCalls ?? DEFAULT_MAX_IDENTICAL_TOOL_CALLS;
     // How many times each exact (tool, arguments) pair has already run in this
     // execution. A small model that cannot tell an empty result from a failed
     // one will otherwise reissue the same read indefinitely, and the
@@ -207,17 +187,11 @@ export class AgentLoop {
     // reaches the Durable Memory section of the system prompt.
     const buildPack = async (forSession: SessionRecord) =>
       buildPromptPack({
-        availableTools: this.resolveEffectiveTools(
-          params.availableTools,
-          forSession
-        ),
+        availableTools: this.resolveEffectiveTools(params.availableTools, forSession),
         cwd: forSession.cwd,
-        instructionDocCharBudget:
-          this.options.promptBudgets?.instructionDocChars,
+        instructionDocCharBudget: this.options.promptBudgets?.instructionDocChars,
         memoryContext: this.options.memoryContextProvider
-          ? await this.options.memoryContextProvider.getPromptContext(
-              forSession.id
-            )
+          ? await this.options.memoryContextProvider.getPromptContext(forSession.id)
           : null,
         memorySummaryCharBudget: this.options.promptBudgets?.memorySummaryChars,
         taskSummary: params.taskSummary ?? forSession.goal,
@@ -226,13 +200,9 @@ export class AgentLoop {
       });
     let promptPack = await buildPack(params.session);
 
-    let session = await this.persistSession(
-      params.session,
-      params.session.status,
-      {
-        activeTurnId: params.session.activeTurnId
-      }
-    );
+    let session = await this.persistSession(params.session, params.session.status, {
+      activeTurnId: params.session.activeTurnId
+    });
 
     const appendedMessages: Message[] = [];
     const appendedToolCalls: ToolCallRecord[] = [];
@@ -240,10 +210,7 @@ export class AgentLoop {
     const appendedTurns: TurnRecord[] = [];
 
     for (const item of params.approvalResolutions ?? []) {
-      await this.options.sessions.appendApprovalResolution(
-        item.resolution,
-        item.sessionId
-      );
+      await this.options.sessions.appendApprovalResolution(item.resolution, item.sessionId);
     }
 
     const pendingApprovals = await this.listSessionPendingApprovals(session.id);
@@ -263,10 +230,7 @@ export class AgentLoop {
     }
 
     const persistedQueuedSteering = await this.listQueuedSteering(session.id);
-    const queuedSteering = mergeSteeringInjections(
-      persistedQueuedSteering,
-      params.steeringInjections ?? []
-    );
+    const queuedSteering = mergeSteeringInjections(persistedQueuedSteering, params.steeringInjections ?? []);
 
     if ((params.userMessages ?? []).length > 0) {
       await this.options.sessions.appendMessages(params.userMessages ?? []);
@@ -283,14 +247,10 @@ export class AgentLoop {
 
     let pendingInputMessages = [
       ...(params.userMessages ?? []),
-      ...appliedSteering.map((injection) =>
-        createSteeringMessage(session.id, injection)
-      )
+      ...appliedSteering.map((injection) => createSteeringMessage(session.id, injection))
     ];
     if (pendingInputMessages.length > 0) {
-      const steeringMessages = pendingInputMessages.filter(
-        (message) => message.source !== "user"
-      );
+      const steeringMessages = pendingInputMessages.filter((message) => message.source !== "user");
       if (steeringMessages.length > 0) {
         await this.options.sessions.appendMessages(steeringMessages);
         appendedMessages.push(...steeringMessages);
@@ -298,11 +258,7 @@ export class AgentLoop {
     }
 
     let nextTrigger: TurnRecord["trigger"] =
-      appliedSteering.length > 0
-        ? "steering"
-        : pendingInputMessages.length > 0
-          ? "user"
-          : "resume";
+      appliedSteering.length > 0 ? "steering" : pendingInputMessages.length > 0 ? "user" : "resume";
 
     let consecutiveNudges = 0;
     // Tracked separately from consecutiveNudges so a single "think, then act"
@@ -312,11 +268,7 @@ export class AgentLoop {
     // status metric reports cumulative work (like context, which accumulates
     // until compaction) rather than just the latest turn.
     let cumulativeOutputTokens = 0;
-    for (
-      let sequence = 0;
-      maxTurns === "unlimited" || sequence < maxTurns;
-      sequence += 1
-    ) {
+    for (let sequence = 0; maxTurns === "unlimited" || sequence < maxTurns; sequence += 1) {
       const turnId = `turn.${session.id}.${sequence + 1}.${crypto.randomUUID()}`;
       const startedAt = new Date().toISOString();
       const statusMessage = createStatusMessage(session, turnId, sequence + 1);
@@ -325,10 +277,7 @@ export class AgentLoop {
 
       const turn = createTurnRecord({
         id: turnId,
-        inputMessageIds: [
-          ...pendingInputMessages.map((message) => message.id),
-          statusMessage.id
-        ],
+        inputMessageIds: [...pendingInputMessages.map((message) => message.id), statusMessage.id],
         sequence,
         sessionId: session.id,
         startedAt,
@@ -342,18 +291,11 @@ export class AgentLoop {
 
       await this.emitStatus(session, `Running model turn ${sequence + 1}.`);
 
-      const snapshot = await this.options.sessions.getSessionSnapshot(
-        session.id
-      );
-      const visibleMessages = filterModelVisibleMessages(
-        snapshot?.messages ?? [],
-        session,
-        { reasoningContextTurns: params.reasoningContextTurns }
-      );
-      const effectiveTools = this.resolveEffectiveTools(
-        params.availableTools,
-        session
-      );
+      const snapshot = await this.options.sessions.getSessionSnapshot(session.id);
+      const visibleMessages = filterModelVisibleMessages(snapshot?.messages ?? [], session, {
+        reasoningContextTurns: params.reasoningContextTurns
+      });
+      const effectiveTools = this.resolveEffectiveTools(params.availableTools, session);
 
       const modelRequest = {
         availableTools: effectiveTools,
@@ -361,9 +303,7 @@ export class AgentLoop {
         instructions: promptPack.systemPrompt,
         messages: visibleMessages,
         metadata: {},
-        ...(typeof session.metadata.activeModelId === "string"
-          ? { modelId: session.metadata.activeModelId }
-          : {}),
+        ...(typeof session.metadata.activeModelId === "string" ? { modelId: session.metadata.activeModelId } : {}),
         ...(typeof session.metadata.activeProvider === "string"
           ? {
               provider: session.metadata.activeProvider as LanguageModelProvider
@@ -380,9 +320,7 @@ export class AgentLoop {
           ...(this.options.modelSettings?.maxOutputTokens !== undefined
             ? { maxOutputTokens: this.options.modelSettings.maxOutputTokens }
             : {}),
-          ...(this.options.modelSettings?.minP !== undefined
-            ? { minP: this.options.modelSettings.minP }
-            : {}),
+          ...(this.options.modelSettings?.minP !== undefined ? { minP: this.options.modelSettings.minP } : {}),
           ...(this.options.modelSettings?.presencePenalty !== undefined
             ? { presencePenalty: this.options.modelSettings.presencePenalty }
             : {}),
@@ -399,12 +337,8 @@ export class AgentLoop {
             ? { temperature: this.options.modelSettings.temperature }
             : {}),
           toolChoice: "auto" as const,
-          ...(this.options.modelSettings?.topK !== undefined
-            ? { topK: this.options.modelSettings.topK }
-            : {}),
-          ...(this.options.modelSettings?.topP !== undefined
-            ? { topP: this.options.modelSettings.topP }
-            : {})
+          ...(this.options.modelSettings?.topK !== undefined ? { topK: this.options.modelSettings.topK } : {}),
+          ...(this.options.modelSettings?.topP !== undefined ? { topP: this.options.modelSettings.topP } : {})
         },
         turnId: turn.id
       };
@@ -413,10 +347,7 @@ export class AgentLoop {
       try {
         const onAssistantDelta = this.options.onAssistantDelta;
         const onAssistantReasoning = this.options.onAssistantReasoning;
-        if (
-          this.options.model.stream &&
-          (onAssistantDelta || onAssistantReasoning)
-        ) {
+        if (this.options.model.stream && (onAssistantDelta || onAssistantReasoning)) {
           response = await this.options.model.stream(modelRequest, (event) => {
             if (event.kind === "response.delta") {
               onAssistantDelta?.({
@@ -459,11 +390,7 @@ export class AgentLoop {
         this.buildStatusMetrics(response, runStartTime, cumulativeOutputTokens)
       );
 
-      const assistantMessage = buildAssistantTurnMessage(
-        session.id,
-        turn.id,
-        response
-      );
+      const assistantMessage = buildAssistantTurnMessage(session.id, turn.id, response);
       if (assistantMessage) {
         await this.options.sessions.appendMessages([assistantMessage]);
         appendedMessages.push(assistantMessage);
@@ -475,10 +402,7 @@ export class AgentLoop {
       // turns this is what stops a model that loops without progressing. The
       // guard fires only after the unproductive outcome is known, so a valid
       // completion attempt is always evaluated first.
-      const failNoProgressGuard = async (
-        summary: string,
-        statusSummary: string
-      ): Promise<AgentLoopRunResult> => {
+      const failNoProgressGuard = async (summary: string, statusSummary: string): Promise<AgentLoopRunResult> => {
         turn.completedAt = new Date().toISOString();
         turn.status = "completed";
         turn.summary = summary;
@@ -513,9 +437,7 @@ export class AgentLoop {
           rejectedToolCalls.length > 0
             ? `${promptPack.nudges.taskContinuation}\n\nYour previous tool call(s) could not be parsed and were ignored:\n${rejectedToolCalls
                 .map((reason) => `- ${reason}`)
-                .join(
-                  "\n"
-                )}\nRe-issue each tool call with the exact tool name and valid JSON arguments.`
+                .join("\n")}\nRe-issue each tool call with the exact tool name and valid JSON arguments.`
             : promptPack.nudges.taskContinuation,
           "system",
           "compact"
@@ -525,8 +447,7 @@ export class AgentLoop {
         turn.outputMessageIds.push(continuationMessage.id);
         turn.completedAt = new Date().toISOString();
         turn.status = "completed";
-        turn.summary =
-          "The runtime nudged the model to continue because it did not use any tools.";
+        turn.summary = "The runtime nudged the model to continue because it did not use any tools.";
         await this.options.sessions.appendTurn(turn);
         appendedTurns.push(turn);
         pendingInputMessages = [continuationMessage];
@@ -536,16 +457,10 @@ export class AgentLoop {
 
       const completionInvocationNames = new Set(
         params.availableTools
-          .filter(
-            (tool) =>
-              tool.toolId === "tool.builtin.attempt_complete" ||
-              tool.name === "attempt_complete"
-          )
+          .filter((tool) => tool.toolId === "tool.builtin.attempt_complete" || tool.name === "attempt_complete")
           .map((tool) => tool.invocationName)
       );
-      const completionCalls = response.toolCalls.filter((toolCall) =>
-        completionInvocationNames.has(toolCall.toolName)
-      );
+      const completionCalls = response.toolCalls.filter((toolCall) => completionInvocationNames.has(toolCall.toolName));
       const nonCompletionCalls = response.toolCalls.filter(
         (toolCall) => !completionInvocationNames.has(toolCall.toolName)
       );
@@ -566,9 +481,7 @@ export class AgentLoop {
             "system",
             "compact"
           );
-          await this.options.sessions.appendMessages([
-            invalidCompletionMessage
-          ]);
+          await this.options.sessions.appendMessages([invalidCompletionMessage]);
           appendedMessages.push(invalidCompletionMessage);
           turn.outputMessageIds.push(invalidCompletionMessage.id);
           turn.completedAt = new Date().toISOString();
@@ -579,8 +492,7 @@ export class AgentLoop {
           pendingInputMessages = [invalidCompletionMessage];
           nextTrigger = "system_nudge";
           session = await this.persistSession(session, "completion_blocked", {
-            statusSummary:
-              "Completion was blocked because `attempt_complete` was mixed with other tool calls."
+            statusSummary: "Completion was blocked because `attempt_complete` was mixed with other tool calls."
           });
           continue;
         }
@@ -590,10 +502,7 @@ export class AgentLoop {
           statusSummary: "Validating completion."
         });
 
-        const completionDecision = await this.resolveCompletionDecision(
-          session,
-          response
-        );
+        const completionDecision = await this.resolveCompletionDecision(session, response);
         if (completionDecision.accepted) {
           // The prompt pack tells the model to put its final answer in the
           // `summary` argument rather than in a chat message, and
@@ -604,11 +513,7 @@ export class AgentLoop {
           // session summary, from one place.
           const completionSummary = readCompletionSummary(completionCalls[0]);
           if (completionSummary) {
-            const summaryMessage = createCompletionSummaryMessage(
-              session.id,
-              turn.id,
-              completionSummary
-            );
+            const summaryMessage = createCompletionSummaryMessage(session.id, turn.id, completionSummary);
             await this.options.sessions.appendMessages([summaryMessage]);
             appendedMessages.push(summaryMessage);
             turn.outputMessageIds.push(summaryMessage.id);
@@ -658,13 +563,11 @@ export class AgentLoop {
         turn.outputMessageIds.push(rejectionMessage.id);
         turn.completedAt = new Date().toISOString();
         turn.status = "completed";
-        turn.summary =
-          "The runtime rejected `attempt_complete` and returned structured reasons.";
+        turn.summary = "The runtime rejected `attempt_complete` and returned structured reasons.";
         await this.options.sessions.appendTurn(turn);
         appendedTurns.push(turn);
         session = await this.persistSession(session, "completion_blocked", {
-          statusSummary:
-            "Completion was rejected because required work remains unresolved."
+          statusSummary: "Completion was rejected because required work remains unresolved."
         });
         pendingInputMessages = [rejectionMessage];
         nextTrigger = "system_nudge";
@@ -708,23 +611,15 @@ export class AgentLoop {
         const toolDefinition = params.availableTools.find(
           (definition) => definition.invocationName === proposal.toolName
         );
-        const toolCall = createToolCallRecord(
-          session.id,
-          turn.id,
-          proposal,
-          toolDefinition
-        );
+        const toolCall = createToolCallRecord(session.id, turn.id, proposal, toolDefinition);
         const identityKey = toolCallIdentityKey(toolCall);
-        const priorIdenticalCalls =
-          identicalToolCallCounts.get(identityKey) ?? 0;
+        const priorIdenticalCalls = identicalToolCallCounts.get(identityKey) ?? 0;
         identicalToolCallCounts.set(identityKey, priorIdenticalCalls + 1);
 
         const outcome =
           priorIdenticalCalls >= maxIdenticalToolCalls
             ? refuseRepeatedToolCall(toolCall, priorIdenticalCalls)
-            : await (
-                this.options.toolExecutor ?? defaultToolExecutor()
-              ).execute(toolCall, {
+            : await (this.options.toolExecutor ?? defaultToolExecutor()).execute(toolCall, {
                 session,
                 turn
               });
@@ -736,29 +631,17 @@ export class AgentLoop {
         });
       }
 
-      await this.options.sessions.appendToolCalls(
-        toolOutcomes.map((outcome) => outcome.toolCall)
-      );
-      turn.requestedToolCallIds = toolOutcomes.map(
-        (outcome) => outcome.toolCall.id
-      );
-      turn.executedToolCallIds = toolOutcomes.map(
-        (outcome) => outcome.toolCall.id
-      );
+      await this.options.sessions.appendToolCalls(toolOutcomes.map((outcome) => outcome.toolCall));
+      turn.requestedToolCallIds = toolOutcomes.map((outcome) => outcome.toolCall.id);
+      turn.executedToolCallIds = toolOutcomes.map((outcome) => outcome.toolCall.id);
 
       const toolResultMessages = toolOutcomes
-        .map(
-          (outcome) =>
-            outcome.resultMessage ??
-            createToolResultMessage(session.id, turn.id, outcome.toolCall)
-        )
+        .map((outcome) => outcome.resultMessage ?? createToolResultMessage(session.id, turn.id, outcome.toolCall))
         .filter(Boolean);
       if (toolResultMessages.length > 0) {
         await this.options.sessions.appendMessages(toolResultMessages);
         appendedMessages.push(...toolResultMessages);
-        turn.outputMessageIds.push(
-          ...toolResultMessages.map((message) => message.id)
-        );
+        turn.outputMessageIds.push(...toolResultMessages.map((message) => message.id));
       }
 
       const approvalRequests = toolOutcomes
@@ -773,15 +656,12 @@ export class AgentLoop {
         turn.approvalRequestIds = approvalRequests.map((request) => request.id);
         turn.completedAt = new Date().toISOString();
         turn.status = "waiting_for_approval";
-        turn.summary =
-          "The runtime paused because tool execution requires approval.";
+        turn.summary = "The runtime paused because tool execution requires approval.";
         await this.options.sessions.appendTurn(turn);
         appendedTurns.push(turn);
         session = await this.persistSession(session, "awaiting_approval", {
           pendingApprovalIds: approvalRequests.map((request) => request.id),
-          pendingToolCallIds: toolOutcomes.map(
-            (outcome) => outcome.toolCall.id
-          ),
+          pendingToolCallIds: toolOutcomes.map((outcome) => outcome.toolCall.id),
           statusSummary: `Waiting for ${approvalRequests.length} approval decision(s).`
         });
         return {
@@ -803,15 +683,10 @@ export class AgentLoop {
       });
       if (compacted) {
         session = compacted;
-        session = await this.persistSession(
-          session,
-          "awaiting_tool_execution",
-          {
-            activeTurnId: turn.id,
-            statusSummary:
-              "Compacted session context after crossing the token threshold."
-          }
-        );
+        session = await this.persistSession(session, "awaiting_tool_execution", {
+          activeTurnId: turn.id,
+          statusSummary: "Compacted session context after crossing the token threshold."
+        });
         promptPack = await buildPack(session);
       }
 
@@ -855,10 +730,7 @@ export class AgentLoop {
     };
   }
 
-  private resolveEffectiveTools(
-    baseTools: ToolDefinition[],
-    session: SessionRecord
-  ): ToolDefinition[] {
+  private resolveEffectiveTools(baseTools: ToolDefinition[], session: SessionRecord): ToolDefinition[] {
     const catalog = this.options.toolCatalog;
     if (!catalog) {
       return baseTools;
@@ -884,10 +756,7 @@ export class AgentLoop {
     return effective;
   }
 
-  private mergeActivatedTools(
-    session: SessionRecord,
-    outcomes: AgentLoopToolExecutionResult[]
-  ): SessionRecord {
+  private mergeActivatedTools(session: SessionRecord, outcomes: AgentLoopToolExecutionResult[]): SessionRecord {
     if (!this.options.toolCatalog) {
       return session;
     }
@@ -897,18 +766,12 @@ export class AgentLoop {
       if (outcome.toolCall.status !== "succeeded") {
         continue;
       }
-      const definition = this.options.toolCatalog.getDefinition(
-        outcome.toolCall.toolName
-      );
+      const definition = this.options.toolCatalog.getDefinition(outcome.toolCall.toolName);
       if (!definition || definition.name !== "tool_search") {
         continue;
       }
       const result = outcome.toolCall.result;
-      if (
-        typeof result !== "object" ||
-        result === null ||
-        Array.isArray(result)
-      ) {
+      if (typeof result !== "object" || result === null || Array.isArray(result)) {
         continue;
       }
       const matches = (result as { matches?: unknown }).matches;
@@ -916,13 +779,8 @@ export class AgentLoop {
         continue;
       }
       for (const match of matches) {
-        if (
-          typeof match === "object" &&
-          match !== null &&
-          !Array.isArray(match)
-        ) {
-          const invocationName = (match as { invocationName?: unknown })
-            .invocationName;
+        if (typeof match === "object" && match !== null && !Array.isArray(match)) {
+          const invocationName = (match as { invocationName?: unknown }).invocationName;
           if (typeof invocationName === "string" && invocationName.length > 0) {
             discovered.push(invocationName);
           }
@@ -934,9 +792,7 @@ export class AgentLoop {
       return session;
     }
 
-    const merged = Array.from(
-      new Set([...readActivatedToolNames(session), ...discovered])
-    ).slice(0, 64);
+    const merged = Array.from(new Set([...readActivatedToolNames(session), ...discovered])).slice(0, 64);
     return {
       ...session,
       metadata: {
@@ -985,11 +841,7 @@ export class AgentLoop {
     };
   }
 
-  private async emitStatus(
-    session: SessionRecord,
-    summary: string,
-    metrics?: AgentLoopStatusMetrics
-  ): Promise<void> {
+  private async emitStatus(session: SessionRecord, summary: string, metrics?: AgentLoopStatusMetrics): Promise<void> {
     await this.options.onStatus?.({
       ...(metrics ? { metrics } : {}),
       session,
@@ -1007,15 +859,11 @@ export class AgentLoop {
     // reflects how full the window is, so it uses the latest prompt (input)
     // tokens against the resolved window size.
     const promptTokens = response.usage.inputTokens;
-    const contextWindowTokens =
-      this.resolveContextWindowTokens() ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+    const contextWindowTokens = this.resolveContextWindowTokens() ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
     return {
       ...(contextWindowTokens > 0 && promptTokens > 0
         ? {
-            contextWindowPercentage: Math.min(
-              100,
-              Math.round((promptTokens / contextWindowTokens) * 1000) / 10
-            )
+            contextWindowPercentage: Math.min(100, Math.round((promptTokens / contextWindowTokens) * 1000) / 10)
           }
         : {}),
       elapsedSeconds: Math.round((Date.now() - runStartTime) / 1000),
@@ -1031,18 +879,14 @@ export class AgentLoop {
     return configured && configured > 0 ? configured : undefined;
   }
 
-  private async listSessionPendingApprovals(
-    sessionId: string
-  ): Promise<ApprovalRequest[]> {
+  private async listSessionPendingApprovals(sessionId: string): Promise<ApprovalRequest[]> {
     const approvals = await this.options.sessions.readPendingApprovals();
     return Object.values(approvals)
       .filter((entry) => entry.sessionId === sessionId)
       .map((entry) => entry.request);
   }
 
-  private async listQueuedSteering(
-    sessionId: string
-  ): Promise<SteeringInjection[]> {
+  private async listQueuedSteering(sessionId: string): Promise<SteeringInjection[]> {
     const snapshot = await this.options.sessions.getSessionSnapshot(sessionId);
     if (!snapshot) {
       return [];
@@ -1058,10 +902,7 @@ export class AgentLoop {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  private async persistFailedSession(
-    session: SessionRecord,
-    error: unknown
-  ): Promise<SessionRecord> {
+  private async persistFailedSession(session: SessionRecord, error: unknown): Promise<SessionRecord> {
     return this.persistSession(session, "failed", {
       statusSummary: "The language model request failed.",
       structuredError: normalizeUnknownError(error)
@@ -1131,9 +972,7 @@ function readActivatedToolNames(session: SessionRecord): string[] {
   if (!Array.isArray(raw)) {
     return [];
   }
-  return raw.filter(
-    (entry): entry is string => typeof entry === "string" && entry.length > 0
-  );
+  return raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
 }
 
 export function filterModelVisibleMessages(
@@ -1163,19 +1002,14 @@ export function filterModelVisibleMessages(
  * reasoning to survive across tool results. Filtering by turn (rather than by
  * message) is what makes those two requirements compatible.
  */
-function dropStaleReasoningParts(
-  messages: Message[],
-  retainedTurns: number
-): Message[] {
+function dropStaleReasoningParts(messages: Message[], retainedTurns: number): Message[] {
   const turnIds: string[] = [];
   for (const message of messages) {
     if (message.turnId !== undefined && !turnIds.includes(message.turnId)) {
       turnIds.push(message.turnId);
     }
   }
-  const retained = new Set(
-    retainedTurns > 0 ? turnIds.slice(-retainedTurns) : []
-  );
+  const retained = new Set(retainedTurns > 0 ? turnIds.slice(-retainedTurns) : []);
 
   return messages.flatMap((message) => {
     // A message with no turn cannot be aged, so its reasoning is kept.
@@ -1191,13 +1025,8 @@ function dropStaleReasoningParts(
   });
 }
 
-function buildAssistantTurnMessage(
-  sessionId: string,
-  turnId: string,
-  response: LanguageModelResponse
-): Message | null {
-  const rawTextParts =
-    response.message?.parts.filter((part) => part.kind !== "tool_call") ?? [];
+function buildAssistantTurnMessage(sessionId: string, turnId: string, response: LanguageModelResponse): Message | null {
+  const rawTextParts = response.message?.parts.filter((part) => part.kind !== "tool_call") ?? [];
   const toolCallParts = response.toolCalls.map((toolCall) => ({
     arguments: toolCall.arguments,
     callId: toolCall.callId,
@@ -1227,11 +1056,7 @@ function buildAssistantTurnMessage(
     }
   }
 
-  if (
-    reasoningParts.length === 0 &&
-    textParts.length === 0 &&
-    toolCallParts.length === 0
-  ) {
+  if (reasoningParts.length === 0 && textParts.length === 0 && toolCallParts.length === 0) {
     return null;
   }
 
@@ -1276,15 +1101,10 @@ function splitReasoningMarkup(text: string): {
   };
 }
 
-function isNoProgressToolName(
-  toolName: string,
-  definitions: ToolDefinition[]
-): boolean {
+function isNoProgressToolName(toolName: string, definitions: ToolDefinition[]): boolean {
   const definition = definitions.find(
     (candidate) =>
-      candidate.invocationName === toolName ||
-      candidate.name === toolName ||
-      candidate.aliases.includes(toolName)
+      candidate.invocationName === toolName || candidate.name === toolName || candidate.aliases.includes(toolName)
   );
   const family = definition?.annotations?.meta?.family;
   return typeof family === "string" && NO_PROGRESS_TOOL_FAMILIES.has(family);
@@ -1310,11 +1130,7 @@ function describeRejectedToolCalls(response: LanguageModelResponse): string[] {
   });
 }
 
-function createStatusMessage(
-  session: SessionRecord,
-  turnId: string,
-  turnNumber: number
-): Message {
+function createStatusMessage(session: SessionRecord, turnId: string, turnNumber: number): Message {
   return {
     createdAt: new Date().toISOString(),
     id: createMessageId("status", turnId),
@@ -1335,10 +1151,7 @@ function createStatusMessage(
   };
 }
 
-function createSteeringMessage(
-  sessionId: string,
-  injection: SteeringInjection
-): Message {
+function createSteeringMessage(sessionId: string, injection: SteeringInjection): Message {
   return {
     createdAt: injection.createdAt,
     id: `message.steering.${injection.id}`,
@@ -1389,9 +1202,7 @@ function createSystemMessage(
  * JSON value. Anything that is not real text yields null so the caller falls
  * back to the generic status line instead of persisting an empty message.
  */
-function readCompletionSummary(
-  completionCall: ModelToolCallProposal | undefined
-): string | null {
+function readCompletionSummary(completionCall: ModelToolCallProposal | undefined): string | null {
   const raw = completionCall?.arguments?.summary;
   if (typeof raw !== "string") {
     return null;
@@ -1407,11 +1218,7 @@ function readCompletionSummary(
  * narration on the same turn (the CLI prints it after the stream; without the
  * tag it could not know whether it had already shown this text).
  */
-function createCompletionSummaryMessage(
-  sessionId: string,
-  turnId: string,
-  summary: string
-): Message {
+function createCompletionSummaryMessage(sessionId: string, turnId: string, summary: string): Message {
   return {
     createdAt: new Date().toISOString(),
     id: createMessageId("completion", `${turnId}.${crypto.randomUUID()}`),
@@ -1435,10 +1242,7 @@ function createMessageId(kind: string, seed?: string): string {
   return `message.${kind}.${digest}`;
 }
 
-function mergeSteeringInjections(
-  persisted: SteeringInjection[],
-  injected: SteeringInjection[]
-): SteeringInjection[] {
+function mergeSteeringInjections(persisted: SteeringInjection[], injected: SteeringInjection[]): SteeringInjection[] {
   const merged = new Map<string, SteeringInjection>();
 
   for (const item of [...persisted, ...injected]) {
@@ -1447,9 +1251,7 @@ function mergeSteeringInjections(
     }
   }
 
-  return Array.from(merged.values()).sort((left, right) =>
-    left.createdAt.localeCompare(right.createdAt)
-  );
+  return Array.from(merged.values()).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
 function createToolCallRecord(
@@ -1501,10 +1303,7 @@ function stableStringify(value: JsonValue | undefined): string {
 // executing it again would return the same bytes and buy nothing. The refusal
 // is a normal failed tool result so it flows back through the same path the
 // model already knows how to read.
-function refuseRepeatedToolCall(
-  toolCall: ToolCallRecord,
-  priorIdenticalCalls: number
-): AgentLoopToolExecutionResult {
+function refuseRepeatedToolCall(toolCall: ToolCallRecord, priorIdenticalCalls: number): AgentLoopToolExecutionResult {
   const failedCall: ToolCallRecord = {
     ...toolCall,
     completedAt: new Date().toISOString(),
@@ -1525,20 +1324,12 @@ function refuseRepeatedToolCall(
   };
 
   return {
-    resultMessage: createToolResultMessage(
-      toolCall.sessionId,
-      toolCall.turnId,
-      failedCall
-    ),
+    resultMessage: createToolResultMessage(toolCall.sessionId, toolCall.turnId, failedCall),
     toolCall: failedCall
   };
 }
 
-function createToolResultMessage(
-  sessionId: string,
-  turnId: string,
-  toolCall: ToolCallRecord
-): Message {
+function createToolResultMessage(sessionId: string, turnId: string, toolCall: ToolCallRecord): Message {
   return {
     createdAt: new Date().toISOString(),
     id: `message.tool.${toolCall.id}`,
@@ -1550,9 +1341,7 @@ function createToolResultMessage(
         kind: "json",
         value: {
           ...(toolCall.error ? { error: toolCall.error } : {}),
-          ...(toolCall.result !== undefined && toolCall.result !== null
-            ? { result: toolCall.result }
-            : {}),
+          ...(toolCall.result !== undefined && toolCall.result !== null ? { result: toolCall.result } : {}),
           status: toolCall.status,
           toolName: toolCall.toolName
         }
@@ -1609,11 +1398,7 @@ function defaultToolExecutor(): AgentLoopToolExecutor {
       };
 
       return {
-        resultMessage: createToolResultMessage(
-          call.sessionId,
-          call.turnId,
-          failedToolCall
-        ),
+        resultMessage: createToolResultMessage(call.sessionId, call.turnId, failedToolCall),
         toolCall: failedToolCall
       };
     }

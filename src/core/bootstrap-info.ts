@@ -17,4 +17,3 @@ export function createBootstrapInfo(): BootstrapInfo {
     surfaces: ["CLI", "Library", "Web", "Gateway"]
   };
 }
-

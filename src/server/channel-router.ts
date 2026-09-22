@@ -17,7 +17,9 @@ export function createChannelRouter(options: ChannelRouterOptions): Router {
     try {
       const channel = channelKindSchema.parse(request.params.channel);
       const messages = await options.channelService.handleWebhook(channel, request.body, request.headers);
-      const runs = await Promise.all(messages.map(async (message) => options.gatewayRuntime.acceptChannelMessage(message)));
+      const runs = await Promise.all(
+        messages.map(async (message) => options.gatewayRuntime.acceptChannelMessage(message))
+      );
 
       response.status(202).json({
         messages,

@@ -143,15 +143,13 @@ describe("gateway auth", () => {
   // configuration still came up and served traffic.
   describe("assertGatewayExposureIsAuthenticated", () => {
     test("allows an untokened gateway only on loopback with no tunnel", () => {
-      expect(() =>
-        assertGatewayExposureIsAuthenticated({ hostname: "127.0.0.1", tunnelEnabled: false })
-      ).not.toThrow();
+      expect(() => assertGatewayExposureIsAuthenticated({ hostname: "127.0.0.1", tunnelEnabled: false })).not.toThrow();
     });
 
     test("refuses an untokened gateway bound to a routable address", () => {
-      expect(() =>
-        assertGatewayExposureIsAuthenticated({ hostname: "192.168.1.20", tunnelEnabled: false })
-      ).toThrow(/gateway\.auth\.token/u);
+      expect(() => assertGatewayExposureIsAuthenticated({ hostname: "192.168.1.20", tunnelEnabled: false })).toThrow(
+        /gateway\.auth\.token/u
+      );
     });
 
     test("refuses an untokened gateway bound to every interface", () => {

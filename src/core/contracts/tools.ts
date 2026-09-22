@@ -190,7 +190,9 @@ export const toolResultEnvelopeSchema = z
         z.discriminatedUnion("kind", [
           z.object({ kind: z.literal("json"), value: jsonValueSchema }).strict(),
           z.object({ kind: z.literal("markdown"), markdown: z.string().min(1) }).strict(),
-          z.object({ kind: z.literal("status"), state: z.string().min(1).max(128), summary: z.string().min(1) }).strict(),
+          z
+            .object({ kind: z.literal("status"), state: z.string().min(1).max(128), summary: z.string().min(1) })
+            .strict(),
           z.object({ kind: z.literal("text"), text: z.string().min(1) }).strict()
         ])
       )

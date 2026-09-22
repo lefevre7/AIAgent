@@ -12,10 +12,13 @@ describe("control-plane router", () => {
     const router = createControlPlaneRouter({
       service
     });
-    const response = await invoke(router, httpMocks.createRequest({
-      method: "GET",
-      url: "/dashboard"
-    }));
+    const response = await invoke(
+      router,
+      httpMocks.createRequest({
+        method: "GET",
+        url: "/dashboard"
+      })
+    );
 
     expect(response.statusCode).toBe(200);
     expect(response._getJSONData()).toMatchObject({
@@ -185,7 +188,12 @@ describe("control-plane router", () => {
     let unsubscribed = false;
     const service = {
       subscribeEvents: (listener: (event: unknown) => void) => {
-        listener({ createdAt: "2026-06-10T00:00:00.000Z", id: "e1", payload: { message: "hello" }, topic: "log.emitted" });
+        listener({
+          createdAt: "2026-06-10T00:00:00.000Z",
+          id: "e1",
+          payload: { message: "hello" },
+          topic: "log.emitted"
+        });
         return () => {
           unsubscribed = true;
         };
@@ -193,7 +201,11 @@ describe("control-plane router", () => {
     } as unknown as ControlPlaneService;
     const router = createControlPlaneRouter({ service });
 
-    const request = httpMocks.createRequest({ method: "GET", query: { sessionId: "session.1" }, url: "/events/stream" });
+    const request = httpMocks.createRequest({
+      method: "GET",
+      query: { sessionId: "session.1" },
+      url: "/events/stream"
+    });
     Object.defineProperty(request.socket, "remoteAddress", { value: "127.0.0.1" });
     const response = httpMocks.createResponse({ eventEmitter: EventEmitter });
     const handler = router as unknown as {

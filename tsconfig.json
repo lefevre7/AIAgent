@@ -1,11 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": [
-      "DOM",
-      "DOM.Iterable",
-      "ES2022"
-    ],
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "allowJs": false,
     "skipLibCheck": true,
     "strict": true,
@@ -25,14 +21,9 @@
     ],
     "baseUrl": ".",
     "paths": {
-      "@/*": [
-        "./src/*"
-      ]
+      "@/*": ["./src/*"]
     },
-    "types": [
-      "node",
-      "vitest/globals"
-    ]
+    "types": ["node", "vitest/globals"]
   },
   "include": [
     "*.mjs",
@@ -45,9 +36,5 @@
     "tests/**/*.tsx",
     ".next/types/**/*.ts"
   ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    ".next"
-  ]
+  "exclude": ["node_modules", "dist", ".next"]
 }

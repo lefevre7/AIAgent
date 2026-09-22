@@ -13,7 +13,9 @@ export function createToolSearchTool(): RuntimeTool {
     definition: toolSearchToolDefinition,
     async execute(call, context): Promise<RuntimeToolResult> {
       const query = inputSchema.parse(call.arguments as unknown) as ToolSearchQuery;
-      const matches = context.registry.searchDefinitions(query).map((match) => serializeMatch(match.definition, match.matchedOn, match.score));
+      const matches = context.registry
+        .searchDefinitions(query)
+        .map((match) => serializeMatch(match.definition, match.matchedOn, match.score));
 
       return {
         result: {
@@ -86,7 +88,8 @@ export const toolSearchToolDefinition: ToolDefinition = {
         type: "integer"
       },
       query: {
-        description: "Optional free-text query to match against tool names, aliases, tags, descriptions, and usage guidance.",
+        description:
+          "Optional free-text query to match against tool names, aliases, tags, descriptions, and usage guidance.",
         type: "string"
       },
       sideEffects: {

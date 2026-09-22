@@ -7,11 +7,7 @@ import type {
   ProviderHealth
 } from "@/core/contracts";
 import { languageModelResponseSchema } from "@/core/contracts";
-import {
-  fetchJson,
-  fetchStream,
-  normalizeUnknownProviderError
-} from "@/core/lm/http";
+import { fetchJson, fetchStream, normalizeUnknownProviderError } from "@/core/lm/http";
 import {
   buildAssistantMessageText,
   buildRejectedToolCallMetadata,
@@ -68,9 +64,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     this.providerId = options.providerId ?? "lm_studio";
   }
 
-  async generate(
-    request: LanguageModelRequest
-  ): Promise<LanguageModelResponse> {
+  async generate(request: LanguageModelRequest): Promise<LanguageModelResponse> {
     const payload = await this.buildPayload(request, false);
     const response = await fetchJson<LMStudioChatResponse>({
       body: payload,
@@ -131,9 +125,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
   // (caller falls back) on any failure.
   async getModelContextWindow(modelId: string): Promise<number | undefined> {
     try {
-      const origin = this.options.baseUrl
-        .replace(/\/+$/u, "")
-        .replace(/\/v\d+$/u, "");
+      const origin = this.options.baseUrl.replace(/\/+$/u, "").replace(/\/v\d+$/u, "");
       const response = await fetchJson<{
         data?: Array<{
           id?: string;
@@ -154,26 +146,21 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
       // always wins over `max_context_length`.
       const byId = entries.find((entry) => entry.id === modelId);
       const loaded = entries.find(
-        (entry) =>
-          typeof entry.loaded_context_length === "number" ||
-          entry.state === "loaded"
+        (entry) => typeof entry.loaded_context_length === "number" || entry.state === "loaded"
       );
       return (
         byId?.loaded_context_length ??
         loaded?.loaded_context_length ??
         byId?.max_context_length ??
         loaded?.max_context_length ??
-        entries.find((entry) => typeof entry.max_context_length === "number")
-          ?.max_context_length
+        entries.find((entry) => typeof entry.max_context_length === "number")?.max_context_length
       );
     } catch {
       return undefined;
     }
   }
 
-  async *stream(
-    request: LanguageModelRequest
-  ): AsyncIterable<LanguageModelStreamEvent> {
+  async *stream(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent> {
     const guard = createStreamGuard({
       firstTokenTimeoutMs: this.options.streamFirstTokenTimeoutMs,
       idleTimeoutMs: this.options.streamIdleTimeoutMs,
@@ -220,10 +207,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     // the first fragment for a given index, and `arguments` is concatenated across
     // later fragments. Accumulate by index before normalizing, otherwise the
     // argument JSON is split into separate incomplete calls and lost.
-    const toolCallAccumulator = new Map<
-      number,
-      { arguments: string; id?: string; name?: string }
-    >();
+    const toolCallAccumulator = new Map<number, { arguments: string; id?: string; name?: string }>();
 
     try {
       while (true) {
@@ -285,12 +269,9 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
           if (parsed.usage) {
             usage = {
               inputTokens: parsed.usage.prompt_tokens ?? usage.inputTokens,
-              outputTokens:
-                parsed.usage.completion_tokens ?? usage.outputTokens,
+              outputTokens: parsed.usage.completion_tokens ?? usage.outputTokens,
               totalTokens:
-                parsed.usage.total_tokens ??
-                (parsed.usage.prompt_tokens ?? 0) +
-                  (parsed.usage.completion_tokens ?? 0)
+                parsed.usage.total_tokens ?? (parsed.usage.prompt_tokens ?? 0) + (parsed.usage.completion_tokens ?? 0)
             };
           }
 
@@ -299,8 +280,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
             continue;
           }
 
-          const reasoningDelta =
-            choice.delta?.reasoning_content ?? choice.delta?.reasoning;
+          const reasoningDelta = choice.delta?.reasoning_content ?? choice.delta?.reasoning;
           if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
             guard.observe(reasoningDelta);
             yield {
@@ -320,20 +300,14 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
 
           if (choice.delta?.tool_calls) {
             for (const fragment of choice.delta.tool_calls) {
-              const index =
-                typeof fragment.index === "number"
-                  ? fragment.index
-                  : toolCallAccumulator.size;
+              const index = typeof fragment.index === "number" ? fragment.index : toolCallAccumulator.size;
               const existing = toolCallAccumulator.get(index) ?? {
                 arguments: ""
               };
               if (typeof fragment.id === "string" && fragment.id.length > 0) {
                 existing.id = fragment.id;
               }
-              if (
-                typeof fragment.function?.name === "string" &&
-                fragment.function.name.length > 0
-              ) {
+              if (typeof fragment.function?.name === "string" && fragment.function.name.length > 0) {
                 existing.name = fragment.function.name;
               }
               if (typeof fragment.function?.arguments === "string") {
@@ -387,9 +361,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
         id: responseId,
         metadata: {
           ...buildRejectedToolCallMetadata(resolved.rejected),
-          ...(resolved.recoveredFromText
-            ? { toolCallsRecoveredFromText: true }
-            : {})
+          ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
         },
         modelId,
         request,
@@ -400,10 +372,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     };
   }
 
-  private buildResponse(
-    request: LanguageModelRequest,
-    response: LMStudioChatResponse
-  ): LanguageModelResponse {
+  private buildResponse(request: LanguageModelRequest, response: LMStudioChatResponse): LanguageModelResponse {
     const choice = response.choices?.[0];
     const resolved = resolveToolCallProposals({
       content: buildAssistantMessageText(choice?.message?.content),
@@ -417,24 +386,18 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
       id: response.id ?? `lm-response.${request.id}`,
       metadata: {
         ...buildRejectedToolCallMetadata(resolved.rejected),
-        ...(resolved.recoveredFromText
-          ? { toolCallsRecoveredFromText: true }
-          : {})
+        ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
       },
       modelId: response.model ?? request.modelId,
       request,
-      stopReason:
-        resolved.proposals.length > 0
-          ? "tool_calls"
-          : (choice?.finish_reason ?? "end_turn"),
+      stopReason: resolved.proposals.length > 0 ? "tool_calls" : (choice?.finish_reason ?? "end_turn"),
       toolCalls: resolved.proposals,
       usage: {
         inputTokens: response.usage?.prompt_tokens ?? 0,
         outputTokens: response.usage?.completion_tokens ?? 0,
         totalTokens:
           response.usage?.total_tokens ??
-          (response.usage?.prompt_tokens ?? 0) +
-            (response.usage?.completion_tokens ?? 0)
+          (response.usage?.prompt_tokens ?? 0) + (response.usage?.completion_tokens ?? 0)
       }
     });
   }
@@ -475,14 +438,8 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     });
   }
 
-  private async buildPayload(
-    request: LanguageModelRequest,
-    stream: boolean
-  ): Promise<Record<string, unknown>> {
-    const tools =
-      request.settings.toolChoice === "none"
-        ? []
-        : serializeToolDefinitions(request.availableTools);
+  private async buildPayload(request: LanguageModelRequest, stream: boolean): Promise<Record<string, unknown>> {
+    const tools = request.settings.toolChoice === "none" ? [] : serializeToolDefinitions(request.availableTools);
     return compactRecord({
       frequency_penalty: request.settings.frequencyPenalty,
       max_tokens: request.settings.maxOutputTokens,
@@ -492,23 +449,15 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
       presence_penalty: request.settings.presencePenalty,
       // llama.cpp/LM Studio extra honored alongside the OpenAI-compatible fields.
       repeat_penalty: request.settings.repetitionPenalty,
-      response_format: serializeOpenAICompatibleResponseFormat(
-        request.responseFormat
-      ),
-      stop:
-        request.settings.stopSequences.length > 0
-          ? request.settings.stopSequences
-          : undefined,
+      response_format: serializeOpenAICompatibleResponseFormat(request.responseFormat),
+      stop: request.settings.stopSequences.length > 0 ? request.settings.stopSequences : undefined,
       stream,
       // Without this LM Studio omits token usage from streamed responses, so the
       // runtime would report 0 tokens / 0% context. The usage arrives in a final
       // chunk with empty choices.
       stream_options: stream ? { include_usage: true } : undefined,
       temperature: request.settings.temperature,
-      tool_choice:
-        request.availableTools.length === 0
-          ? undefined
-          : request.settings.toolChoice,
+      tool_choice: request.availableTools.length === 0 ? undefined : request.settings.toolChoice,
       tools: tools.length === 0 ? undefined : tools,
       top_k: request.settings.topK,
       top_p: request.settings.topP

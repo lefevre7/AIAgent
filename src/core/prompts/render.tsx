@@ -65,17 +65,17 @@ function renderNode(node: React.ReactNode, listDepth = 0): string {
 
 function renderList(children: React.ReactNode, ordered: boolean, listDepth: number): string {
   const items = React.Children.toArray(children);
-  return items
-    .map((item, index) => {
-      const bullet = ordered ? `${index + 1}. ` : `${"  ".repeat(listDepth)}- `;
-      const content = renderNode(item, listDepth + 1).trim();
-      return `${bullet}${content}\n`;
-    })
-    .join("") + "\n";
+  return (
+    items
+      .map((item, index) => {
+        const bullet = ordered ? `${index + 1}. ` : `${"  ".repeat(listDepth)}- `;
+        const content = renderNode(item, listDepth + 1).trim();
+        return `${bullet}${content}\n`;
+      })
+      .join("") + "\n"
+  );
 }
 
 function collapsePromptWhitespace(value: string): string {
-  return value
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]+\n/g, "\n");
+  return value.replace(/\n{3,}/g, "\n\n").replace(/[ \t]+\n/g, "\n");
 }

@@ -5,10 +5,7 @@ import net from "node:net";
 import type { AddressInfo } from "node:net";
 
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
-import {
-  McpServer,
-  ResourceTemplate
-} from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -34,12 +31,8 @@ import {
 const tempRoots: string[] = [];
 const cleanups: Array<() => Promise<void>> = [];
 const STDIO_FIXTURE_PATH = path.resolve("tests/fixtures/mcp/stdio-server.mjs");
-const TOOLS_ONLY_FIXTURE_PATH = path.resolve(
-  "tests/fixtures/mcp/stdio-tools-only-server.mjs"
-);
-const FLAKY_FIXTURE_PATH = path.resolve(
-  "tests/fixtures/mcp/stdio-flaky-server.mjs"
-);
+const TOOLS_ONLY_FIXTURE_PATH = path.resolve("tests/fixtures/mcp/stdio-tools-only-server.mjs");
+const FLAKY_FIXTURE_PATH = path.resolve("tests/fixtures/mcp/stdio-flaky-server.mjs");
 const CAN_BIND_LOOPBACK = await canBindLoopback();
 const httpTransportTest = CAN_BIND_LOOPBACK ? test : test.skip;
 
@@ -77,9 +70,7 @@ describe("MCP manager", () => {
 
     await manager.initialize();
 
-    const status = manager
-      .getServerStatuses()
-      .find((entry) => entry.serverName === "docs");
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "docs");
     expect(status?.state).toBe("connected");
     expect(status?.capabilities).toMatchObject({
       prompts: 1,
@@ -113,22 +104,15 @@ describe("MCP manager", () => {
       topic: "raw"
     });
 
-    const fixedResource = await manager.readResource(
-      "docs",
-      "file:///docs/guide.md"
-    );
+    const fixedResource = await manager.readResource("docs", "file:///docs/guide.md");
     expect(fixedResource.contents[0]).toMatchObject({
       text: "# Guide\nStatic guide content.\n",
       uri: "file:///docs/guide.md"
     });
 
-    const templatedResource = await manager.readResourceTemplate(
-      "docs",
-      "file:///docs/{name}.md",
-      {
-        name: "api"
-      }
-    );
+    const templatedResource = await manager.readResourceTemplate("docs", "file:///docs/{name}.md", {
+      name: "api"
+    });
     expect(templatedResource.uri).toBe("file:///docs/api.md");
     expect(templatedResource.contents[0]).toMatchObject({
       text: "# api\nDynamic content for api.\n"
@@ -156,11 +140,7 @@ describe("MCP manager", () => {
 
     // listing + health surfaces
     const docsPrompts = await manager.listPrompts("docs");
-    expect(
-      (docsPrompts as Array<{ name: string }>).some(
-        (prompt) => prompt.name === "summarize_doc"
-      )
-    ).toBe(true);
+    expect((docsPrompts as Array<{ name: string }>).some((prompt) => prompt.name === "summarize_doc")).toBe(true);
     const allPrompts = (await manager.listPrompts()) as Array<{
       serverName: string;
     }>;
@@ -168,9 +148,7 @@ describe("MCP manager", () => {
     expect(Object.keys(manager.listTemplates()).length).toBeGreaterThan(0);
     expect(manager.getCatalog().list().length).toBeGreaterThan(0);
     const health = await manager.getHealth();
-    expect(health.servers.some((server) => server.serverName === "docs")).toBe(
-      true
-    );
+    expect(health.servers.some((server) => server.serverName === "docs")).toBe(true);
   });
 
   test("records an error status when a server fails to connect", async () => {
@@ -193,9 +171,7 @@ describe("MCP manager", () => {
     cleanups.push(() => manager.close());
     await manager.initialize();
 
-    const status = manager
-      .getServerStatuses()
-      .find((entry) => entry.serverName === "broken");
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "broken");
     expect(status?.state).toBe("failed");
     expect(status?.error).toBeTruthy();
   });
@@ -220,9 +196,7 @@ describe("MCP manager", () => {
     cleanups.push(() => manager.close());
     await manager.initialize();
 
-    const status = manager
-      .getServerStatuses()
-      .find((entry) => entry.serverName === "dormant");
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "dormant");
     expect(status?.state).toBe("disabled");
     expect(status?.capabilities.tools).toBe(0);
   });
@@ -245,13 +219,9 @@ describe("MCP manager", () => {
 
     const manager = new MCPManager({ config, watch: false });
     cleanups.push(() => manager.close());
-    await expect(manager.initialize()).rejects.toThrow(
-      /Required MCP servers failed/u
-    );
+    await expect(manager.initialize()).rejects.toThrow(/Required MCP servers failed/u);
 
-    const status = manager
-      .getServerStatuses()
-      .find((entry) => entry.serverName === "mandatory");
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "mandatory");
     expect(status?.state).toBe("failed");
   });
 
@@ -276,9 +246,7 @@ describe("MCP manager", () => {
     cleanups.push(() => manager.close());
     await manager.initialize();
 
-    const status = manager
-      .getServerStatuses()
-      .find((entry) => entry.serverName === "toolsOnly");
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "toolsOnly");
     expect(status?.state).toBe("connected");
     expect(status?.capabilities).toMatchObject({
       prompts: 0,
@@ -312,12 +280,8 @@ describe("MCP manager", () => {
     cleanups.push(() => manager.close());
     await manager.initialize();
 
-    await expect(manager.callTool("missing", "whatever")).rejects.toThrow(
-      /is registered/u
-    );
-    await expect(manager.callTool("dormant", "whatever")).rejects.toThrow(
-      /not connected/u
-    );
+    await expect(manager.callTool("missing", "whatever")).rejects.toThrow(/is registered/u);
+    await expect(manager.callTool("dormant", "whatever")).rejects.toThrow(/not connected/u);
   });
 
   test("retries a previously failed server on refresh once it can connect", async () => {
@@ -344,112 +308,97 @@ describe("MCP manager", () => {
     cleanups.push(() => manager.close());
 
     await manager.initialize();
-    expect(
-      manager.getServerStatuses().find((entry) => entry.serverName === "flaky")
-        ?.state
-    ).toBe("failed");
+    expect(manager.getServerStatuses().find((entry) => entry.serverName === "flaky")?.state).toBe("failed");
 
     // The remote becomes connectable without any config change (same signature).
     await fs.writeFile(readyFile, "ready");
     await manager.refresh(config);
 
-    const status = manager
-      .getServerStatuses()
-      .find((entry) => entry.serverName === "flaky");
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "flaky");
     expect(status?.state).toBe("connected");
     expect(status?.capabilities.tools).toBe(1);
   });
 
-  httpTransportTest(
-    "supports streamable HTTP and auto-fallback to SSE",
-    async () => {
-      const streamable = await startStreamableServer("streamable");
-      const sse = await startSseServer("legacy");
-      const config = createDefaultAppConfig({
-        userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
-      });
+  httpTransportTest("supports streamable HTTP and auto-fallback to SSE", async () => {
+    const streamable = await startStreamableServer("streamable");
+    const sse = await startSseServer("legacy");
+    const config = createDefaultAppConfig({
+      userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
+    });
 
-      config.mcp.servers.streamable = {
-        description: "Streamable fixture",
-        enabled: true,
-        headers: {},
-        required: true,
-        tags: ["remote", "streamable"],
-        type: "streamable-http",
-        url: streamable.url
-      };
-      config.mcp.servers.legacy = {
-        description: "Legacy SSE fixture",
-        enabled: true,
-        headers: {},
-        required: true,
-        tags: ["legacy", "remote"],
-        // Trusted so the read-only tool round-trip below auto-approves; MCP
-        // tools otherwise require approval (see the dedicated approval test).
-        trust: "trusted",
-        type: "auto",
-        url: sse.url
-      };
+    config.mcp.servers.streamable = {
+      description: "Streamable fixture",
+      enabled: true,
+      headers: {},
+      required: true,
+      tags: ["remote", "streamable"],
+      type: "streamable-http",
+      url: streamable.url
+    };
+    config.mcp.servers.legacy = {
+      description: "Legacy SSE fixture",
+      enabled: true,
+      headers: {},
+      required: true,
+      tags: ["legacy", "remote"],
+      // Trusted so the read-only tool round-trip below auto-approves; MCP
+      // tools otherwise require approval (see the dedicated approval test).
+      trust: "trusted",
+      type: "auto",
+      url: sse.url
+    };
 
-      const manager = new MCPManager({
-        config,
-        watch: false
-      });
-      cleanups.push(() => manager.close());
+    const manager = new MCPManager({
+      config,
+      watch: false
+    });
+    cleanups.push(() => manager.close());
 
-      await manager.initialize();
+    await manager.initialize();
 
-      const statusByName = Object.fromEntries(
-        manager.getServerStatuses().map((status) => [status.serverName, status])
-      );
-      expect(statusByName.streamable?.transport).toBe("streamable-http");
-      expect(statusByName.legacy?.transport).toBe("sse");
+    const statusByName = Object.fromEntries(manager.getServerStatuses().map((status) => [status.serverName, status]));
+    expect(statusByName.streamable?.transport).toBe("streamable-http");
+    expect(statusByName.legacy?.transport).toBe("sse");
 
-      const runtime = new ToolRuntime({
-        approvalDecider: createToolApprovalDecider({
-          settings: withMcpTrustRules(DEFAULT_APPROVAL_SETTINGS, {
-            legacy: { trust: "trusted" }
-          })
-        }),
-        registry: createDefaultToolRegistry({ mcpManager: manager })
-      });
+    const runtime = new ToolRuntime({
+      approvalDecider: createToolApprovalDecider({
+        settings: withMcpTrustRules(DEFAULT_APPROVAL_SETTINGS, {
+          legacy: { trust: "trusted" }
+        })
+      }),
+      registry: createDefaultToolRegistry({ mcpManager: manager })
+    });
 
-      const legacyInvocation = sanitizeMcpInvocationName(
-        "legacy",
-        "docs.lookup"
-      );
-      const runtimeResult = await runtime.execute(
-        createToolCall({
-          arguments: {
-            topic: "fallback"
-          },
-          id: "tool-call.mcp.legacy.1",
-          toolName: legacyInvocation
-        }),
-        {
-          session: buildSession(),
-          turn: buildTurn()
-        }
-      );
-
-      expect(runtimeResult.toolCall.status).toBe("succeeded");
-      expect(runtimeResult.toolCall.result).toMatchObject({
-        isError: false,
-        structuredContent: {
-          summary: "Documentation for fallback",
+    const legacyInvocation = sanitizeMcpInvocationName("legacy", "docs.lookup");
+    const runtimeResult = await runtime.execute(
+      createToolCall({
+        arguments: {
           topic: "fallback"
-        }
-      });
-      expect(
-        runtime.listDefinitions().map((definition) => definition.invocationName)
-      ).toEqual(
-        expect.arrayContaining([
-          sanitizeMcpInvocationName("streamable", "docs.lookup"),
-          sanitizeMcpInvocationName("legacy", "docs.lookup")
-        ])
-      );
-    }
-  );
+        },
+        id: "tool-call.mcp.legacy.1",
+        toolName: legacyInvocation
+      }),
+      {
+        session: buildSession(),
+        turn: buildTurn()
+      }
+    );
+
+    expect(runtimeResult.toolCall.status).toBe("succeeded");
+    expect(runtimeResult.toolCall.result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        summary: "Documentation for fallback",
+        topic: "fallback"
+      }
+    });
+    expect(runtime.listDefinitions().map((definition) => definition.invocationName)).toEqual(
+      expect.arrayContaining([
+        sanitizeMcpInvocationName("streamable", "docs.lookup"),
+        sanitizeMcpInvocationName("legacy", "docs.lookup")
+      ])
+    );
+  });
 
   test("merges imported config, installs templates, and refreshes runtime-visible MCP tools", async () => {
     const root = await createTempRoot();
@@ -517,9 +466,7 @@ describe("MCP manager", () => {
 
     await manager.initialize();
 
-    const sharedStatus = manager
-      .getServerStatuses()
-      .find((status) => status.serverName === "shared");
+    const sharedStatus = manager.getServerStatuses().find((status) => status.serverName === "shared");
     expect(sharedStatus?.state).toBe("connected");
     expect(sharedStatus?.transport).toBe("stdio");
 
@@ -529,22 +476,13 @@ describe("MCP manager", () => {
       query: "context7",
       scopes: ["templates"]
     });
-    expect(
-      templateMatches.some(
-        (match) => match.capability.name === "context7-remote"
-      )
-    ).toBe(true);
+    expect(templateMatches.some((match) => match.capability.name === "context7-remote")).toBe(true);
 
     const runtime = createDefaultToolRuntime({
       mcpManager: manager
     });
-    const installedInvocation = sanitizeMcpInvocationName(
-      "installed_docs",
-      "docs.lookup"
-    );
-    expect(
-      runtime.listDefinitions().map((definition) => definition.invocationName)
-    ).not.toContain(installedInvocation);
+    const installedInvocation = sanitizeMcpInvocationName("installed_docs", "docs.lookup");
+    expect(runtime.listDefinitions().map((definition) => definition.invocationName)).not.toContain(installedInvocation);
 
     await manager.installTemplate({
       destination: "workspace",
@@ -576,9 +514,7 @@ describe("MCP manager", () => {
       limit: 10,
       query: "installed_docs"
     });
-    expect(
-      toolSearchAfterRefresh.map((match) => match.definition.invocationName)
-    ).toContain(installedInvocation);
+    expect(toolSearchAfterRefresh.map((match) => match.definition.invocationName)).toContain(installedInvocation);
 
     const mcpSearchResult = await runtime.execute(
       createToolCall({
@@ -652,10 +588,7 @@ describe("MCP manager", () => {
     cleanups.push(() => manager.close());
 
     await manager.initialize();
-    expect(
-      manager.getServerStatuses().find((status) => status.serverName === "docs")
-        ?.state
-    ).toBe("connected");
+    expect(manager.getServerStatuses().find((status) => status.serverName === "docs")?.state).toBe("connected");
     const health = await manager.getHealth();
     expect(health.servers.length).toBeGreaterThanOrEqual(1);
   });
@@ -704,9 +637,7 @@ describe("MCP manager", () => {
 
     await manager.initialize();
 
-    const status = manager
-      .getServerStatuses()
-      .find((entry) => entry.serverName === "global_docs");
+    const status = manager.getServerStatuses().find((entry) => entry.serverName === "global_docs");
     expect(status?.state).toBe("connected");
     expect(status?.transport).toBe("stdio");
   });
@@ -750,14 +681,10 @@ describe("MCP manager", () => {
     cleanups.push(() => manager.close());
     await manager.initialize();
 
-    const summaries = Object.fromEntries(
-      manager.summarizeServers().map((server) => [server.serverName, server])
-    );
+    const summaries = Object.fromEntries(manager.summarizeServers().map((server) => [server.serverName, server]));
     const docsInvocation = sanitizeMcpInvocationName("docs", "docs.lookup");
     expect(summaries.docs?.state).toBe("connected");
-    expect(summaries.docs?.tools.map((tool) => tool.invocationName)).toContain(
-      docsInvocation
-    );
+    expect(summaries.docs?.tools.map((tool) => tool.invocationName)).toContain(docsInvocation);
     expect(summaries.broken?.state).toBe("failed");
     expect(summaries.broken?.error).toBeTruthy();
     expect(summaries.broken?.tools).toEqual([]);
@@ -783,9 +710,7 @@ describe("MCP manager", () => {
   });
 });
 
-async function startStreamableServer(
-  serverName: string
-): Promise<{ close: () => Promise<void>; url: string }> {
+async function startStreamableServer(serverName: string): Promise<{ close: () => Promise<void>; url: string }> {
   const app = createMcpExpressApp();
 
   app.post("/mcp", async (request, response) => {
@@ -826,14 +751,9 @@ async function startStreamableServer(
   return startHttpServer(app, "/mcp");
 }
 
-async function startSseServer(
-  serverName: string
-): Promise<{ close: () => Promise<void>; url: string }> {
+async function startSseServer(serverName: string): Promise<{ close: () => Promise<void>; url: string }> {
   const app = createMcpExpressApp();
-  const transports = new Map<
-    string,
-    { server: McpServer; transport: SSEServerTransport }
-  >();
+  const transports = new Map<string, { server: McpServer; transport: SSEServerTransport }>();
 
   app.get("/mcp", async (_request, response) => {
     const server = createFixtureServer(serverName);
@@ -857,9 +777,7 @@ async function startSseServer(
   });
 
   app.post("/messages", async (request, response) => {
-    const sessionId = Array.isArray(request.query.sessionId)
-      ? request.query.sessionId[0]
-      : request.query.sessionId;
+    const sessionId = Array.isArray(request.query.sessionId) ? request.query.sessionId[0] : request.query.sessionId;
     if (typeof sessionId !== "string") {
       response.status(400).send("Missing sessionId");
       return;
@@ -976,9 +894,7 @@ function createFixtureServer(serverName: string): McpServer {
       title: "Document Template"
     },
     async (uri) => {
-      const name = decodeURIComponent(
-        uri.pathname.split("/").pop() ?? "unknown"
-      ).replace(/\.md$/i, "");
+      const name = decodeURIComponent(uri.pathname.split("/").pop() ?? "unknown").replace(/\.md$/i, "");
       return {
         contents: [
           {
@@ -1070,9 +986,7 @@ function buildTurn() {
   });
 }
 
-function createToolCall(
-  overrides: Partial<Parameters<typeof toolCallRecordSchema.parse>[0]> = {}
-) {
+function createToolCall(overrides: Partial<Parameters<typeof toolCallRecordSchema.parse>[0]> = {}) {
   return toolCallRecordSchema.parse({
     arguments: {},
     id: "tool-call.mcp.default",

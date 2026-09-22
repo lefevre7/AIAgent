@@ -97,7 +97,8 @@ function summarizeResearchExample(params: {
   runStatus: string;
   snapshot: GatewaySessionSnapshot;
 }): ResearchWebTaskExampleResult {
-  const webFetchResult = params.snapshot.snapshot.toolCalls.find((toolCall) => toolCall.toolName === "web_fetch")?.result as
+  const webFetchResult = params.snapshot.snapshot.toolCalls.find((toolCall) => toolCall.toolName === "web_fetch")
+    ?.result as
     | {
         title?: string | null;
       }

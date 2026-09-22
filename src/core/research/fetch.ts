@@ -77,8 +77,9 @@ export class WebPageFetcher {
       }
 
       const rawBody = await response.text();
-      const contentType = (response.headers.get("content-type") || "text/plain").split(";")[0]?.trim().toLowerCase() || "text/plain";
-      const title = contentType.includes("html") ? extractHtmlTitle(rawBody) ?? null : null;
+      const contentType =
+        (response.headers.get("content-type") || "text/plain").split(";")[0]?.trim().toLowerCase() || "text/plain";
+      const title = contentType.includes("html") ? (extractHtmlTitle(rawBody) ?? null) : null;
       const contentMarkdown = normalizeFetchedContent(rawBody, contentType);
       const truncatedContent = truncateContent(contentMarkdown, request.maxChars ?? this.maxContentChars);
       const query = request.query?.trim() || null;
@@ -100,12 +101,12 @@ export class WebPageFetcher {
         throw error;
       }
       if (error instanceof Error && error.name === "AbortError") {
-        throw toStructuredFetchError(`web_fetch timed out after ${this.timeoutMs}ms for ${target.toString()}.`, "web_fetch_timeout");
+        throw toStructuredFetchError(
+          `web_fetch timed out after ${this.timeoutMs}ms for ${target.toString()}.`,
+          "web_fetch_timeout"
+        );
       }
-      throw toStructuredFetchError(
-        error instanceof Error ? error.message : String(error),
-        "web_fetch_failed"
-      );
+      throw toStructuredFetchError(error instanceof Error ? error.message : String(error), "web_fetch_failed");
     } finally {
       clearTimeout(timeout);
     }
@@ -263,10 +264,7 @@ function extractRelevantSnippets(content: string, query: string): string[] {
 
       const snippetStart = Math.max(0, index - 120);
       const snippetEnd = Math.min(content.length, index + term.length + 180);
-      const snippet = content
-        .slice(snippetStart, snippetEnd)
-        .replace(/\s+/g, " ")
-        .trim();
+      const snippet = content.slice(snippetStart, snippetEnd).replace(/\s+/g, " ").trim();
       if (snippet && !snippets.includes(snippet)) {
         snippets.push(snippet);
       }
@@ -286,7 +284,10 @@ function validatePublicHttpUrl(value: string): URL {
   }
 
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw toStructuredFetchError("web_fetch only supports http:// and https:// URLs.", "web_fetch_unsupported_protocol");
+    throw toStructuredFetchError(
+      "web_fetch only supports http:// and https:// URLs.",
+      "web_fetch_unsupported_protocol"
+    );
   }
 
   if (isPrivateNetworkHost(url.hostname)) {

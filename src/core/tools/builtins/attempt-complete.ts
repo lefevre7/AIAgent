@@ -32,13 +32,15 @@ export const attemptCompleteToolDefinition: ToolDefinition = {
   },
   approvalMode: "never",
   descriptor: {
-    approvalNotes: "No operator approval is required, but the runtime will reject completion if required work remains unresolved.",
+    approvalNotes:
+      "No operator approval is required, but the runtime will reject completion if required work remains unresolved.",
     examples: [
       "Use after tests pass and the requested change is done.",
       "Use after you can clearly summarize what changed and any remaining caveats."
     ],
     purpose: "Finish the active task through the runtime-controlled completion gate.",
-    sideEffectSummary: "This tool does not change the workspace. It asks the runtime to validate whether the task can end.",
+    sideEffectSummary:
+      "This tool does not change the workspace. It asks the runtime to validate whether the task can end.",
     whenNotToUse: [
       "Do not use it together with other tool calls in the same turn.",
       "Do not use it if approvals, errors, or obvious remaining steps still exist."

@@ -34,7 +34,9 @@ function baseVoiceConfig(): AppConfig["voice"] {
   };
 }
 
-function fakeAdapter(overrides: Partial<VoiceAdapter> & Pick<VoiceAdapter, "capabilities" | "providerId">): VoiceAdapter {
+function fakeAdapter(
+  overrides: Partial<VoiceAdapter> & Pick<VoiceAdapter, "capabilities" | "providerId">
+): VoiceAdapter {
   return {
     health: async () => ({ checkedAt: ISO, details: {}, providerId: overrides.providerId, status: "healthy" }),
     ...overrides
@@ -157,7 +159,12 @@ describe("FileVoiceService synthesis, transcription, playback", () => {
       fakeAdapter({ capabilities: ["synthesis"], providerId: "other" })
     ]);
 
-    const result = await service.synthesize({ id: "synthesis.explicit", metadata: {}, providerId: "fake", text: "explicit route" });
+    const result = await service.synthesize({
+      id: "synthesis.explicit",
+      metadata: {},
+      providerId: "fake",
+      text: "explicit route"
+    });
     expect(result.providerId).toBe("fake");
     expect(synthesize).toHaveBeenCalledOnce();
   });
@@ -256,7 +263,14 @@ describe("FileVoiceService synthesis, transcription, playback", () => {
 
 describe("FileVoiceService capture lifecycle", () => {
   function captureAdapter() {
-    const started = { id: "capture.1", metadata: {}, providerId: "fake", sessionId: "session.v", startedAt: ISO, status: "capturing" };
+    const started = {
+      id: "capture.1",
+      metadata: {},
+      providerId: "fake",
+      sessionId: "session.v",
+      startedAt: ISO,
+      status: "capturing"
+    };
     const terminal = {
       audio: audioArtifact(),
       completedAt: ISO,
@@ -303,13 +317,20 @@ describe("FileVoiceService capture lifecycle", () => {
 
   test("stopCapture throws when the capture cannot be located", async () => {
     const { service } = buildService([
-      fakeAdapter({ capabilities: ["capture"], getCapture: async () => null, providerId: "fake", stopCapture: async () => null as never })
+      fakeAdapter({
+        capabilities: ["capture"],
+        getCapture: async () => null,
+        providerId: "fake",
+        stopCapture: async () => null as never
+      })
     ]);
     await expect(service.stopCapture("missing")).rejects.toMatchObject({ code: "voice_capture_not_found" });
   });
 
   test("getCapture returns null when no adapter knows the capture", async () => {
-    const { service } = buildService([fakeAdapter({ capabilities: ["capture"], getCapture: async () => null, providerId: "fake" })]);
+    const { service } = buildService([
+      fakeAdapter({ capabilities: ["capture"], getCapture: async () => null, providerId: "fake" })
+    ]);
     await expect(service.getCapture("unknown")).resolves.toBeNull();
   });
 });

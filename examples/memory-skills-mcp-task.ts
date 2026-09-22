@@ -147,7 +147,8 @@ function summarizeMemoryExample(params: {
   runStatus: string;
   snapshot: GatewaySessionSnapshot;
 }): MemorySkillsMcpTaskExampleResult {
-  const memoryResult = params.snapshot.snapshot.toolCalls.find((toolCall) => toolCall.toolName === "memory_search")?.result as
+  const memoryResult = params.snapshot.snapshot.toolCalls.find((toolCall) => toolCall.toolName === "memory_search")
+    ?.result as
     | {
         hits?: Array<{ path?: string | null }>;
       }

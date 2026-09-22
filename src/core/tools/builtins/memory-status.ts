@@ -26,7 +26,8 @@ export const memoryStatusToolDefinition: ToolDefinition = {
   },
   approvalMode: "never",
   descriptor: {
-    approvalNotes: "No operator approval is required because this tool only reports local memory-system health and index state.",
+    approvalNotes:
+      "No operator approval is required because this tool only reports local memory-system health and index state.",
     examples: ["Check whether semantic retrieval is healthy before relying on it heavily."],
     purpose: "Report retrieval/index health, embedding readiness, and index statistics for the local memory subsystem.",
     sideEffectSummary: "Reads local retrieval status only.",

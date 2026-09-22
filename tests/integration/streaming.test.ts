@@ -14,7 +14,9 @@ describe("assistant token streaming", () => {
           buildScriptedResponse({
             request,
             text: "Streaming hello from the agent loop.",
-            toolCalls: [{ arguments: { summary: "done" }, callId: "tool.complete.stream", toolName: "attempt_complete" }]
+            toolCalls: [
+              { arguments: { summary: "done" }, callId: "tool.complete.stream", toolName: "attempt_complete" }
+            ]
           })
       ]
     });

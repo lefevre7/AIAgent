@@ -178,7 +178,8 @@ export const notebookEditToolDefinition: ToolDefinition = {
       "Delete a stale cell by index."
     ],
     purpose: "Edit Jupyter notebook (.ipynb) cells by replacing, inserting, or deleting a cell by index.",
-    sideEffectSummary: "Rewrites the target .ipynb file through the same mutation pipeline as other edits, so it is undoable.",
+    sideEffectSummary:
+      "Rewrites the target .ipynb file through the same mutation pipeline as other edits, so it is undoable.",
     whenNotToUse: [
       "Do not use it on non-notebook files; use edit_file or write_file instead.",
       "Do not use it to execute cells; it only edits cell content."

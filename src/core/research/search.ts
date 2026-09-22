@@ -3,7 +3,18 @@ import type { MCPManager } from "@/core/mcp";
 
 const QUERY_FIELDS = ["query", "q", "term", "search", "searchQuery", "keywords", "question", "libraryName"] as const;
 const LIMIT_FIELDS = ["limit", "maxResults", "count", "numResults", "topK"] as const;
-const SEARCH_HINTS = ["search", "web", "internet", "docs", "documentation", "lookup", "find", "brave", "tavily", "perplexity"];
+const SEARCH_HINTS = [
+  "search",
+  "web",
+  "internet",
+  "docs",
+  "documentation",
+  "lookup",
+  "find",
+  "brave",
+  "tavily",
+  "perplexity"
+];
 
 export type WebSearchResult = {
   provider: {
@@ -50,7 +61,11 @@ export class MCPWebSearchService {
     }
 
     const argumentsObject = buildSearchArguments(capability, normalizedQuery, options.limit ?? this.defaultLimit);
-    const response = await this.mcpManager.callTool(capability.serverName ?? "", capability.invocationName, argumentsObject);
+    const response = await this.mcpManager.callTool(
+      capability.serverName ?? "",
+      capability.invocationName,
+      argumentsObject
+    );
     const rawText = Array.isArray(response.content)
       ? response.content
           .flatMap((item) => {
@@ -102,7 +117,9 @@ function scoreSearchCapability(capability: MCPToolCapability): number {
   }
 
   let score = 80;
-  const haystack = [capability.name, capability.displayName, capability.description ?? "", ...capability.tags].join(" ").toLowerCase();
+  const haystack = [capability.name, capability.displayName, capability.description ?? "", ...capability.tags]
+    .join(" ")
+    .toLowerCase();
 
   for (const hint of SEARCH_HINTS) {
     if (haystack.includes(hint)) {
@@ -202,7 +219,9 @@ function normalizeSearchResults(structuredContent: unknown, rawText: string) {
     : [];
 }
 
-function extractResultsFromStructuredContent(value: unknown): Array<{ snippet: string | null; title: string; url: string | null }> {
+function extractResultsFromStructuredContent(
+  value: unknown
+): Array<{ snippet: string | null; title: string; url: string | null }> {
   const matches: Array<{ snippet: string | null; title: string; url: string | null }> = [];
 
   visitValue(value, (entry) => {
@@ -242,7 +261,11 @@ function extractResultsFromText(text: string): Array<{ snippet: string | null; t
     }
 
     const url = urlMatch[0];
-    const title = line.replace(url, "").replace(/[-:]\s*$/, "").trim() || url;
+    const title =
+      line
+        .replace(url, "")
+        .replace(/[-:]\s*$/, "")
+        .trim() || url;
     results.push({
       snippet: line,
       title,

@@ -10,9 +10,25 @@ import {
 import { providerHealthSchema, type ProviderHealth } from "@/core/contracts/providers";
 
 export const voiceProviderKindSchema = z.enum(["apple_native", "custom", "local_system", "whisper_compatible"]);
-export const voiceCapabilitySchema = z.enum(["capture", "device_list", "playback", "synthesis", "transcription", "voice_list"]);
+export const voiceCapabilitySchema = z.enum([
+  "capture",
+  "device_list",
+  "playback",
+  "synthesis",
+  "transcription",
+  "voice_list"
+]);
 export const voiceDeviceKindSchema = z.enum(["input", "output"]);
-export const voiceJobStatusSchema = z.enum(["cancelled", "completed", "failed", "pending", "playing", "recording", "running", "transcribing"]);
+export const voiceJobStatusSchema = z.enum([
+  "cancelled",
+  "completed",
+  "failed",
+  "pending",
+  "playing",
+  "recording",
+  "running",
+  "transcribing"
+]);
 export const voiceCaptureStopReasonSchema = z.enum(["completed", "error", "manual", "max_duration", "silence"]);
 
 export const voiceDescriptorSchema = z

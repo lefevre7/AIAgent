@@ -193,9 +193,9 @@ describe("voice utils", () => {
   });
 
   test("runProcess rejects when the command cannot be spawned", async () => {
-    await expect(
-      runProcess(path.join(os.tmpdir(), "definitely-not-a-real-binary-xyz"), [])
-    ).rejects.toBeInstanceOf(Error);
+    await expect(runProcess(path.join(os.tmpdir(), "definitely-not-a-real-binary-xyz"), [])).rejects.toBeInstanceOf(
+      Error
+    );
   });
 
   test("probeAudioDurationMs returns undefined for unreadable inputs", async () => {

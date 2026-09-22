@@ -53,7 +53,10 @@ const browserScreenshotSchema = pageActionSchema.extend({
 const browserClickSchema = pageActionSchema.extend({
   button: z.enum(["left", "middle", "right"]).optional(),
   doubleClick: z.boolean().optional(),
-  modifiers: z.array(z.enum(["Alt", "Control", "ControlOrMeta", "Meta", "Shift"])).max(8).optional()
+  modifiers: z
+    .array(z.enum(["Alt", "Control", "ControlOrMeta", "Meta", "Shift"]))
+    .max(8)
+    .optional()
 });
 
 const browserFillSchema = pageActionSchema.extend({
@@ -490,9 +493,11 @@ export const browserOpenToolDefinition = createBrowserToolDefinition({
   description:
     "Open the Playwright browser session for the current task, create or focus a page, and optionally navigate it to a URL.",
   descriptor: {
-    approvalNotes: "Operator approval is required because opening or navigating a browser page can reach external systems.",
+    approvalNotes:
+      "Operator approval is required because opening or navigating a browser page can reach external systems.",
     examples: ["Start a browser page on the documentation URL before inspecting it."],
-    purpose: "Create or focus the current browser page for this task so later browser tools act against a stable session.",
+    purpose:
+      "Create or focus the current browser page for this task so later browser tools act against a stable session.",
     sideEffectSummary: "May create a browser page and may perform a network navigation.",
     whenNotToUse: ["Do not use when an active page already exists and you only need to inspect or interact with it."],
     whenToUse: [
@@ -542,7 +547,8 @@ export const browserListPagesToolDefinition = createBrowserToolDefinition({
   readOnly: true,
   sideEffects: ["none"],
   toolId: "tool.browser.list_pages",
-  usageGuidance: "Use when you need page ids, titles, URLs, or the current active page before taking the next browser action."
+  usageGuidance:
+    "Use when you need page ids, titles, URLs, or the current active page before taking the next browser action."
 });
 
 export const browserNavigateToolDefinition = createBrowserToolDefinition({
@@ -573,7 +579,8 @@ export const browserNavigateToolDefinition = createBrowserToolDefinition({
   readOnly: false,
   sideEffects: ["network_read"],
   toolId: "tool.browser.navigate",
-  usageGuidance: "Use after browser_open when you want to keep working inside the same page but move it to a different URL."
+  usageGuidance:
+    "Use after browser_open when you want to keep working inside the same page but move it to a different URL."
 });
 
 export const browserSnapshotToolDefinition = createBrowserToolDefinition({
@@ -616,17 +623,17 @@ export const browserSnapshotToolDefinition = createBrowserToolDefinition({
 
 export const browserScreenshotToolDefinition = createBrowserToolDefinition({
   approvalMode: "never",
-  description: "Capture a screenshot of the current page or a specific referenced/selected element and store it as an artifact.",
+  description:
+    "Capture a screenshot of the current page or a specific referenced/selected element and store it as an artifact.",
   descriptor: {
     approvalNotes: "No operator approval is required because this tool only captures the current rendered page state.",
     examples: ["Capture the whole page after a navigation.", "Capture a specific form or error element by ref."],
     purpose: "Create a durable visual artifact of the current page state for review, comparison, or later discussion.",
     sideEffectSummary: "Reads the current browser page and stores a local screenshot artifact.",
-    whenNotToUse: ["Do not use when a text snapshot is enough; browser_snapshot is usually cheaper and easier to reason about."],
-    whenToUse: [
-      "Use when visual layout matters.",
-      "Use when you need an image artifact to inspect or share later."
-    ]
+    whenNotToUse: [
+      "Do not use when a text snapshot is enough; browser_snapshot is usually cheaper and easier to reason about."
+    ],
+    whenToUse: ["Use when visual layout matters.", "Use when you need an image artifact to inspect or share later."]
   },
   inputSchema: {
     additionalProperties: false,
@@ -652,11 +659,14 @@ export const browserClickToolDefinition = createBrowserToolDefinition({
   approvalMode: "ask",
   description: "Click or double-click a page element by fresh snapshot ref or explicit selector.",
   descriptor: {
-    approvalNotes: "Operator approval is required because clicks can submit forms, mutate remote state, or trigger downloads.",
+    approvalNotes:
+      "Operator approval is required because clicks can submit forms, mutate remote state, or trigger downloads.",
     examples: ["Click the primary button by ref after taking a fresh snapshot."],
     purpose: "Perform the safest explicit pointer interaction against a referenced page element.",
     sideEffectSummary: "Mutates page state and may trigger remote or local side effects.",
-    whenNotToUse: ["Do not use when you first need to discover the target element; use browser_snapshot before clicking."],
+    whenNotToUse: [
+      "Do not use when you first need to discover the target element; use browser_snapshot before clicking."
+    ],
     whenToUse: [
       "Use when a page element needs a mouse click to continue the task.",
       "Use with a fresh ref whenever possible instead of guessing selectors."
@@ -682,7 +692,8 @@ export const browserClickToolDefinition = createBrowserToolDefinition({
   readOnly: false,
   sideEffects: ["network_write", "remote_mutation"],
   toolId: "tool.browser.click",
-  usageGuidance: "Use with a fresh ref after browser_snapshot whenever possible. Clicks can have real side effects, so avoid guessing."
+  usageGuidance:
+    "Use with a fresh ref after browser_snapshot whenever possible. Clicks can have real side effects, so avoid guessing."
 });
 
 export const browserFillToolDefinition = createBrowserToolDefinition({
@@ -716,14 +727,16 @@ export const browserFillToolDefinition = createBrowserToolDefinition({
   readOnly: false,
   sideEffects: ["remote_mutation"],
   toolId: "tool.browser.fill",
-  usageGuidance: "Prefer this over browser_type for normal inputs. Use browser_type only when the page depends on real key events."
+  usageGuidance:
+    "Prefer this over browser_type for normal inputs. Use browser_type only when the page depends on real key events."
 });
 
 export const browserTypeToolDefinition = createBrowserToolDefinition({
   approvalMode: "ask",
   description: "Type text character-by-character into a page element, emitting real key events.",
   descriptor: {
-    approvalNotes: "Operator approval is required because typing changes page state and can trigger handlers on each key press.",
+    approvalNotes:
+      "Operator approval is required because typing changes page state and can trigger handlers on each key press.",
     examples: ["Type into an autocomplete box that reacts to each keystroke."],
     purpose: "Use real keyboard-style text input when the page has special key handling or autocomplete behavior.",
     sideEffectSummary: "Mutates page form state and triggers key-driven page behavior.",
@@ -758,7 +771,8 @@ export const browserSelectOptionToolDefinition = createBrowserToolDefinition({
   approvalMode: "ask",
   description: "Select one or more options in a <select> control by value or visible label.",
   descriptor: {
-    approvalNotes: "Operator approval is required because selecting options changes page state and can trigger remote mutations.",
+    approvalNotes:
+      "Operator approval is required because selecting options changes page state and can trigger remote mutations.",
     examples: ["Pick the environment or filter option from a dropdown control."],
     purpose: "Change a native <select> control without guessing keyboard sequences.",
     sideEffectSummary: "Mutates form state and can trigger onchange logic.",
@@ -788,14 +802,16 @@ export const browserSelectOptionToolDefinition = createBrowserToolDefinition({
   readOnly: false,
   sideEffects: ["remote_mutation"],
   toolId: "tool.browser.select_option",
-  usageGuidance: "Use for native select controls. Provide visible labels or option values and prefer refs from a fresh snapshot."
+  usageGuidance:
+    "Use for native select controls. Provide visible labels or option values and prefer refs from a fresh snapshot."
 });
 
 export const browserPressKeyToolDefinition = createBrowserToolDefinition({
   approvalMode: "ask",
   description: "Send a key or shortcut to the active page or a specific element.",
   descriptor: {
-    approvalNotes: "Operator approval is required because key presses can submit forms, delete content, or trigger commands.",
+    approvalNotes:
+      "Operator approval is required because key presses can submit forms, delete content, or trigger commands.",
     examples: ["Press Enter after filling a search box.", "Send Escape to close an overlay."],
     purpose: "Drive pages that depend on keyboard shortcuts or non-text key presses.",
     sideEffectSummary: "Mutates page state and may trigger remote actions.",
@@ -828,7 +844,8 @@ export const browserUploadToolDefinition = createBrowserToolDefinition({
   approvalMode: "ask",
   description: "Attach one or more local files to a file input in the browser page.",
   descriptor: {
-    approvalNotes: "Operator approval is required because this sends local files into the page and may upload them remotely.",
+    approvalNotes:
+      "Operator approval is required because this sends local files into the page and may upload them remotely.",
     examples: ["Upload the generated report file through a file input by ref."],
     purpose: "Bridge local files into a browser form when the task requires a file upload.",
     sideEffectSummary: "Reads local files and mutates remote page state.",
@@ -863,7 +880,8 @@ export const browserUploadToolDefinition = createBrowserToolDefinition({
 
 export const browserWaitToolDefinition = createBrowserToolDefinition({
   approvalMode: "never",
-  description: "Wait for a page condition such as a target element, URL, visible text, disappearing text, or a fixed delay.",
+  description:
+    "Wait for a page condition such as a target element, URL, visible text, disappearing text, or a fixed delay.",
   descriptor: {
     approvalNotes: "No operator approval is required because this tool only waits for page state to settle.",
     examples: ["Wait for results text after submitting a search.", "Wait for a loading banner to disappear."],
@@ -902,8 +920,12 @@ export const browserListDownloadsToolDefinition = createBrowserToolDefinition({
   approvalMode: "never",
   description: "List files downloaded by the current browser session and return completed ones as artifacts.",
   descriptor: {
-    approvalNotes: "No operator approval is required because this tool only inspects already-triggered browser downloads.",
-    examples: ["Check whether clicking a download link produced a file.", "Retrieve the artifact for the most recent report download."],
+    approvalNotes:
+      "No operator approval is required because this tool only inspects already-triggered browser downloads.",
+    examples: [
+      "Check whether clicking a download link produced a file.",
+      "Retrieve the artifact for the most recent report download."
+    ],
     purpose: "Inspect and retrieve browser download artifacts after a page action may have triggered them.",
     sideEffectSummary: "Reads download state and surfaces completed local artifacts.",
     whenNotToUse: ["Do not use before any page action could have triggered a download."],
@@ -926,14 +948,16 @@ export const browserListDownloadsToolDefinition = createBrowserToolDefinition({
   readOnly: true,
   sideEffects: ["none"],
   toolId: "tool.browser.list_downloads",
-  usageGuidance: "Use after actions that may have triggered a download. Completed downloads are returned as local artifacts."
+  usageGuidance:
+    "Use after actions that may have triggered a download. Completed downloads are returned as local artifacts."
 });
 
 export const browserClosePageToolDefinition = createBrowserToolDefinition({
   approvalMode: "ask",
   description: "Close the current or specified browser page and return the remaining page state.",
   descriptor: {
-    approvalNotes: "Operator approval is required because closing a page can discard interactive state needed for later steps.",
+    approvalNotes:
+      "Operator approval is required because closing a page can discard interactive state needed for later steps.",
     examples: ["Close a popup after extracting the information you needed from it."],
     purpose: "Remove no-longer-needed browser pages from the session cleanly.",
     sideEffectSummary: "Closes an in-memory browser page and discards its live interactive state.",
@@ -970,7 +994,9 @@ function renderPagesMarkdown(pages: BrowserPageRecord[], activePageId: string | 
     return "No browser pages are currently open for this session.";
   }
 
-  const rows = pages.map((page) => `- ${page.id}${page.id === activePageId ? " (active)" : ""}: ${page.title ?? "(untitled)"} — ${page.url}`);
+  const rows = pages.map(
+    (page) => `- ${page.id}${page.id === activePageId ? " (active)" : ""}: ${page.title ?? "(untitled)"} — ${page.url}`
+  );
   return ["Open browser pages:", ...rows].join("\n");
 }
 

@@ -85,14 +85,20 @@ describe("text-embedded tool-call parsing", () => {
   });
 
   test("tolerates an idiosyncratic call where the tool name is a key", () => {
-    const matches = parseTextToolCalls('<tool_call>{"status":"success","attempt_complete":{}}</tool_call>', definitions);
+    const matches = parseTextToolCalls(
+      '<tool_call>{"status":"success","attempt_complete":{}}</tool_call>',
+      definitions
+    );
     expect(matches).toHaveLength(1);
     expect(matches[0]?.name).toBe("attempt_complete");
     expect(matches[0]?.arguments).toEqual({});
   });
 
   test("resolves a known tool name from an alias", () => {
-    const matches = parseTextToolCalls('<tool_call>{"name":"todo","arguments":{"summary":"done"}}</tool_call>', definitions);
+    const matches = parseTextToolCalls(
+      '<tool_call>{"name":"todo","arguments":{"summary":"done"}}</tool_call>',
+      definitions
+    );
     expect(matches).toHaveLength(1);
     expect(matches[0]?.name).toBe("update_plan");
   });
@@ -108,7 +114,9 @@ describe("resolveToolCallProposals", () => {
       content: '<tool_call>{"name":"shell_command","arguments":{"command":"ls"}}</tool_call>',
       definitions,
       fallbackPrefix: "req.1",
-      nativeToolCalls: [{ function: { arguments: '{"command":"pwd"}', name: "shell_command" }, id: "native.1", type: "function" }]
+      nativeToolCalls: [
+        { function: { arguments: '{"command":"pwd"}', name: "shell_command" }, id: "native.1", type: "function" }
+      ]
     });
     expect(resolved.recoveredFromText).toBe(false);
     expect(resolved.proposals).toHaveLength(1);

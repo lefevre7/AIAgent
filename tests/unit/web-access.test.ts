@@ -83,7 +83,12 @@ function buildRequest(options: {
   if (options.authorization) headers.authorization = options.authorization;
   if (options.cookie) headers.cookie = options.cookie;
   if (options.webToken) headers["x-aia-web-token"] = options.webToken;
-  const request = httpMocks.createRequest({ headers, method: "GET", query: options.query ?? {}, url: options.url ?? "/" });
+  const request = httpMocks.createRequest({
+    headers,
+    method: "GET",
+    query: options.query ?? {},
+    url: options.url ?? "/"
+  });
   request.originalUrl = options.url ?? "/";
   Object.defineProperty(request.socket, "remoteAddress", { value: options.remoteAddress ?? "127.0.0.1" });
   return request as unknown as Request;
@@ -91,12 +96,20 @@ function buildRequest(options: {
 
 describe("authorizeWebAccessRequest token sources", () => {
   test("requires and validates the configured token across header, cookie, and custom header", () => {
-    expect(authorizeWebAccessRequest(buildRequest({ remoteAddress: "10.0.0.5" }), { token: "secret" })).toMatchObject({ ok: false });
+    expect(authorizeWebAccessRequest(buildRequest({ remoteAddress: "10.0.0.5" }), { token: "secret" })).toMatchObject({
+      ok: false
+    });
     expect(
-      authorizeWebAccessRequest(buildRequest({ authorization: "Bearer wrong", remoteAddress: "10.0.0.5" }), { token: "secret" })
+      authorizeWebAccessRequest(buildRequest({ authorization: "Bearer wrong", remoteAddress: "10.0.0.5" }), {
+        token: "secret"
+      })
     ).toMatchObject({ ok: false });
-    expect(authorizeWebAccessRequest(buildRequest({ authorization: "Bearer secret" }), { token: "secret" }).ok).toBe(true);
-    expect(authorizeWebAccessRequest(buildRequest({ cookie: "aia_access_token=secret" }), { token: "secret" }).ok).toBe(true);
+    expect(authorizeWebAccessRequest(buildRequest({ authorization: "Bearer secret" }), { token: "secret" }).ok).toBe(
+      true
+    );
+    expect(authorizeWebAccessRequest(buildRequest({ cookie: "aia_access_token=secret" }), { token: "secret" }).ok).toBe(
+      true
+    );
     expect(authorizeWebAccessRequest(buildRequest({ webToken: "secret" }), { token: "secret" }).ok).toBe(true);
   });
 
@@ -126,7 +139,10 @@ describe("web access middlewares", () => {
     const ok = invokeMiddleware(createControlPlaneAccessMiddleware(), buildRequest({ remoteAddress: "127.0.0.1" }));
     expect(ok.next).toHaveBeenCalledOnce();
 
-    const denied = invokeMiddleware(createControlPlaneAccessMiddleware({ token: "secret" }), buildRequest({ remoteAddress: "10.0.0.5" }));
+    const denied = invokeMiddleware(
+      createControlPlaneAccessMiddleware({ token: "secret" }),
+      buildRequest({ remoteAddress: "10.0.0.5" })
+    );
     expect(denied.next).not.toHaveBeenCalled();
     expect(denied.response.statusCode).toBe(401);
     expect(denied.response._getJSONData()).toMatchObject({ ok: false });
@@ -142,7 +158,10 @@ describe("web access middlewares", () => {
   });
 
   test("page middleware renders an HTML lock screen on denial", () => {
-    const { next, response } = invokeMiddleware(createWebAccessMiddleware({ token: "secret" }), buildRequest({ remoteAddress: "10.0.0.5" }));
+    const { next, response } = invokeMiddleware(
+      createWebAccessMiddleware({ token: "secret" }),
+      buildRequest({ remoteAddress: "10.0.0.5" })
+    );
     expect(next).not.toHaveBeenCalled();
     expect(response.statusCode).toBe(401);
     expect(response._getData()).toContain("Remote Access Locked");

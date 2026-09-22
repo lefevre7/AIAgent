@@ -59,11 +59,5 @@ export function mapGatewayErrorToHttpStatusCode(error: StructuredError): number 
 }
 
 export function isStructuredError(error: unknown): error is StructuredError {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    "message" in error &&
-    "retriable" in error
-  );
+  return typeof error === "object" && error !== null && "code" in error && "message" in error && "retriable" in error;
 }

@@ -14,7 +14,13 @@ import {
   type ProviderHealth
 } from "@/core";
 import { createAIAgentSdkFromConfig, type AIAgentProviderRegistrations, type AIAgentSdk } from "@/sdk";
-import type { GatewaySessionSnapshot, JsonValue, LanguageModelStreamEvent, Message, ModelToolCallProposal } from "@/core/contracts";
+import type {
+  GatewaySessionSnapshot,
+  JsonValue,
+  LanguageModelStreamEvent,
+  Message,
+  ModelToolCallProposal
+} from "@/core/contracts";
 
 type ScriptedLanguageModelTurn =
   | LanguageModelResponse
@@ -98,16 +104,14 @@ export class ScriptedLanguageModelAdapter implements LanguageModelAdapter {
   }
 }
 
-export async function withExampleSdk<T>(
-  options: {
-    configureConfig?: (config: LoadedAIAgentConfig["resolvedConfig"]) => void;
-    fetchImpl?: typeof fetch;
-    name: string;
-    providers: AIAgentProviderRegistrations;
-    run: (context: ExampleContext) => Promise<T>;
-    setupWorkspace?: (context: Omit<ExampleContext, "sdk">) => Promise<void>;
-  }
-): Promise<T> {
+export async function withExampleSdk<T>(options: {
+  configureConfig?: (config: LoadedAIAgentConfig["resolvedConfig"]) => void;
+  fetchImpl?: typeof fetch;
+  name: string;
+  providers: AIAgentProviderRegistrations;
+  run: (context: ExampleContext) => Promise<T>;
+  setupWorkspace?: (context: Omit<ExampleContext, "sdk">) => Promise<void>;
+}): Promise<T> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), `aiagent-example-${sanitizeSegment(options.name)}-`));
   const userHomeDirectory = path.join(root, "home");
   const userStateDirectory = path.join(userHomeDirectory, ".aia");
@@ -311,5 +315,10 @@ function createExampleLoadedConfig(params: {
 }
 
 function sanitizeSegment(value: string): string {
-  return value.replace(/[^a-z0-9_-]+/giu, "-").replace(/-+/gu, "-").replace(/^-|-$/gu, "") || "example";
+  return (
+    value
+      .replace(/[^a-z0-9_-]+/giu, "-")
+      .replace(/-+/gu, "-")
+      .replace(/^-|-$/gu, "") || "example"
+  );
 }

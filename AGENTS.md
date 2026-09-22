@@ -91,215 +91,228 @@ The overall implementation is only done when:
 ## TODO Checklist
 
 1. [x] Bootstrap the repo and package boundaries.
-  Create the full project scaffold under `AIAgent/` for Node 22, TypeScript, Next.js 15 App Router, Express, CLI, library, web, gateway, examples, tests, and docs.
-  Lock in build, typecheck, lint, unit-test, integration-test, and e2e-test scripts early so every later item has a stable harness.
+       Create the full project scaffold under `AIAgent/` for Node 22, TypeScript, Next.js 15 App Router, Express, CLI, library, web, gateway, examples, tests, and docs.
+       Lock in build, typecheck, lint, unit-test, integration-test, and e2e-test scripts early so every later item has a stable harness.
 
 2. [x] Establish the core domain model and public interfaces.
-  Define stable contracts for sessions, turns, messages, tool calls, approvals, steering, plans, memory entries, provider adapters, gateway transport, channels, voice, image generation, and external-agent jobs.
-  Keep these interfaces serialization-friendly so the architecture can later be ported to another language without redesigning the model.
+       Define stable contracts for sessions, turns, messages, tool calls, approvals, steering, plans, memory entries, provider adapters, gateway transport, channels, voice, image generation, and external-agent jobs.
+       Keep these interfaces serialization-friendly so the architecture can later be ported to another language without redesigning the model.
 
 3. [x] Implement config loading, secret resolution, and environment precedence.
-  Support workspace config, user-global config, environment overrides, secret refs, and validation for runtime, channel, provider, tunnel, approval, and memory settings.
-  Include discoverable defaults and helpful validation failures, not silent fallback behavior.
+       Support workspace config, user-global config, environment overrides, secret refs, and validation for runtime, channel, provider, tunnel, approval, and memory settings.
+       Include discoverable defaults and helpful validation failures, not silent fallback behavior.
 
 4. [x] Implement the prompt pack and instruction-loading layer.
-  Build the system prompt stack with safety posture inspired by OpenClaw, operational discipline inspired by Codex, and tool guidance inspired by VS Code Copilot Chat.
-  Add AGENTS.md root-to-leaf loading, skill discovery and precedence, explicit explanation of skills in the prompt, final-summary behavior, status updates, and per-turn nudges.
+       Build the system prompt stack with safety posture inspired by OpenClaw, operational discipline inspired by Codex, and tool guidance inspired by VS Code Copilot Chat.
+       Add AGENTS.md root-to-leaf loading, skill discovery and precedence, explicit explanation of skills in the prompt, final-summary behavior, status updates, and per-turn nudges.
 
 5. [x] Implement session persistence and transcript storage.
-  Create durable session state, message history, tool events, approval records, steering injections, and resumable task metadata under `.aia/`.
-  Ensure sessions can be resumed from CLI, library, web, gateway, and messaging channels without state divergence.
+       Create durable session state, message history, tool events, approval records, steering injections, and resumable task metadata under `.aia/`.
+       Ensure sessions can be resumed from CLI, library, web, gateway, and messaging channels without state divergence.
 
 6. [x] Implement the LM provider layer and the disk-backed model queue.
-  Build provider-agnostic model interfaces with LM Studio and Ollama adapters from day one.
-  Support `chat/completions`-style interaction, structured outputs, retries, request/response logging, and queue persistence across restarts.
-  Implement the queue behind a stable interface, with the default implementation enforcing one in-flight model turn globally.
+       Build provider-agnostic model interfaces with LM Studio and Ollama adapters from day one.
+       Support `chat/completions`-style interaction, structured outputs, retries, request/response logging, and queue persistence across restarts.
+       Implement the queue behind a stable interface, with the default implementation enforcing one in-flight model turn globally.
 
 7. [x] Implement the agent loop and turn state machine.
-  Build a hard-ended loop with user turns, steering turns, tool execution, approval pauses, failure recovery, status updates, and explicit `attempt_complete`.
-  Model-requested completion must pass a runtime completion gate with explicit validation and structured rejection reasons when required work is unresolved.
-  Define steering ordering precisely: queue steering while the model is streaming or a tool is running, inject it after the current tool boundary, and resolve already-open approvals before the injected steering resumes the loop.
+       Build a hard-ended loop with user turns, steering turns, tool execution, approval pauses, failure recovery, status updates, and explicit `attempt_complete`.
+       Model-requested completion must pass a runtime completion gate with explicit validation and structured rejection reasons when required work is unresolved.
+       Define steering ordering precisely: queue steering while the model is streaming or a tool is running, inject it after the current tool boundary, and resolve already-open approvals before the injected steering resumes the loop.
 
 8. [x] Implement the canonical tool registry and tool runtime.
-  Create one deduped, extensible registry for built-in tools, MCP tools, skills, memory tools, browser tools, messaging tools, voice tools, image tools, and the external-agent tool.
-  Tool definitions must have strong descriptors, strict schemas, side-effect metadata, search metadata, approval metadata, idempotency and retryability metadata, output-shape metadata, streaming metadata, and high-quality prompts.
+       Create one deduped, extensible registry for built-in tools, MCP tools, skills, memory tools, browser tools, messaging tools, voice tools, image tools, and the external-agent tool.
+       Tool definitions must have strong descriptors, strict schemas, side-effect metadata, search metadata, approval metadata, idempotency and retryability metadata, output-shape metadata, streaming metadata, and high-quality prompts.
 
 9. [x] Implement the local file/workspace toolchain around one patch pipeline.
-  Build canonical read, list, grep, search, patch, edit, write, diff-preview, and undo semantics on top of a single file mutation engine.
-  Expose higher-level tools through this pipeline rather than duplicating editing behavior in multiple places.
+       Build canonical read, list, grep, search, patch, edit, write, diff-preview, and undo semantics on top of a single file mutation engine.
+       Expose higher-level tools through this pipeline rather than duplicating editing behavior in multiple places.
 
 10. [x] Implement approvals, operator intervention, and steering.
-  Add regex-based allow/ask/deny policy for commands, paths, tool names, MCP servers, and MCP tools.
-  Support local operator approval, originating-channel approval when possible, and the "no, but do instead" path as a normal denied action plus new steering/user input.
+        Add regex-based allow/ask/deny policy for commands, paths, tool names, MCP servers, and MCP tools.
+        Support local operator approval, originating-channel approval when possible, and the "no, but do instead" path as a normal denied action plus new steering/user input.
 
 11. [x] Implement plan tracking, task status, and working memory.
-  Build one canonical plan/todo system plus short-lived working memory tied to the active task and turn state.
-  Ensure the runtime can show progress, next step, recent attempts, and blockers across CLI, web, and channels.
+        Build one canonical plan/todo system plus short-lived working memory tied to the active task and turn state.
+        Ensure the runtime can show progress, next step, recent attempts, and blockers across CLI, web, and channels.
 
 12. [x] Implement file-backed durable memory and compaction.
-  Add session summaries, workspace memory, user-global memory, memory tools, automatic compaction triggers, startup phase 1/phase 2 memory work, and Codex-style compaction extension points.
-  Memory must update `MEMORY.md`, `memory/`, and `chat-session-memory/` consistently when sessions compact or complete.
-  Persist compaction lineage, replay artifacts, and before/after token accounting so compaction behavior is auditable and testable.
+        Add session summaries, workspace memory, user-global memory, memory tools, automatic compaction triggers, startup phase 1/phase 2 memory work, and Codex-style compaction extension points.
+        Memory must update `MEMORY.md`, `memory/`, and `chat-session-memory/` consistently when sessions compact or complete.
+        Persist compaction lineage, replay artifacts, and before/after token accounting so compaction behavior is auditable and testable.
 
 13. [x] Implement the pluggable retrieval and advanced-memory architecture.
-  Design the full OpenClaw-style memory surface now: file-backed summaries/indices first, retrieval interfaces, local SQLite/FTS indexing, embeddings/vector retrieval in MVP, ranking hooks, hybrid search hooks, and memory health/status reporting.
-  Durable memory entries must carry provenance, confidence, recency, and staleness metadata so retrieval and later consolidation have explicit signals to work with.
-  The initial working implementation must be file-first, but the architecture must not block later storage or embedding backends.
+        Design the full OpenClaw-style memory surface now: file-backed summaries/indices first, retrieval interfaces, local SQLite/FTS indexing, embeddings/vector retrieval in MVP, ranking hooks, hybrid search hooks, and memory health/status reporting.
+        Durable memory entries must carry provenance, confidence, recency, and staleness metadata so retrieval and later consolidation have explicit signals to work with.
+        The initial working implementation must be file-first, but the architecture must not block later storage or embedding backends.
 
 14. [x] Implement MCP transports, registry, discovery, and search.
-  Support `stdio`, streamable HTTP, and SSE connections; workspace/user/env config; connected-tool/resource discovery; known server templates; and MCP tool search.
-  Build a clean boundary between MCP transport/runtime concerns and the agent-facing tool catalog.
+        Support `stdio`, streamable HTTP, and SSE connections; workspace/user/env config; connected-tool/resource discovery; known server templates; and MCP tool search.
+        Build a clean boundary between MCP transport/runtime concerns and the agent-facing tool catalog.
 
 15. [x] Implement the built-in web research stack.
-  Add direct URL fetch with HTML-to-markdown extraction and MCP-backed internet search as the default search path.
-  The runtime must be able to inspect, summarize, and cite fetched content while keeping search provider details swappable.
+        Add direct URL fetch with HTML-to-markdown extraction and MCP-backed internet search as the default search path.
+        The runtime must be able to inspect, summarize, and cite fetched content while keeping search provider details swappable.
 
 16. [x] Implement browser automation.
-  Use Playwright as the built-in browser runtime with page/session lifecycle, screenshots, DOM snapshots, navigation, input, downloads/uploads, and approval-aware side effects.
-  Browser tooling must be accessible from CLI, web, gateway, and channels through the same tool registry.
+        Use Playwright as the built-in browser runtime with page/session lifecycle, screenshots, DOM snapshots, navigation, input, downloads/uploads, and approval-aware side effects.
+        Browser tooling must be accessible from CLI, web, gateway, and channels through the same tool registry.
 
 17. [x] Implement the external-agent control tool.
-  Create a generic adapter for running configured external agent CLIs as explicit jobs with captured stdout/stderr, structured lifecycle state, resumability hooks, and approval-aware execution.
-  Keep the abstraction generic so agent-specific presets can be layered in later without refactoring the runtime.
-  Current implementation notes:
-  - `externalAgents` is a first-class top-level config section. The Claude Code CLI (`claude -p "<prompt>" --output-format json`) and Codex CLI presets are enabled by default for one-shot task delegation; the Mistral Vibe CLI preset ships disabled. Each preset is a discriminated union member keyed by `kind` (`claude` | `codex` | `mistral_vibe`).
-  - `src/core/external-agents/service.ts` persists explicit jobs under `.aia/external-agents/jobs/<job-id>/attempts/` with `job.json`, stdout/stderr logs, normalized final outputs, and summary artifacts.
-  - The built-in `external_agent` tool now supports `run`, `get`, `list`, `cancel`, and `resume`.
-  - Detached jobs append compact transcript status messages to the originating session while keeping full logs in artifacts on disk.
-  - Read-only `get` and `list` actions bypass approvals, while `run`, `cancel`, and `resume` resolve approval targets for the external agent id, command, and cwd.
-  - The gateway now handles `external_agent.*` request topics, and `external_agent.list` returns both configured definitions and persisted jobs.
-  - Deterministic fixture-backed integration coverage exists for blocking runs, detached recovery, resume, approval integration, gateway dispatch, and an opt-in live Codex path. The Claude preset has coverage for blocking runs (harvesting `.result`/`.session_id` from `--output-format json`), native-session resume (`--resume <session_id>`), and structured-output rejection (it returns text, not JSON schema output).
+        Create a generic adapter for running configured external agent CLIs as explicit jobs with captured stdout/stderr, structured lifecycle state, resumability hooks, and approval-aware execution.
+        Keep the abstraction generic so agent-specific presets can be layered in later without refactoring the runtime.
+        Current implementation notes:
+
+- `externalAgents` is a first-class top-level config section. The Claude Code CLI (`claude -p "<prompt>" --output-format json`) and Codex CLI presets are enabled by default for one-shot task delegation; the Mistral Vibe CLI preset ships disabled. Each preset is a discriminated union member keyed by `kind` (`claude` | `codex` | `mistral_vibe`).
+- `src/core/external-agents/service.ts` persists explicit jobs under `.aia/external-agents/jobs/<job-id>/attempts/` with `job.json`, stdout/stderr logs, normalized final outputs, and summary artifacts.
+- The built-in `external_agent` tool now supports `run`, `get`, `list`, `cancel`, and `resume`.
+- Detached jobs append compact transcript status messages to the originating session while keeping full logs in artifacts on disk.
+- Read-only `get` and `list` actions bypass approvals, while `run`, `cancel`, and `resume` resolve approval targets for the external agent id, command, and cwd.
+- The gateway now handles `external_agent.*` request topics, and `external_agent.list` returns both configured definitions and persisted jobs.
+- Deterministic fixture-backed integration coverage exists for blocking runs, detached recovery, resume, approval integration, gateway dispatch, and an opt-in live Codex path. The Claude preset has coverage for blocking runs (harvesting `.result`/`.session_id` from `--output-format json`), native-session resume (`--resume <session_id>`), and structured-output rejection (it returns text, not JSON schema output).
 
 18. [x] Implement the voice subsystem.
-  Build provider-agnostic STT/TTS/PTT interfaces with local/macOS-friendly live adapters for the first usable release, while keeping the interface portable to future cloud providers.
-  Support CLI/web/gateway initiation, transcript capture, and messaging/channel delivery where supported.
+        Build provider-agnostic STT/TTS/PTT interfaces with local/macOS-friendly live adapters for the first usable release, while keeping the interface portable to future cloud providers.
+        Support CLI/web/gateway initiation, transcript capture, and messaging/channel delivery where supported.
 
 19. [x] Implement the image-generation subsystem.
-  Add a dedicated image-generation provider interface, tool definitions, approval semantics, artifact storage, and result references.
-  Current implementation notes:
-  - `image` is now a first-class top-level config section with `artifactRoot`, `defaultProviderId`, and `pollIntervalMs`, alongside a disabled-by-default `providers.imageProviders.comfyui_local` preset.
-  - `src/core/image/service.ts` and `src/core/image/comfyui.ts` provide the provider-agnostic image runtime plus the first ComfyUI-compatible adapter with health/model listing, capability probing, prompt submission, history polling, and output download support.
-  - Checked-in workflow templates now live under `src/core/image/workflows/` for `text_to_image`, `image_to_image`, and `inpaint`, with optional per-mode config overrides.
-  - The built-in `image_generate` tool supports `text_to_image`, `image_to_image`, and `inpaint`, uses `approvalMode: "ask"`, accepts prior image artifacts or local `file://` inputs, and copies local sources/masks/references into `.aia/images/inputs/`.
-  - Generated outputs, request/history logs, and result records persist under `.aia/images/outputs/`, and results expose first-class multi-image artifacts through `images[]` plus `primaryImageIndex`.
-  - Deterministic integration coverage now lives in `tests/integration/image-service.test.ts` and `tests/integration/image-tools.test.ts`, with opt-in live ComfyUI coverage in `tests/live/image-service.live.test.ts` via `npm run test:live:image`.
+        Add a dedicated image-generation provider interface, tool definitions, approval semantics, artifact storage, and result references.
+        Current implementation notes:
+
+- `image` is now a first-class top-level config section with `artifactRoot`, `defaultProviderId`, and `pollIntervalMs`, alongside a disabled-by-default `providers.imageProviders.comfyui_local` preset.
+- `src/core/image/service.ts` and `src/core/image/comfyui.ts` provide the provider-agnostic image runtime plus the first ComfyUI-compatible adapter with health/model listing, capability probing, prompt submission, history polling, and output download support.
+- Checked-in workflow templates now live under `src/core/image/workflows/` for `text_to_image`, `image_to_image`, and `inpaint`, with optional per-mode config overrides.
+- The built-in `image_generate` tool supports `text_to_image`, `image_to_image`, and `inpaint`, uses `approvalMode: "ask"`, accepts prior image artifacts or local `file://` inputs, and copies local sources/masks/references into `.aia/images/inputs/`.
+- Generated outputs, request/history logs, and result records persist under `.aia/images/outputs/`, and results expose first-class multi-image artifacts through `images[]` plus `primaryImageIndex`.
+- Deterministic integration coverage now lives in `tests/integration/image-service.test.ts` and `tests/integration/image-tools.test.ts`, with opt-in live ComfyUI coverage in `tests/live/image-service.live.test.ts` via `npm run test:live:image`.
 
 20. [x] Implement the local gateway and control API.
-  Build a lightweight gateway that exposes sessions, events, approvals, steering, memory, channels, and tool execution over a stable local protocol and shared core runtime.
-  Include remote-capable transport support, but do not fork the codepath away from the in-process SDK.
-  Current implementation notes:
-  - `src/gateway/runtime.ts` now provides the shared control-plane runtime used by the server transport adapters and intended future SDK consumers.
-  - `src/gateway/router.ts` exposes the HTTP gateway surface with request dispatch, health/status, session snapshot reads, approval reads, and event replay.
-  - `src/gateway/websocket.ts` exposes the main bidirectional control transport with request/response envelopes, live event subscriptions, and cursor-based replay on subscribe.
-  - Gateway-originated async work is tracked as `GatewayRunRecord` state and emitted through `run.updated` alongside normal message/tool/turn/session events.
-  - `session.message`, `session.resume`, and direct `tool.execute` accept quickly and execute through the same core session store, tool runtime, and agent loop used elsewhere.
-  - Auth is transport-neutral: configured gateway tokens are required everywhere, otherwise only loopback access is allowed.
-  - The Next.js server and gateway now share the same HTTP server and upgrade path, with Next's upgrade handler preserved for non-gateway websocket traffic.
-  - Gateway protocol notes now live in `docs/GATEWAY_PROTOCOL.md`.
+        Build a lightweight gateway that exposes sessions, events, approvals, steering, memory, channels, and tool execution over a stable local protocol and shared core runtime.
+        Include remote-capable transport support, but do not fork the codepath away from the in-process SDK.
+        Current implementation notes:
+
+- `src/gateway/runtime.ts` now provides the shared control-plane runtime used by the server transport adapters and intended future SDK consumers.
+- `src/gateway/router.ts` exposes the HTTP gateway surface with request dispatch, health/status, session snapshot reads, approval reads, and event replay.
+- `src/gateway/websocket.ts` exposes the main bidirectional control transport with request/response envelopes, live event subscriptions, and cursor-based replay on subscribe.
+- Gateway-originated async work is tracked as `GatewayRunRecord` state and emitted through `run.updated` alongside normal message/tool/turn/session events.
+- `session.message`, `session.resume`, and direct `tool.execute` accept quickly and execute through the same core session store, tool runtime, and agent loop used elsewhere.
+- Auth is transport-neutral: configured gateway tokens are required everywhere, otherwise only loopback access is allowed.
+- The Next.js server and gateway now share the same HTTP server and upgrade path, with Next's upgrade handler preserved for non-gateway websocket traffic.
+- Gateway protocol notes now live in `docs/GATEWAY_PROTOCOL.md`.
 
 21. [x] Implement the in-process Node SDK.
-  Expose the same core engine through a stable Node API for programmatic use, including session control, event streaming, approvals, steering, memory access, tool search, and gateway interaction.
-  The SDK must remain a first-class surface, not an afterthought behind the CLI.
-  - `src/sdk/client.ts` now provides the class-based `AIAgentSdk`, session/run handles, raw gateway access, callback subscriptions, and async-iterable event streams over the shared control-plane runtime.
-  - `createAIAgentSdk(...)` wraps an existing `GatewayRuntimeLike`, while `createAIAgentSdkFromConfig(...)` bootstraps a runtime from loaded config and owns its shutdown path.
-  - Custom language-model and embedding providers can now be registered both at construction time and after runtime creation, and provider ids flow through config and gateway-facing request contracts as string ids instead of a closed enum.
-  - Root and subpath exports now expose `./core`, `./gateway`, `./sdk`, and `./server` so the SDK can stay a stable first-class import surface.
-  - Graceful shutdown now closes the LM queue background pump before tearing down SDK-owned runtimes, which avoids temp-state races during tests and real process exit.
+        Expose the same core engine through a stable Node API for programmatic use, including session control, event streaming, approvals, steering, memory access, tool search, and gateway interaction.
+        The SDK must remain a first-class surface, not an afterthought behind the CLI.
+
+- `src/sdk/client.ts` now provides the class-based `AIAgentSdk`, session/run handles, raw gateway access, callback subscriptions, and async-iterable event streams over the shared control-plane runtime.
+- `createAIAgentSdk(...)` wraps an existing `GatewayRuntimeLike`, while `createAIAgentSdkFromConfig(...)` bootstraps a runtime from loaded config and owns its shutdown path.
+- Custom language-model and embedding providers can now be registered both at construction time and after runtime creation, and provider ids flow through config and gateway-facing request contracts as string ids instead of a closed enum.
+- Root and subpath exports now expose `./core`, `./gateway`, `./sdk`, and `./server` so the SDK can stay a stable first-class import surface.
+- Graceful shutdown now closes the LM queue background pump before tearing down SDK-owned runtimes, which avoids temp-state races during tests and real process exit.
 
 22. [x] Implement the web control plane.
-  Build the minimal but working Next.js + Express UI for sessions, messages, approvals, steering, settings, logs, memory inspection, task status, and gateway health.
-  Do not auto-open the browser by default; match the more controlled OpenClaw-style behavior unless explicit onboarding chooses otherwise.
-  Current implementation notes:
-  - The root Next.js page is now a server-rendered dashboard over the shared runtime instead of a bootstrap placeholder.
-  - `src/server/control-plane/service.ts` aggregates gateway health, sessions, approvals, memory status/query results, tunnel status, channel status/routes/deliveries, recent event replay, and non-secret settings for the UI.
-  - `src/server/control-plane/router.ts` exposes the matching Express API and browser-form action routes under `/api/control-plane/*`.
-  - The dashboard now supports session creation, session messages, approval resolution, and steering injection through plain HTML forms, keeping the UI functional without depending on client-side SDK state.
-  - The page now surfaces task state, transcript history, channel bindings, memory inspection, tunnel exposure, and event logs in one control plane.
+        Build the minimal but working Next.js + Express UI for sessions, messages, approvals, steering, settings, logs, memory inspection, task status, and gateway health.
+        Do not auto-open the browser by default; match the more controlled OpenClaw-style behavior unless explicit onboarding chooses otherwise.
+        Current implementation notes:
+
+- The root Next.js page is now a server-rendered dashboard over the shared runtime instead of a bootstrap placeholder.
+- `src/server/control-plane/service.ts` aggregates gateway health, sessions, approvals, memory status/query results, tunnel status, channel status/routes/deliveries, recent event replay, and non-secret settings for the UI.
+- `src/server/control-plane/router.ts` exposes the matching Express API and browser-form action routes under `/api/control-plane/*`.
+- The dashboard now supports session creation, session messages, approval resolution, and steering injection through plain HTML forms, keeping the UI functional without depending on client-side SDK state.
+- The page now surfaces task state, transcript history, channel bindings, memory inspection, tunnel exposure, and event logs in one control plane.
 
 23. [x] Implement integrated tunnel and remote-access support.
-  Add remote exposure support for the gateway/web surfaces and the webhook surfaces needed by the supported messaging channels.
-  Keep this local-product-focused: no hosted service dependency, no multi-user account system, but enough transport protection and documentation to operate safely.
-  Current implementation notes:
-  - `src/core/tunnel/service.ts` now derives public exposure status for the web surface, gateway HTTP, gateway WebSocket, and channel webhook URLs from the local config.
-  - `src/server/web-access.ts` now applies the shared remote-access posture to the web/control-plane surfaces:
-    - configured `gateway.auth.token` is required for remote access
-    - otherwise only loopback callers are allowed
-    - `?token=` on page hits becomes an `HttpOnly` cookie and a sanitized redirect
-  - Gateway HTTP and WebSocket auth now accept bearer tokens consistently.
-  - Remote setup/runtime notes now live in `docs/CONTROL_PLANE_AND_CHANNELS.md`.
+        Add remote exposure support for the gateway/web surfaces and the webhook surfaces needed by the supported messaging channels.
+        Keep this local-product-focused: no hosted service dependency, no multi-user account system, but enough transport protection and documentation to operate safely.
+        Current implementation notes:
+
+- `src/core/tunnel/service.ts` now derives public exposure status for the web surface, gateway HTTP, gateway WebSocket, and channel webhook URLs from the local config.
+- `src/server/web-access.ts` now applies the shared remote-access posture to the web/control-plane surfaces:
+  - configured `gateway.auth.token` is required for remote access
+  - otherwise only loopback callers are allowed
+  - `?token=` on page hits becomes an `HttpOnly` cookie and a sanitized redirect
+- Gateway HTTP and WebSocket auth now accept bearer tokens consistently.
+- Remote setup/runtime notes now live in `docs/CONTROL_PLANE_AND_CHANNELS.md`.
 
 24. [x] Implement the messaging channel framework.
-  Build the shared inbound/outbound channel runtime for account config, session routing, approval routing, steering, retries, media handling, paired session identity, and per-channel capability checks.
-  The framework must make the four required channels share as much core logic as possible.
-  Current implementation notes:
-  - `src/core/channels/service.ts` now provides the shared channel runtime with route persistence, delivery persistence, session pairing, capability/configuration health, webhook endpoint reporting, inbound normalization handoff, and outbound delivery tracking.
-  - The shared state now lives under `.aia/channels/routes.json` and `.aia/channels/deliveries.jsonl`.
-  - `src/server/channel-router.ts` now exposes the shared webhook entrypoint at `POST /api/channels/:channel/webhook`.
-  - The gateway now delegates `channel.list`, `channel.health`, and `channel.send` to the shared channel runtime when it is present, and inbound webhook messages now emit `channel.message` gateway events.
-  - When a channel message is already bound to an idle session, the shared runtime can route it into the normal session loop without a separate channel-specific control path.
+        Build the shared inbound/outbound channel runtime for account config, session routing, approval routing, steering, retries, media handling, paired session identity, and per-channel capability checks.
+        The framework must make the four required channels share as much core logic as possible.
+        Current implementation notes:
+
+- `src/core/channels/service.ts` now provides the shared channel runtime with route persistence, delivery persistence, session pairing, capability/configuration health, webhook endpoint reporting, inbound normalization handoff, and outbound delivery tracking.
+- The shared state now lives under `.aia/channels/routes.json` and `.aia/channels/deliveries.jsonl`.
+- `src/server/channel-router.ts` now exposes the shared webhook entrypoint at `POST /api/channels/:channel/webhook`.
+- The gateway now delegates `channel.list`, `channel.health`, and `channel.send` to the shared channel runtime when it is present, and inbound webhook messages now emit `channel.message` gateway events.
+- When a channel message is already bound to an idle session, the shared runtime can route it into the normal session loop without a separate channel-specific control path.
 
 25. [ ] Implement Discord support.
-  Deliver inbound/outbound messaging, session routing, approval routing, steering, attachments, and channel-scoped task control through the shared messaging runtime.
-  Add fake/contract tests first, then opt-in live e2e.
+        Deliver inbound/outbound messaging, session routing, approval routing, steering, attachments, and channel-scoped task control through the shared messaging runtime.
+        Add fake/contract tests first, then opt-in live e2e.
 
 26. [x] Implement WhatsApp support.
-  Deliver inbound/outbound messaging, media handling, session routing, approvals, and steering with the same shared runtime expectations as Discord.
-  Add fake/contract tests first, then opt-in live e2e.
-  Current implementation notes:
-  - `src/core/channels/whatsapp.ts` now implements a concrete WhatsApp session-directory adapter with inbound polling, outbound delivery envelopes, media persistence, and shared artifact normalization.
-  - `src/server/runtime-context.ts` now auto-registers the WhatsApp adapter from `channels.whatsapp.sessionDirectory`, and the shared `ChannelService` starts it alongside the gateway runtime.
-  - `src/gateway/runtime.ts` now auto-creates and binds WhatsApp sessions on first contact, relays visible assistant output back to the channel, and supports `/approve`, `/deny`, `/cancel`, `/steer`, and `/help`.
-  - Channel approvals now resume through the normal agent loop by materializing approved or denied pending tool calls before the next model turn.
-  - Coverage lives in `tests/integration/whatsapp-channel.test.ts`, with an opt-in filesystem smoke test in `tests/live/whatsapp-channel.live.test.ts` behind `npm run test:live:whatsapp`.
+        Deliver inbound/outbound messaging, media handling, session routing, approvals, and steering with the same shared runtime expectations as Discord.
+        Add fake/contract tests first, then opt-in live e2e.
+        Current implementation notes:
+
+- `src/core/channels/whatsapp.ts` now implements a concrete WhatsApp session-directory adapter with inbound polling, outbound delivery envelopes, media persistence, and shared artifact normalization.
+- `src/server/runtime-context.ts` now auto-registers the WhatsApp adapter from `channels.whatsapp.sessionDirectory`, and the shared `ChannelService` starts it alongside the gateway runtime.
+- `src/gateway/runtime.ts` now auto-creates and binds WhatsApp sessions on first contact, relays visible assistant output back to the channel, and supports `/approve`, `/deny`, `/cancel`, `/steer`, and `/help`.
+- Channel approvals now resume through the normal agent loop by materializing approved or denied pending tool calls before the next model turn.
+- Coverage lives in `tests/integration/whatsapp-channel.test.ts`, with an opt-in filesystem smoke test in `tests/live/whatsapp-channel.live.test.ts` behind `npm run test:live:whatsapp`.
 
 27. [ ] Implement Microsoft Teams support.
-  Deliver inbound/outbound messaging, webhook handling, session routing, approvals, and steering with explicit remote/webhook setup coverage.
-  Add fake/contract tests first, then opt-in live e2e.
+        Deliver inbound/outbound messaging, webhook handling, session routing, approvals, and steering with explicit remote/webhook setup coverage.
+        Add fake/contract tests first, then opt-in live e2e.
 
 28. [ ] Implement BlueBubbles-backed iMessage support.
-  Deliver inbound/outbound messaging, media handling, session routing, approvals, and steering using BlueBubbles as the first iMessage path.
-  Add fake/contract tests first, then opt-in live e2e.
+        Deliver inbound/outbound messaging, media handling, session routing, approvals, and steering using BlueBubbles as the first iMessage path.
+        Add fake/contract tests first, then opt-in live e2e.
 
 29. [x] Implement examples that exercise the prompt pack and runtime surfaces.
-  Add at least three focused examples: coding task, research/web task, and memory/skills/MCP task.
-  Examples should be realistic enough to expose prompt and tool weaknesses without depending on live credentials by default.
-  Current implementation notes:
-  - `examples/coding-task.ts`, `examples/research-web-task.ts`, and `examples/memory-skills-mcp-task.ts` now run against the real SDK/runtime path with scripted local model adapters.
-  - `examples/shared.ts` now provides the reusable example harness for temp workspaces, loaded config wiring, scripted model responses, and prompt-preview capture.
-  - `tests/integration/examples.test.ts` now smoke-tests all three examples so they stay runnable and architecture-relevant.
+        Add at least three focused examples: coding task, research/web task, and memory/skills/MCP task.
+        Examples should be realistic enough to expose prompt and tool weaknesses without depending on live credentials by default.
+        Current implementation notes:
+
+- `examples/coding-task.ts`, `examples/research-web-task.ts`, and `examples/memory-skills-mcp-task.ts` now run against the real SDK/runtime path with scripted local model adapters.
+- `examples/shared.ts` now provides the reusable example harness for temp workspaces, loaded config wiring, scripted model responses, and prompt-preview capture.
+- `tests/integration/examples.test.ts` now smoke-tests all three examples so they stay runnable and architecture-relevant.
 
 30. [x] Implement exhaustive core/unit/contract coverage and deterministic e2e.
-  Cover the loop state machine, config, approvals, patch/undo pipeline, session persistence, memory compaction, tool registry, MCP runtime, browser abstractions, gateway protocol, SDK, and channel routing with deterministic tests.
-  Add deterministic e2e for CLI, web, gateway, and provider fakes before starting final cleanup.
-  Current implementation notes:
-  - `src/cli.ts` now routes `--prompt` through the shared SDK/runtime path instead of a placeholder stub, which makes CLI e2e meaningful.
-  - `tests/helpers/fake-language-model-server.ts` and `tests/e2e/dev-server.ts` now provide the fake-provider harness used by deterministic CLI/web/gateway Playwright coverage.
-  - `tests/e2e/cli.spec.ts`, `tests/e2e/gateway.spec.ts`, and the expanded `tests/e2e/home.spec.ts` now cover the main product entry points end-to-end.
-  - `tests/integration/image-service.test.ts` now adds fake-ComfyUI image coverage for health, model discovery, generation, artifact persistence, and tool-runtime wiring.
+        Cover the loop state machine, config, approvals, patch/undo pipeline, session persistence, memory compaction, tool registry, MCP runtime, browser abstractions, gateway protocol, SDK, and channel routing with deterministic tests.
+        Add deterministic e2e for CLI, web, gateway, and provider fakes before starting final cleanup.
+        Current implementation notes:
+
+- `src/cli.ts` now routes `--prompt` through the shared SDK/runtime path instead of a placeholder stub, which makes CLI e2e meaningful.
+- `tests/helpers/fake-language-model-server.ts` and `tests/e2e/dev-server.ts` now provide the fake-provider harness used by deterministic CLI/web/gateway Playwright coverage.
+- `tests/e2e/cli.spec.ts`, `tests/e2e/gateway.spec.ts`, and the expanded `tests/e2e/home.spec.ts` now cover the main product entry points end-to-end.
+- `tests/integration/image-service.test.ts` now adds fake-ComfyUI image coverage for health, model discovery, generation, artifact persistence, and tool-runtime wiring.
 
 31. [x] Implement opt-in live integration and live e2e suites.
-  Add live suites for LM Studio, Ollama, MCP servers, browser automation, Discord, WhatsApp, Teams, BlueBubbles/iMessage, voice, and image generation where feasible.
-  These must be opt-in but documented, runnable, and clearly separated from deterministic CI-safe tests.
-  Current implementation notes:
-  - `tests/live/helpers.ts` now standardizes opt-in gating and temporary-root cleanup across live suites.
-  - Live suites now cover browser automation, Codex external agents, LM Studio, Ollama, memory embeddings, MCP manager connections, voice, image generation, and the WhatsApp session-directory bridge.
-  - `npm run test:live` and the per-surface live scripts are now documented in `docs/TESTING.md`.
+        Add live suites for LM Studio, Ollama, MCP servers, browser automation, Discord, WhatsApp, Teams, BlueBubbles/iMessage, voice, and image generation where feasible.
+        These must be opt-in but documented, runnable, and clearly separated from deterministic CI-safe tests.
+        Current implementation notes:
+
+- `tests/live/helpers.ts` now standardizes opt-in gating and temporary-root cleanup across live suites.
+- Live suites now cover browser automation, Codex external agents, LM Studio, Ollama, memory embeddings, MCP manager connections, voice, image generation, and the WhatsApp session-directory bridge.
+- `npm run test:live` and the per-surface live scripts are now documented in `docs/TESTING.md`.
 
 32. [x] Run the penultimate full-system validation pass before cleanup.
-  Run the full deterministic suite plus the intended live suites for the current environment, fix failures, close reliability gaps, and verify that the product can complete real tasks end-to-end from CLI, SDK, web, gateway, and messaging entry points.
-  Do not start the cleanup/doc-polish pass until this step is green.
-  Current implementation notes:
-  - The deterministic validation pass now runs clean through `npm run typecheck`, `npm run lint`, `npm run test:unit`, `npm run test:integration`, and `npm run test:e2e`.
-  - The live aggregate now runs clean in default opt-in mode through `npm run test:live`, with suites skipping unless explicitly enabled for the current machine.
-  - `npm run validate:penultimate` now captures the full penultimate validation order in one command.
+        Run the full deterministic suite plus the intended live suites for the current environment, fix failures, close reliability gaps, and verify that the product can complete real tasks end-to-end from CLI, SDK, web, gateway, and messaging entry points.
+        Do not start the cleanup/doc-polish pass until this step is green.
+        Current implementation notes:
+
+- The deterministic validation pass now runs clean through `npm run typecheck`, `npm run lint`, `npm run test:unit`, `npm run test:integration`, and `npm run test:e2e`.
+- The live aggregate now runs clean in default opt-in mode through `npm run test:live`, with suites skipping unless explicitly enabled for the current machine.
+- `npm run validate:penultimate` now captures the full penultimate validation order in one command.
 
 33. [x] Perform the final cleanup and documentation pass.
-  Remove dead code, tighten naming, reduce duplication, update docs, refresh examples, and confirm the implementation still matches `INITIAL_DESIGN.md`.
-  Finish with one final test pass and only then mark the project complete.
-  Current implementation notes:
-  - The example harness, fake-provider e2e harness, and live-suite helpers now remove repeated setup code across examples and tests.
-  - `docs/TESTING.md`, `examples/README.md`, and `docs/INITIAL_DESIGN.md` now describe the current example, CLI, deterministic e2e, and live validation story.
-  - The final pass should rerun `npm run validate:penultimate` after any subsequent product changes that touch these surfaces.
+        Remove dead code, tighten naming, reduce duplication, update docs, refresh examples, and confirm the implementation still matches `INITIAL_DESIGN.md`.
+        Finish with one final test pass and only then mark the project complete.
+        Current implementation notes:
+
+- The example harness, fake-provider e2e harness, and live-suite helpers now remove repeated setup code across examples and tests.
+- `docs/TESTING.md`, `examples/README.md`, and `docs/INITIAL_DESIGN.md` now describe the current example, CLI, deterministic e2e, and live validation story.
+- The final pass should rerun `npm run validate:penultimate` after any subsequent product changes that touch these surfaces.
 
 ## Addendum (2026-06-10)
 
@@ -379,7 +392,7 @@ Landed together while planning the CLI-only Kotlin port (`AIAgentCompact-Kotlin`
 Root-caused from a real interactive session (`~/.aia/sessions/session.98390f03-…`) where the CLI ran several tools and then went silent with no prompt and no error. The chain, in order — any one link broken would have made it visible:
 
 1. **An unserializable tool result.** Three configured MCP servers failed to connect, so `McpManager.summarizeServers` built each summary with `lastConnectedAt: status.lastConnectedAt`, i.e. the optional key **present with value `undefined`**. Zod keeps such a key, and `jsonValueSchema`'s record branch has no branch that accepts one. The persisted copy on disk looked healthy because `JSON.stringify` drops undefined-valued keys — the failure only existed in memory.
-2. **Batched post-run emission.** `emitSessionRunEvents` emitted every message/tool/turn event *after* the loop returned, so the `mcp_status` event threw partway through the batch.
+2. **Batched post-run emission.** `emitSessionRunEvents` emitted every message/tool/turn event _after_ the loop returned, so the `mcp_status` event threw partway through the batch.
 3. **A swallowed rejection.** `executeSessionRun` had no try/catch and `trackRun` was `promise.then(() => undefined, () => undefined)`, so `completeRun` never ran, no terminal `run.updated` was ever emitted, and the run leaked out of `activeRunsBySession` (wedging the session as busy).
 4. **An unbounded wait.** `waitForRun` resolves only on a terminal `run.updated`, with no timeout, so the CLI's `await run.wait()` never returned and never reached `resolvePendingApprovals`.
 
@@ -389,7 +402,7 @@ Rules for future work:
 - **Never let a subscriber abort a run.** `emitEvent` dispatches through `dispatchEvent`, which gives each listener its own try/catch. `EventEmitter.emit()` is synchronous and would otherwise carry a listener's throw into the emitting run.
 - **Normalize anything that becomes a `JsonValue`.** Three layers: `toJsonValue`/`toJsonRecord` (`src/core/contracts/common.ts`) sanitize at the single boundary every tool result crosses (`ToolRuntime`); `jsonValueSchema`/`jsonRecordSchema` drop undefined-valued keys rather than rejecting the payload; and builders like `summarizeServers` spread optional fields in conditionally instead of assigning a possibly-undefined value. When adding a field to any record that reaches an event, prefer `...(value ? { key: value } : {})`.
 - **Emit progress while the run is running.** `AgentLoopOptions.onToolUpdated` fires as each tool call settles and the gateway emits `tool.updated` from it; `emitSessionRunEvents` deliberately no longer loops over `result.toolCalls` (re-emitting would duplicate the event id). The hook's host swallows its own failures — progress reporting must never abort the run it reports on.
-- **`runtime.maxIdenticalToolCalls`** (default 3) refuses the same tool with the same arguments past the cap with a `repeated_tool_call` error result. The no-progress nudge counter cannot catch this, because every repeated read *succeeds*. See `docs/SMALL_MODELS.md`.
+- **`runtime.maxIdenticalToolCalls`** (default 3) refuses the same tool with the same arguments past the cap with a `repeated_tool_call` error result. The no-progress nudge counter cannot catch this, because every repeated read _succeeds_. See `docs/SMALL_MODELS.md`.
 - **CLI must say why a turn ended.** `runChatTurn` keeps the terminal run record, prints `Turn ended: …` for anything other than `session_completed`, subscribes to `approval.requested` so a pause is announced when it happens, renders tool arguments alongside the tool name, and reports when the approval loop gives up after 50 rounds.
 - **Test against the real gateway, not a fake SDK.** `tests/integration/run-finalization.test.ts` drives the real `runCli` over a real in-process runtime through an approval pause, and reproduces the original crash with an unreachable MCP server. Both hang (5s timeout) against the pre-fix code. Every `run.wait()` in tests passes `timeoutMs` so a non-terminating run fails the test instead of hanging the suite.
 - **`run.get`** reads a run record by id; the last `FINISHED_RUN_HISTORY_LIMIT` (100) terminal runs stay readable so `waitForRun` can re-check state after subscribing rather than waiting on an event that already fired.
@@ -402,7 +415,7 @@ remains the durable record of the design decisions so a compaction cannot lose t
 ### Research findings that motivate the work (verified 2026-09-18)
 
 - **`display` suppresses `result` in the model's view.** `buildToolResultMessageParts` (`src/core/tools/runtime.ts`) builds the `role:"tool"` message from `result.display` **only** when display is non-empty; the `result` JSON is dropped. `external_agent`, `exec_command`, and `write_stdin` each return a single `status` display part, so the model sees `[status:succeeded] <280-char summary>` and never sees stdout or the job record. This is the root cause of "it just says the command succeeded."
-- **Provider-native reasoning is never persisted.** `reasoning_content` (LM Studio) / `message.thinking` (Ollama) → `response.reasoning` → `onAssistantReasoning` → `message.reasoning` gateway event emitted with `persist=false` (`src/gateway/runtime.ts` ~L228). It exists only as a live stream. Only *inline* `<think>` markup inside `content` is persisted, and `stripReasoningMarkup` (`src/core/agent/loop.ts` ~L1161) removes it only on turns that produced a tool call — so a pure-text turn's `<think>` block stays in history forever.
+- **Provider-native reasoning is never persisted.** `reasoning_content` (LM Studio) / `message.thinking` (Ollama) → `response.reasoning` → `onAssistantReasoning` → `message.reasoning` gateway event emitted with `persist=false` (`src/gateway/runtime.ts` ~L228). It exists only as a live stream. Only _inline_ `<think>` markup inside `content` is persisted, and `stripReasoningMarkup` (`src/core/agent/loop.ts` ~L1161) removes it only on turns that produced a tool call — so a pure-text turn's `<think>` block stays in history forever.
 - **External agents are one-shot today.** `FileExternalAgentService` (`src/core/external-agents/service.ts`) spawns a CLI once per job (blocking or detached); `resume` re-spawns a new process with `--resume <nativeSessionId>`. No long-lived process, no stdin after launch.
 - **A PTY session primitive already exists.** `CommandRuntime` (`src/core/tools/builtins/command-runtime.ts`) has `node-pty`-backed long-lived sessions (`startExecCommand`, `writeStdin`, `readCommandOutput`, `waitForCommand`, `killCommand`) with a `child_process` pipe fallback. `node-pty@^1.1.0` is already a dependency. Do **not** write a second PTY lifecycle — extract this one.
 - **CLI renders status only.** `formatToolActivity` (`src/cli.ts` ~L357) prints `· tool(args): <status>` and nothing else. The CLI does not subscribe to `message.created`.
@@ -411,44 +424,44 @@ remains the durable record of the design decisions so a compaction cannot lose t
 
 ### Decisions (operator-confirmed)
 
-| # | Decision |
-|---|---|
-| 2 | Interactive sessions live **beside** the existing one-shot job model; same `external_agent` tool, new actions (`start`, `send`, `read`, `stop`, `attach`). `run`/`get`/`list`/`cancel`/`resume` keep working unchanged. |
-| 3 | Extract the PTY/pipe session primitive out of `CommandRuntime` into a shared `src/core/process/` module; `CommandRuntime` and the external-agent service both depend on it. |
-| 4 | Generic PTY for all agents; **no** per-vendor protocol adapters. Resolved against the earlier 1A answer — see "Resolved design" below. |
-| 5 | Surface the external agent's inner activity as **a paragraph summary of the transcript** per turn, generated by a real model call (decision R7). |
-| 6 | External agents run in their **own** auto-approve mode; AIAgent gates only session **start**. |
-| 7 | Sessions live until explicitly stopped; orphan sweep on startup only. |
-| 8 | No concurrency cap (but see R10: warn + surface live sessions). |
-| 9 | Reasoning stays on disk (transcript + chat logs) and is **filtered out of the model request** for turns older than the current one. |
-| 10 | Add a first-class `{ kind: "reasoning", text }` message part; the serializer drops `reasoning` parts outside the retained window. Inline `<think>` is **moved** into that part, not deleted. |
-| 11 | Superseded by R8: provider-native reasoning goes to the **events log only**, never the transcript. |
-| 12 | `runtime.reasoningContextTurns`, default `1`. |
-| 13 | All three "tools while thinking" problems are in scope. |
-| 14 | No-progress guard: allow **one** planning/reasoning turn between substantive turns; count consecutive ones beyond that. |
-| 15 | A turn containing `think` **plus** any non-planning tool is productive. |
-| 16 | Reasoning survives within the current turn across tool results. |
-| 17 | Always include a `json` part carrying `result` **in addition to** display parts. Fixes the contract violation generally, not per-tool. |
-| 18 | No new cap on tool output in model context (compaction handles it; existing per-tool caps stay). |
-| 19 | Full output to the CLI. |
-| 20 | CLI renders from `tool.updated`'s `toolCall.result` via a per-tool-family formatter. |
-| 21 | Live output streams via a new `tool.output.delta` gateway event fed by the PTY `onData` handler. |
-| 22 | `chat-session-memory` gains a per-tool-call line (tool, key args, status, truncated output). |
-| 23 | CLI first; web work is a follow-up (except Q29 below). |
-| 24 | Truncation marker: explicit, actionable, names the follow-up tool **and** the artifact path. |
-| 25 | Question prompt: numbered options, free text implicit ("or type your own answer"). |
-| 26 | No `ask_user_question` schema change. |
-| 27 | Free text ⇒ omit `selectedOption`, add `matchedOption: false`. |
-| 28 | Approval prompt becomes `[y/N/a/e]`, `e` = deny + explain what to do instead. |
-| 29 | Web: radio buttons for options plus an "Other" radio with a text input, in the existing approvals form. |
-| 30 | Config: extend each preset in the existing discriminated union with optional `interactive` settings; add top-level `externalAgents.interactive` defaults. |
-| 31 | Keep `external_agent` out of the lean profile; **also fix** the known `create_file`-vs-`write_file` lean-profile bug in `src/core/tools/defaults.ts`. |
-| 32 | argv-only (no shell string); approval on session start keyed on `external_agent:<id>`, `command`, canonicalized `cwd`; re-approve on `cwd` change; `send`/`read` not separately approved. |
-| 33 | Reuse `passEnv` exactly as the one-shot path does. |
-| 34 | Tests: extend `tests/fixtures/external-agents/mock-external-agent-cli.mjs` with an interactive mode; deterministic integration tests; unit tests for reasoning filtering, output truncation, option prompt; opt-in live suite; **plus** a Playwright e2e for the CLI question prompt. |
-| 35 | Sequence: (D) tool-result/context fix → (B/C) reasoning + thinking → (E) question UX → (A) interactive external agents. **Run the test gate between each stage.** |
-| 36 | Docs: new `docs/EXTERNAL_AGENTS.md`; update `docs/AGENT_LOOP.md`, `docs/TOOL_CATALOG.md`; AGENTS.md addendum. |
-| 37 | Teach inline: PTY vs pipe and why TUI scraping is hard; context-window economics; the architecture seams. |
+| #   | Decision                                                                                                                                                                                                                                                                              |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2   | Interactive sessions live **beside** the existing one-shot job model; same `external_agent` tool, new actions (`start`, `send`, `read`, `stop`, `attach`). `run`/`get`/`list`/`cancel`/`resume` keep working unchanged.                                                               |
+| 3   | Extract the PTY/pipe session primitive out of `CommandRuntime` into a shared `src/core/process/` module; `CommandRuntime` and the external-agent service both depend on it.                                                                                                           |
+| 4   | Generic PTY for all agents; **no** per-vendor protocol adapters. Resolved against the earlier 1A answer — see "Resolved design" below.                                                                                                                                                |
+| 5   | Surface the external agent's inner activity as **a paragraph summary of the transcript** per turn, generated by a real model call (decision R7).                                                                                                                                      |
+| 6   | External agents run in their **own** auto-approve mode; AIAgent gates only session **start**.                                                                                                                                                                                         |
+| 7   | Sessions live until explicitly stopped; orphan sweep on startup only.                                                                                                                                                                                                                 |
+| 8   | No concurrency cap (but see R10: warn + surface live sessions).                                                                                                                                                                                                                       |
+| 9   | Reasoning stays on disk (transcript + chat logs) and is **filtered out of the model request** for turns older than the current one.                                                                                                                                                   |
+| 10  | Add a first-class `{ kind: "reasoning", text }` message part; the serializer drops `reasoning` parts outside the retained window. Inline `<think>` is **moved** into that part, not deleted.                                                                                          |
+| 11  | Superseded by R8: provider-native reasoning goes to the **events log only**, never the transcript.                                                                                                                                                                                    |
+| 12  | `runtime.reasoningContextTurns`, default `1`.                                                                                                                                                                                                                                         |
+| 13  | All three "tools while thinking" problems are in scope.                                                                                                                                                                                                                               |
+| 14  | No-progress guard: allow **one** planning/reasoning turn between substantive turns; count consecutive ones beyond that.                                                                                                                                                               |
+| 15  | A turn containing `think` **plus** any non-planning tool is productive.                                                                                                                                                                                                               |
+| 16  | Reasoning survives within the current turn across tool results.                                                                                                                                                                                                                       |
+| 17  | Always include a `json` part carrying `result` **in addition to** display parts. Fixes the contract violation generally, not per-tool.                                                                                                                                                |
+| 18  | No new cap on tool output in model context (compaction handles it; existing per-tool caps stay).                                                                                                                                                                                      |
+| 19  | Full output to the CLI.                                                                                                                                                                                                                                                               |
+| 20  | CLI renders from `tool.updated`'s `toolCall.result` via a per-tool-family formatter.                                                                                                                                                                                                  |
+| 21  | Live output streams via a new `tool.output.delta` gateway event fed by the PTY `onData` handler.                                                                                                                                                                                      |
+| 22  | `chat-session-memory` gains a per-tool-call line (tool, key args, status, truncated output).                                                                                                                                                                                          |
+| 23  | CLI first; web work is a follow-up (except Q29 below).                                                                                                                                                                                                                                |
+| 24  | Truncation marker: explicit, actionable, names the follow-up tool **and** the artifact path.                                                                                                                                                                                          |
+| 25  | Question prompt: numbered options, free text implicit ("or type your own answer").                                                                                                                                                                                                    |
+| 26  | No `ask_user_question` schema change.                                                                                                                                                                                                                                                 |
+| 27  | Free text ⇒ omit `selectedOption`, add `matchedOption: false`.                                                                                                                                                                                                                        |
+| 28  | Approval prompt becomes `[y/N/a/e]`, `e` = deny + explain what to do instead.                                                                                                                                                                                                         |
+| 29  | Web: radio buttons for options plus an "Other" radio with a text input, in the existing approvals form.                                                                                                                                                                               |
+| 30  | Config: extend each preset in the existing discriminated union with optional `interactive` settings; add top-level `externalAgents.interactive` defaults.                                                                                                                             |
+| 31  | Keep `external_agent` out of the lean profile; **also fix** the known `create_file`-vs-`write_file` lean-profile bug in `src/core/tools/defaults.ts`.                                                                                                                                 |
+| 32  | argv-only (no shell string); approval on session start keyed on `external_agent:<id>`, `command`, canonicalized `cwd`; re-approve on `cwd` change; `send`/`read` not separately approved.                                                                                             |
+| 33  | Reuse `passEnv` exactly as the one-shot path does.                                                                                                                                                                                                                                    |
+| 34  | Tests: extend `tests/fixtures/external-agents/mock-external-agent-cli.mjs` with an interactive mode; deterministic integration tests; unit tests for reasoning filtering, output truncation, option prompt; opt-in live suite; **plus** a Playwright e2e for the CLI question prompt. |
+| 35  | Sequence: (D) tool-result/context fix → (B/C) reasoning + thinking → (E) question UX → (A) interactive external agents. **Run the test gate between each stage.**                                                                                                                     |
+| 36  | Docs: new `docs/EXTERNAL_AGENTS.md`; update `docs/AGENT_LOOP.md`, `docs/TOOL_CATALOG.md`; AGENTS.md addendum.                                                                                                                                                                         |
+| 37  | Teach inline: PTY vs pipe and why TUI scraping is hard; context-window economics; the architecture seams.                                                                                                                                                                             |
 
 ### New requirement (operator)
 
@@ -459,7 +472,7 @@ The interactive external-agent terminal must **also appear in a real window on t
 All earlier open questions are now closed. `R<n>` numbers are referenced from the TODO checklist.
 
 - **R1 — PTY for all.** The earlier 1A (Claude `--input-format stream-json`) is **withdrawn**. A protocol pipe is not a terminal a human can attach to, and the shared-window requirement is non-negotiable. Every interactive external agent runs its native TUI in a PTY. No per-vendor protocol adapters.
-- **R2 — We host the PTY ourselves; no tmux.** `tmux` is not installed on the target machine (verified). AIAgent owns the `node-pty` process. Screen state for the model is reconstructed with **`@xterm/headless`** (v6.0.0 available), which maintains a real screen buffer and applies the ANSI escapes, so `read` returns the *rendered screen* rather than raw bytes. A new `aia attach <sessionId>` CLI subcommand relays raw stdin/stdout over the existing gateway WebSocket, reusing gateway auth — which also makes the terminal reachable over the tunnel surface, something tmux could never do.
+- **R2 — We host the PTY ourselves; no tmux.** `tmux` is not installed on the target machine (verified). AIAgent owns the `node-pty` process. Screen state for the model is reconstructed with **`@xterm/headless`** (v6.0.0 available), which maintains a real screen buffer and applies the ANSI escapes, so `read` returns the _rendered screen_ rather than raw bytes. A new `aia attach <sessionId>` CLI subcommand relays raw stdin/stdout over the existing gateway WebSocket, reusing gateway auth — which also makes the terminal reachable over the tunnel surface, something tmux could never do.
 - **R3 — Window opens via `osascript`.** `tell application "Terminal" to do script "aia attach <sessionId>"`. `osascript` verified present at `/usr/bin/osascript`.
 - **R4 — Never auto-open.** Matches the repo's existing "do not auto-open the browser" posture. The window opens only on an explicit `external_agent { action: "attach" }` call or the CLI `/attach <id>` command. `start` prints the attach command instead.
 - **R5 — Turn-boundary detection combines idle + ready-pattern + screen stability.** A turn is complete when the `@xterm/headless` screen buffer is unchanged across two samples `stabilityMs` apart **and** no bytes arrived for `idleMs`, **or** a per-agent `readyPattern` regex matches the rendered screen. Screen-diff stability is what survives spinners and progress animations, which byte-idle alone does not.
@@ -469,11 +482,12 @@ All earlier open questions are now closed. `R<n>` numbers are referenced from th
 - **R9 — No new cap at the runtime boundary.** Existing per-tool caps stay (`shell_command` 12k, `read_command_output` 16k default); only the truncation markers become actionable (decision 24).
 - **R10 — Unlimited concurrent sessions, but visible.** Log a warning past a soft threshold and surface every live session in `external_agent { action: "list" }` and the CLI. No idle reaping.
 - **R11 — Bypass flags ON by default.** Verified exact flags on the installed CLIs: `claude --dangerously-skip-permissions` and `codex --dangerously-bypass-approvals-and-sandbox`. **Security note for future agents: these defaults are deliberate and operator-chosen, not an oversight.** They must live as visible values in the shipped config defaults (never hardcoded in spawn logic) so they are trivially removable, and `docs/EXTERNAL_AGENTS.md` must state the risk plainly. The human gate is decision 32: starting an interactive session always requires an approval.
-- **R12 — `codex --no-alt-screen` is default-on for interactive Codex sessions.** Discovered on the installed CLI: *"Runs the TUI in inline mode, preserving terminal scrollback history."* Alt-screen mode is the single biggest obstacle to reliable TUI capture, so avoiding it improves both model reads and the shared window. Claude has no equivalent on the installed build (`--ax-screen-reader` needs v2.1.181+), so Claude runs in alt-screen and depends on `@xterm/headless`.
+- **R12 — `codex --no-alt-screen` is default-on for interactive Codex sessions.** Discovered on the installed CLI: _"Runs the TUI in inline mode, preserving terminal scrollback history."_ Alt-screen mode is the single biggest obstacle to reliable TUI capture, so avoiding it improves both model reads and the shared window. Claude has no equivalent on the installed build (`--ax-screen-reader` needs v2.1.181+), so Claude runs in alt-screen and depends on `@xterm/headless`.
 
 ### TODO checklist (implementation order per decision 35)
 
 Stage D — tool-output fidelity
+
 1. [x] `buildToolResultMessageParts`: always append a `json` part with `result` alongside display parts; add a unit test proving `external_agent`/`exec_command` results reach the model.
 2. [x] `exec_command`, `write_stdin`, `wait_command`, `kill_command`, `external_agent`: add text display parts carrying real output, not just status.
 3. [x] `external_agent` `buildJobResult`: stop clipping to `job.summary` alone; include the harvested final output and log tails.
@@ -486,25 +500,16 @@ Stage D — tool-output fidelity
 
 Stage D implementation notes (2026-09-18):
 
-- **The contract fix (item 1).** `buildToolResultMessageParts` (`src/core/tools/runtime.ts`) previously built the `role:"tool"` message from `result.display` *instead of* `result`, so any tool that added a nicety display silently starved the model of its own output. It now **always** appends a `{ kind: "json", value: { ...error, ...result, status, toolName } }` part. The one deliberate escape hatch is `RuntimeToolResult.displayedResultKeys`: a tool that already rendered a field verbatim in a text part lists that key so the JSON part omits it (avoiding a double copy of a large blob, made worse because `renderMessagePart` compact-stringifies JSON and escapes newlines). The persisted `toolCall.result` always keeps every key — the omission is model-facing only.
+- **The contract fix (item 1).** `buildToolResultMessageParts` (`src/core/tools/runtime.ts`) previously built the `role:"tool"` message from `result.display` _instead of_ `result`, so any tool that added a nicety display silently starved the model of its own output. It now **always** appends a `{ kind: "json", value: { ...error, ...result, status, toolName } }` part. The one deliberate escape hatch is `RuntimeToolResult.displayedResultKeys`: a tool that already rendered a field verbatim in a text part lists that key so the JSON part omits it (avoiding a double copy of a large blob, made worse because `renderMessagePart` compact-stringifies JSON and escapes newlines). The persisted `toolCall.result` always keeps every key — the omission is model-facing only.
 - **Shared truncation (item 4).** New `src/core/tools/output.ts` exports `truncateToolOutput`, producing `[output truncated: N of M characters omitted; read the rest with <followUp>; full output: <artifactPath>]`. Every clip site names a real next action instead of a dead `…`.
 - **Command lifecycle (items 2, 6).** `CommandRuntime` gained `readCommandTail()` (used by `exec_command`, `write_stdin`, `wait_command`, `kill_command` so each returns `output`), an `ownerSessionId` on each command record, and an `onOutput` listener invoked from both the PTY `onData` and the pipe stdout/stderr handlers. `createGatewayRuntimeFromLoadedConfig` wires that listener to `GatewayRuntime.emitToolOutputDelta`, which emits the new `tool.output.delta` topic with `persist=false` (the combined log on disk is the durable copy; persisting per-chunk events would be pathological). The listener dispatch swallows subscriber throws — reporting output must never break the process producing it.
-- **CLI (item 5).** `extractToolOutput` keys on the *result shape* (`combinedOutput`, then `output`, handling both strings and `{ stdout, stderr }`), not on a tool-name table, so new tools render for free. `tool.output.delta` chunks are written raw to stderr with no added newline so PTY line breaks and progress rewrites survive.
+- **CLI (item 5).** `extractToolOutput` keys on the _result shape_ (`combinedOutput`, then `output`, handling both strings and `{ stdout, stderr }`), not on a tool-name table, so new tools render for free. `tool.output.delta` chunks are written raw to stderr with no added newline so PTY line breaks and progress rewrites survive.
 - **Memory (item 7).** `buildSessionSummary` now writes `Successful tool calls: N of M` plus a `## Tool Calls` section, one line per call (`- name({args}) -> status: outcome`, last 100, args clipped to 200 chars and outcomes to 400). Failed calls are included deliberately: "don't try that again" is the most useful line in a resumed session's log.
-- **Lean profile (item 8).** `LEAN_TOOL_PROFILE_INVOCATION_NAMES` listed `create_file`, an *alias*, so the lean profile shipped with no model-visible file-creation tool. Replaced with `write_file`. `tests/integration/prompt-payload.test.ts` now asserts `write_file` is visible and that no lean entry is a known alias — the old loop skipped unregistered names, which is exactly how the bug survived.
+- **Lean profile (item 8).** `LEAN_TOOL_PROFILE_INVOCATION_NAMES` listed `create_file`, an _alias_, so the lean profile shipped with no model-visible file-creation tool. Replaced with `write_file`. `tests/integration/prompt-payload.test.ts` now asserts `write_file` is visible and that no lean entry is a known alias — the old loop skipped unregistered names, which is exactly how the bug survived.
 - **Coverage added.** `tests/unit/tool-output.test.ts`, two `tests/integration/tool-runtime.test.ts` cases (result always reaches the model; `displayedResultKeys` omission), lifecycle-output and live-listener cases in `tests/integration/workspace-command-tools.test.ts`, per-tool-call summary assertions in `tests/integration/memory-service.test.ts`, and `tool.output.delta` routing in `tests/unit/gateway-subscription.test.ts`.
 - **Flake note.** The three subprocess-spawning integration tests (`config-loader` exec secret, `run-finalization` CLI, `shell_command`) can hit their 5s timeout when the gate runs back-to-back on a loaded machine. Re-run `npm run test:integration` alone before treating it as a regression.
 
-
-Stage B/C — reasoning + thinking
-10. [x] Add `reasoningPartSchema` to `src/core/contracts/messages.ts` and the `messagePartSchema` union.
-11. [x] Move inline `<think>` into a reasoning part instead of deleting it; retire the delete-on-tool-call branch of `stripReasoningMarkup`. Emit one aggregated persisted `message.reasoning` event per turn for provider-native reasoning (R8); keep per-delta events `persist=false`.
-12. [x] `filterModelVisibleMessages` (or the serializer) drops `reasoning` parts outside `runtime.reasoningContextTurns` (default 1).
-13. [x] Config: `runtime.reasoningContextTurns` in `src/core/config/schema.ts` + `docs/CONFIG.md`.
-14. [x] No-progress guard: one planning turn allowed between substantive turns (14); `think` + non-planning tool counts as productive (15).
-15. [x] Verify text-embedded tool-call recovery still fires for calls emitted inside `<think>` blocks; add a regression test.
-16. [x] `tests/integration/prompt-payload.test.ts` — confirm the budget still holds.
-17. [x] Test gate.
+Stage B/C — reasoning + thinking 10. [x] Add `reasoningPartSchema` to `src/core/contracts/messages.ts` and the `messagePartSchema` union. 11. [x] Move inline `<think>` into a reasoning part instead of deleting it; retire the delete-on-tool-call branch of `stripReasoningMarkup`. Emit one aggregated persisted `message.reasoning` event per turn for provider-native reasoning (R8); keep per-delta events `persist=false`. 12. [x] `filterModelVisibleMessages` (or the serializer) drops `reasoning` parts outside `runtime.reasoningContextTurns` (default 1). 13. [x] Config: `runtime.reasoningContextTurns` in `src/core/config/schema.ts` + `docs/CONFIG.md`. 14. [x] No-progress guard: one planning turn allowed between substantive turns (14); `think` + non-planning tool counts as productive (15). 15. [x] Verify text-embedded tool-call recovery still fires for calls emitted inside `<think>` blocks; add a regression test. 16. [x] `tests/integration/prompt-payload.test.ts` — confirm the budget still holds. 17. [x] Test gate.
 
 Stage B/C implementation notes (2026-09-18):
 
@@ -515,47 +520,29 @@ Stage B/C implementation notes (2026-09-18):
 - **Coverage added.** `agent-loop.test.ts` gained "allows a single planning turn…" and a rewritten "moves `<think>` reasoning into a reasoning part and ages it out…" (asserting both the persisted reasoning part and its absence from a later `filterModelVisibleMessages` result); the planning-guard test now needs 6 planning turns instead of 4. `lm-text-tool-calls.test.ts` gained a recovery-inside-`<think>` regression. `streaming.test.ts` now asserts the aggregate separately from the deltas.
 - **Docs.** `docs/AGENT_LOOP.md` ("Reasoning persistence", "Why case 3 exists"), `docs/GATEWAY_PROTOCOL.md` (live-only topics, `final` semantics, `tool.output.delta`), `docs/SMALL_MODELS.md` (config recipe + file map).
 
-
-Stage E — question / approval UX
-18. [x] CLI `answerAgentQuestion`: numbered options, free text implicit, empty = skip (25).
-19. [x] `ask_user_question` returns `matchedOption: false` for free text (27); no schema change (26).
-20. [x] CLI approval prompt `[y/N/a/e]` (28).
-21. [x] Web approvals form: option radios + "Other" with text input (29).
-22. [x] Playwright e2e for the CLI question prompt (34).
-23. [x] Test gate.
+Stage E — question / approval UX 18. [x] CLI `answerAgentQuestion`: numbered options, free text implicit, empty = skip (25). 19. [x] `ask_user_question` returns `matchedOption: false` for free text (27); no schema change (26). 20. [x] CLI approval prompt `[y/N/a/e]` (28). 21. [x] Web approvals form: option radios + "Other" with text input (29). 22. [x] Playwright e2e for the CLI question prompt (34). 23. [x] Test gate.
 
 Stage E implementation notes (2026-09-18):
 
 - **Numbering is a CLI presentation detail.** `answerAgentQuestion` (`src/cli.ts`) prints `  1) label — description` and accepts either a bare number or free text; a number is mapped to that option's **label** before the resolution comment is sent. That is what makes decision 26 (no `ask_user_question` input-schema change) possible — the tool never learns that a CLI numbered anything, so `matchSelectedOption` still works unchanged and any other surface can render options however it likes. `readQuestionOptions` parses `metadata.options` defensively because approval metadata is `JsonValue`, not a typed shape.
 - **Free text is implicit, not a menu item.** The prompt reads `Your answer (number, or type your own answer; Enter to skip):`. Offering "other" as option N would force a two-step interaction for the common case.
-- **`matchedOption` is always present.** `ask_user_question` now returns `matchedOption: boolean` (added to `askUserQuestionOutputSchema`, which is `additionalProperties: false`, and to `required`). Previously the model had to infer "the operator typed something we never offered" from a *missing* `selectedOption`; absence-as-signal is exactly the kind of implicit contract small models get wrong.
+- **`matchedOption` is always present.** `ask_user_question` now returns `matchedOption: boolean` (added to `askUserQuestionOutputSchema`, which is `additionalProperties: false`, and to `required`). Previously the model had to infer "the operator typed something we never offered" from a _missing_ `selectedOption`; absence-as-signal is exactly the kind of implicit contract small models get wrong.
 - **Denial no longer interrogates.** The CLI approval prompt is now `[y/N/a/e]`; a plain `n` denies and consumes no further input, while `e` denies **and** prompts `What should the agent do instead?`. The old flow prompted for an optional note on every denial, which cost a keystroke on the common "just say no" path.
 - **The web "Other" radio needs a server-side fallback.** One HTML form cannot bind a radio group and a free-text input to the same field name, so the approvals form in `src/web/home-page.tsx` renders option radios named `comment` plus an "Other" radio with an **empty value** and a separate `commentOther` text input. `src/server/control-plane/router.ts` resolves `comment || commentOther`. Question-kind approvals label the button **Answer** rather than **Approve**.
 - **Optional metadata.** Both `readApprovalOptions` (web) and the `answerAgentQuestion` call site treat `request.metadata` as optional — the unit-test dashboard fixture omits it, and so do most non-question approvals.
 - **Coverage.** `tests/integration/ask-user-question.test.ts` (matched + unmatched free text), `tests/integration/cli-interactive.test.ts` (numbered selection, `[y/N/a/e]`, `e`-explains, silent `n`), `tests/integration/control-plane-router.test.ts` (`commentOther` fallback), `tests/unit/home-page.test.tsx` (option radios + Other + Answer button), and `tests/e2e/cli.spec.ts` (real subprocess REPL; `runCommand` now pipes stdin and the fake LM server is scripted per-test).
 
-Stage A — interactive external agents
-24. [x] Extract `src/core/process/` PTY/pipe session primitive; refactor `CommandRuntime` onto it with no behavior change (3).
-25. [x] Add `@xterm/headless`; screen-buffer reconstruction so `read` returns the rendered screen (R2).
-26. [x] `externalAgents.interactive` config (30) + per-preset `interactive` block: bypass flags (R11), `--no-alt-screen` for Codex (R12), `readyPattern`/`idleMs`/`stabilityMs` (R5), `humanLockMs` (R6), `terminalApp` (R3).
-27. [x] `FileExternalAgentService`: `startSession`/`send`/`read`/`stop`, persistence under `.aia/external-agents/sessions/<id>/`, startup orphan sweep (7), soft write lock (R6), live-session warning (R10).
-28. [x] `external_agent` tool: new actions incl. `attach` (2); approval targets on start only (32); `passEnv` reuse (33).
-29. [x] Paragraph transcript summary per turn via `LanguageModelRuntime` (R7).
-30. [x] `aia attach <sessionId>` CLI subcommand + gateway WebSocket terminal relay (R2); `osascript` window launcher (R3); CLI `/attach` (R4).
-31. [x] Gateway topics + SDK surface for interactive sessions.
-32. [x] Mock CLI interactive mode + deterministic integration tests + opt-in live suite (34).
-33. [x] `docs/EXTERNAL_AGENTS.md` (must document the R11 bypass-flag risk); update `docs/AGENT_LOOP.md`, `docs/TOOL_CATALOG.md`, `docs/CONFIG.md`, `docs/GATEWAY_PROTOCOL.md` (36).
-34. [x] Final gate: `npm run validate:penultimate`.
+Stage A — interactive external agents 24. [x] Extract `src/core/process/` PTY/pipe session primitive; refactor `CommandRuntime` onto it with no behavior change (3). 25. [x] Add `@xterm/headless`; screen-buffer reconstruction so `read` returns the rendered screen (R2). 26. [x] `externalAgents.interactive` config (30) + per-preset `interactive` block: bypass flags (R11), `--no-alt-screen` for Codex (R12), `readyPattern`/`idleMs`/`stabilityMs` (R5), `humanLockMs` (R6), `terminalApp` (R3). 27. [x] `FileExternalAgentService`: `startSession`/`send`/`read`/`stop`, persistence under `.aia/external-agents/sessions/<id>/`, startup orphan sweep (7), soft write lock (R6), live-session warning (R10). 28. [x] `external_agent` tool: new actions incl. `attach` (2); approval targets on start only (32); `passEnv` reuse (33). 29. [x] Paragraph transcript summary per turn via `LanguageModelRuntime` (R7). 30. [x] `aia attach <sessionId>` CLI subcommand + gateway WebSocket terminal relay (R2); `osascript` window launcher (R3); CLI `/attach` (R4). 31. [x] Gateway topics + SDK surface for interactive sessions. 32. [x] Mock CLI interactive mode + deterministic integration tests + opt-in live suite (34). 33. [x] `docs/EXTERNAL_AGENTS.md` (must document the R11 bypass-flag risk); update `docs/AGENT_LOOP.md`, `docs/TOOL_CATALOG.md`, `docs/CONFIG.md`, `docs/GATEWAY_PROTOCOL.md` (36). 34. [x] Final gate: `npm run validate:penultimate`.
 
 Stage A implementation notes (2026-09-18):
 
 - **One PTY lifecycle, not two.** `src/core/process/session.ts` now owns `startProcessSession` (node-pty with a `child_process` pipe fallback); `CommandRuntime` was refactored onto it with no behavior change, and the external-agent session service consumes the same primitive. Adding a second PTY lifecycle for external agents would have duplicated the subtlest code in the repo.
 - **A PTY needs a terminal emulator, not a regex.** `src/core/process/screen.ts` wraps `@xterm/headless` to maintain a real screen buffer, so `read`/`send` return the screen a human would see. Stripping escapes with a regex renders an in-place spinner as three garbage lines. **`@xterm/headless` 5.5.0 is CJS-only and must be loaded through `createRequire`**, not a static import: webpack's interop hands back an `undefined` default, so a static import typechecks and passes unit/integration tests but crashes the Next server build at module eval (`Cannot destructure property 'Terminal'`). Only `npm run test:e2e` caught it. Same reason `src/gateway/websocket.ts` loads `ws` that way.
 - **Turn end = idle + screen stability, or a ready pattern.** `TerminalTurnWatcher` combines all three because each alone is wrong: byte idle false-positives on any spinner, screen stability is the signal that survives spinners, and `readyPattern` is fastest but per-agent and optional. The result reports `turnEndReason` so the model can tell a real answer from a timeout.
-- **`await promise` does not await that promise's `.then()` handlers.** `stopSession` originally awaited `session.process.exited` and then read a record that the exit *handler* had not yet persisted (`endedAt` was undefined). Fixed by capturing the finalizer as `LiveSession.finalized` and awaiting that. If a handler owns the state transition, the handler's promise is the thing to await.
+- **`await promise` does not await that promise's `.then()` handlers.** `stopSession` originally awaited `session.process.exited` and then read a record that the exit _handler_ had not yet persisted (`endedAt` was undefined). Fixed by capturing the finalizer as `LiveSession.finalized` and awaiting that. If a handler owns the state transition, the handler's promise is the thing to await.
 - **Suspect the fixture before the emulator.** The "spinner frames survive" test failure was caused by the mock CLI prefixing every frame with `\r\n` — the terminal correctly rendered three lines. Fixed in `tests/fixtures/external-agents/mock-external-agent-cli.mjs` by emitting one `\r\n` then bare `frame\r` rewrites.
 - **Approval gates opening the channel, not every message.** `UNGATED_EXTERNAL_AGENT_ACTIONS` (`src/core/external-agents/service.ts`) returns no approval targets for `attach`/`get`/`list`/`read`/`send`/`stop`. `run` and `start` still resolve agent id + command + canonicalized `cwd`. Re-approving each turn would make a conversation unusable, and consent was already given.
-- **`writeHumanInput` is deliberately separate from `sendToSession`.** A human's bytes are not a turn: not summarized, not counted, and they *set* the soft write lock rather than being blocked by it (`humanLockMs`, default 10s). Queuing the agent's write instead of refusing it would land it mid-keystroke.
+- **`writeHumanInput` is deliberately separate from `sendToSession`.** A human's bytes are not a turn: not summarized, not counted, and they _set_ the soft write lock rather than being blocked by it (`humanLockMs`, default 10s). Queuing the agent's write instead of refusing it would land it mid-keystroke.
 - **The window launcher is injected, not imported, by the gateway.** `GatewayRuntimeOptions.attachExternalAgentSession` is a callback; `openTerminalWindow` (macOS `osascript`) is wired in only by `createGatewayRuntimeFromLoadedConfig`. The control plane must not depend on a platform-specific window manager, and tests substitute a recorder.
 - **`aia attach` rides the gateway WebSocket.** `src/gateway/attach-client.ts` subscribes to `tool.output.delta` and sends keystrokes as `external_agent.session.write`, so an attached terminal inherits gateway auth and works over the tunnel — something tmux could never do. **Ctrl-] (`\u001d`) detaches** without killing the session. Windows never open automatically (R4).
 - **`buildTurnResult` leads with the summary.** Status part first (the one-paragraph summary), then the screen as a text part with `displayedResultKeys: ["screen"]` so the JSON part does not carry a second copy. The summarizer uses `toolChoice: "none"`; a summarizer that could call tools would be a second agent loop. A summarizer failure is tolerated — a missing summary is never fatal.
@@ -569,7 +556,7 @@ Live-run findings (2026-09-21, first real `codex` PTY session):
 - **node-pty's `spawn-helper` ships without the execute bit.** npm extraction dropped it, so every `pty.spawn` threw `posix_spawnp failed` and `startProcessSession` fell back to pipes — which makes interactive sessions useless, because the CLI detects a pipe and never renders. `scripts/ensure-pty-helper.mjs` now runs on `postinstall` and chmods the prebuilt helper for every platform directory present. Missing prebuilds are not an error (a source build has none).
 - **Never fall back silently.** The PTY `catch` returned `null` with no signal. It now warns once per process with `AIA_PTY_FALLBACK` (same convention as `AIA_SQLITE_FALLBACK` / `AIA_EMBEDDINGS_DEGRADED`) and names the repair command. The live test's `expect(record.pty).toBe(true)` is what actually caught this — deterministic tests pass `usePty: false` or do not care, so **only a live test can prove the PTY path works**.
 - **Build live fixtures from `DEFAULT_APP_CONFIG`, not by hand.** The first version of the live suite hand-built an `externalAgentConfigSchema` member and failed on required preset fields (`jsonFlag`, `skipGitRepoCheck`, …). It now spreads `DEFAULT_APP_CONFIG.externalAgents.agents[preset]`, which is both DRY and the only version that tests what ships.
-- **A TUI's screen is state, and the next keystroke is interpreted against it.** The real `codex` opened on an *update prompt*, not its chat prompt. Because every `send` ends with a carriage return, sending anything accepted the highlighted default and kicked off `brew upgrade --cask codex`. Nothing malfunctioned — that is what Enter meant on that screen. Design consequence: read before writing after `start`, and treat `attach` as the answer to a modal the agent cannot interpret. Documented in `docs/EXTERNAL_AGENTS.md` → "A second hazard: unexpected modal prompts".
+- **A TUI's screen is state, and the next keystroke is interpreted against it.** The real `codex` opened on an _update prompt_, not its chat prompt. Because every `send` ends with a carriage return, sending anything accepted the highlighted default and kicked off `brew upgrade --cask codex`. Nothing malfunctioned — that is what Enter meant on that screen. Design consequence: read before writing after `start`, and treat `attach` as the answer to a modal the agent cannot interpret. Documented in `docs/EXTERNAL_AGENTS.md` → "A second hazard: unexpected modal prompts".
 - **The emulator works.** The rendered screen from a real session came back as clean, human-readable text (box-drawn update notice with its option list), confirming `@xterm/headless` reconstruction is doing its job on real TUI output.
 
 ## Addendum (2026-09-21): interactive-session correctness and external-agent wiring
@@ -587,7 +574,7 @@ happen.**
   add a service that gates a tool registration, build it in the gateway factory, not in one surface.
 - **A turn could end before the child said anything.** `waitForTurnEnd`'s idle path had no
   "output arrived after the turn began" gate (the ready-pattern path did), so a child that had not
-  answered trivially satisfied idle *and* stability and the caller got the previous screen as if it
+  answered trivially satisfied idle _and_ stability and the caller got the previous screen as if it
   were a reply. The boundary is now `beginTurn()`, snapshotted when the instruction is written rather
   than when the wait is entered — the caller persists state in between, and an echo landing in that
   window would otherwise look like it predates the turn. No `beginTurn()` means the whole stream
@@ -598,7 +585,7 @@ happen.**
   silent until spoken to is legitimate.
 - **A dead child still reported a normal turn.** Claude answering "No, exit" to its own modal exited,
   and `send` returned `turnEndReason: "idle"` with the pre-exit screen; the death surfaced only on the
-  *next* call, as a throw. `waitForTurnEnd` now takes the child's `exited` promise and returns
+  _next_ call, as a throw. `waitForTurnEnd` now takes the child's `exited` promise and returns
   `turnEndReason: "exited"`.
 - **An agent's own failure was classified as resumable.** See `docs/EXTERNAL_AGENTS.md` →
   "When the external CLI reports its own failure".
@@ -621,7 +608,7 @@ own timeouts still bound every wait.
 
 A read-only review of the whole project (gates, live CLI/web run, and a careful pass over the
 uncommitted Stage A–E work) found eleven defects, all now fixed with tests. The gate was green
-*before* these fixes, which is the point worth keeping: every one of them is invisible to
+_before_ these fixes, which is the point worth keeping: every one of them is invisible to
 `typecheck`/`lint`/`test` and most were only visible by running the product and looking at what it
 wrote to disk.
 
@@ -637,7 +624,7 @@ wrote to disk.
   and utf8-reads `node_modules/` and `dist/` (up to 10,000 entries). Operator choice — scope with
   `path`. See `docs/TOOL_CATALOG.md` → "Output limits".
 - **The web session form proposed the wrong working directory.** `home-page.tsx` defaulted `cwd` to
-  `settings.memory.workspaceRoot` — the memory *document* root (`./memory`) — so a session created
+  `settings.memory.workspaceRoot` — the memory _document_ root (`./memory`) — so a session created
   from the dashboard ran the agent inside `memory/`. `ControlPlaneSettingsSummary.runtime` now
   carries a distinct `workspaceRoot` (from `ServerRuntimeContext.cwd`). The unit fixture now uses
   visibly different values for the two roots, because identical fixture values are what let this pass
@@ -650,15 +637,15 @@ wrote to disk.
   (`PATH`, `HOME`, `SHELL`, `TERM*`, `LANG`/`LC_*`, `TMPDIR`, `TZ`, `USER`, proxy + CA vars) plus
   `passEnv` plus `env` plus per-call overrides. **This is a behaviour change** — an agent that relied
   on an inherited variable must now name it in `passEnv`. The pattern came from `secrets.ts`, where
-  `passEnv` reads from a *separate* `environment` argument and is meaningful; copying it without that
+  `passEnv` reads from a _separate_ `environment` argument and is meaningful; copying it without that
   second source is what made it vacuous. When you copy a security-shaped helper, copy what makes it
   work, not its shape.
 - **The `start` approval hid the bypass flags.** The `command` approval target was
   `command + defaultArgs`, but `start` spawns `defaultArgs + interactive.args` — where
   `--dangerously-skip-permissions` lives. An operator rule written to refuse exactly that flag could
   never match. `ExternalAgentDefinition` now carries `interactiveArgs` and the resolver appends them
-  for `start` only. Note the operator sees just `match.target`, so this fix is mostly about *policy
-  matching*, which is where it counts.
+  for `start` only. Note the operator sees just `match.target`, so this fix is mostly about _policy
+  matching_, which is where it counts.
 - **Reasoning buffered per turn was never released on an abnormal exit.** `flushTurnReasoning` ran
   only from `emitSessionRunEvents` (off `result.turns`), so a throw that escapes the loop — the exact
   case `guardRun` exists for — left entries in `pendingReasoningByTurn` forever and lost the archive
@@ -674,7 +661,7 @@ wrote to disk.
 - **The global event ledger grew without bound.** `.aia/logs/session-events.jsonl` is written for
   every event and **read by nothing in the product** (`docs/INITIAL_DESIGN.md` calls it a coarse audit
   ledger); the live workspace was at **236MB across 2,169 events**. It now rotates one generation at
-  64MB. Rotation is deliberately *not* applied to the per-session jsonl files — those are read back by
+  64MB. Rotation is deliberately _not_ applied to the per-session jsonl files — those are read back by
   `getSessionSnapshot`, so rotating one would silently truncate a session's history.
 - **Three smaller ones.** `startSession` could orphan a spawned child if the record failed schema
   validation after the spawn (now killed + streams closed on the way out); the pipe fallback's
@@ -712,8 +699,8 @@ and only showed up by using the product and looking at what reached the terminal
 
 ### The defect that mattered most: nothing ever showed the agent's answer
 
-Asked "What is 17 * 23?", the model reasoned correctly, called `attempt_complete` with
-`summary: "17 * 23 = 391."`, and the operator saw the dimmed reasoning, a status metrics
+Asked "What is 17 _ 23?", the model reasoned correctly, called `attempt_complete` with
+`summary: "17 _ 23 = 391."`, and the operator saw the dimmed reasoning, a status metrics
 line, and **no answer**. The same on `--prompt` and in the web transcript.
 
 The chain, all three links necessary:
@@ -727,7 +714,7 @@ The chain, all three links necessary:
    `summarizeMessage` renders a `tool_call` part as `[tool] attempt_complete`.
 
 And the prompt pack (`pack.tsx`, `attempt-complete.ts`) explicitly instructs the model to
-put the answer in the argument and *not* send a chat message — so **the better a model
+put the answer in the argument and _not_ send a chat message — so **the better a model
 followed the contract, the less the operator saw.** The README meanwhile promised
 `--prompt` printed "the latest assistant summary."
 
@@ -737,11 +724,11 @@ memory service and CLI share one spelling), and `statusSummary` carries the real
 Every surface gets it for free. See `docs/AGENT_LOOP.md`.
 
 **Why no test caught it, which is the durable lesson.** The fake provider
-(`tests/helpers/fake-language-model-server.ts`) emitted prose in `content` *plus*
+(`tests/helpers/fake-language-model-server.ts`) emitted prose in `content` _plus_
 `attempt_complete` with **empty arguments** — the exact opposite of the shipped contract.
 The e2e asserted on the prose and passed. A fake that contradicts your own prompt pack
 tests a product you do not ship. It is now contract-accurate, and the gateway e2e asserts
-the answer *content* reaches the client rather than counting assistant messages.
+the answer _content_ reaches the client rather than counting assistant messages.
 
 ### Security: H2, M13, H3, H4, H6 closed
 
@@ -751,14 +738,14 @@ Threat model and per-finding detail in `docs/SECURITY_REVIEW.md`; config surface
 - **Never derive a peer address from a header.** `X-Forwarded-For` is client-supplied.
   Socket address only (H2).
 - **Header handling alone cannot close tunnel exposure**, because a tunnel terminating in
-  front of us forwards to the loopback socket — remote traffic *is* loopback by then. The
+  front of us forwards to the loopback socket — remote traffic _is_ loopback by then. The
   only reliable signal is our own config, so `assertGatewayExposureIsAuthenticated` now
   **refuses to start** an untokened routable/unspecified/tunnelled gateway (M13). A
   warning is not a control: the insecure configuration still came up and served traffic.
 - **Workspace config trust** (H3) is keyed on path **and content hash**, stored in
   `~/.aia/trust.json` — never in the workspace, which an attacker also controls. Editing a
   trusted file revokes trust. Untrusted `exec`/`file` providers are withheld with an
-  `AIA_UNTRUSTED_CONFIG` warning and the load *continues*; only an actual reference fails.
+  `AIA_UNTRUSTED_CONFIG` warning and the load _continues_; only an actual reference fails.
   `aia trust` grants/revokes.
 - **An approval target must render what will actually run.** The external-agent `command`
   target now includes the model-supplied `args` (H4) via the same `stringifyArgv` the M6
@@ -775,7 +762,7 @@ Still open: M1–M5, M7–M12 and the low-severity items.
 ### The coverage gate was not a gate
 
 `npm run test:coverage` was in **no** gate (`validate:penultimate` omitted it), and had
-drifted *below its own floor* — 91.2% lines against a 92.1 threshold, 95.9% functions
+drifted _below its own floor_ — 91.2% lines against a 92.1 threshold, 95.9% functions
 against 97 — with nothing failing. It was also flaky: two macOS voice tests spawn real
 helpers and exceeded vitest's 5s default under V8 instrumentation, because
 `vitest.unit.config.ts` set no `testTimeout` while the integration config set 30s.
@@ -785,7 +772,7 @@ Timeout aligned, coverage added to `validate:penultimate`, docs corrected, and t
 **reached by writing real tests rather than lowered**: 92.22% statements / 82.64%
 branches / 97.18% functions over 716 tests. The new tests went to things that were
 genuinely untested rather than whatever was cheapest — the `attach-client` relay
-(including the cross-session output filter the 2026-09-21 addendum *claimed* was safe but
+(including the cross-session output filter the 2026-09-21 addendum _claimed_ was safe but
 never tested), the AppleScript quoting that is the `do script` injection boundary, the
 WhatsApp adapter's media and attachment paths, `aia trust`, `/mcp`, `/agents`, and
 `attempt_complete`'s own execute path.
@@ -798,7 +785,7 @@ WhatsApp adapter's media and attachment paths, `aia trust`, `/mcp`, `/agents`, a
   nothing is the dangerous direction for a trust store. Both sides canonicalize with
   `fs.realpath` now. Caught only by running the command for real.
 - **The WhatsApp poll loop could take the process down.** `pollInboundDirectory` guards
-  each *entry*, but the `readdir` itself sat outside that guard, so a removed or briefly
+  each _entry_, but the `readdir` itself sat outside that guard, so a removed or briefly
   unreadable bridge directory threw out of a promise nothing awaits until `close()`. Same
   family as "a dead process's bookkeeping must never be fatal" — it now warns
   (`AIA_CHANNEL_POLL_FAILED`) and keeps polling.

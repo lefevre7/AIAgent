@@ -107,14 +107,9 @@ describe("external_agent interactive actions", () => {
     const externalSessionId = (started.result as { session: { id: string } }).session.id;
     expect(externalSessionId).toMatch(/^external-session\./u);
 
-    const sent = await tool.execute(
-      call({ action: "send", externalSessionId, text: "wire it up" }),
-      context
-    );
+    const sent = await tool.execute(call({ action: "send", externalSessionId, text: "wire it up" }), context);
     // The rendered screen must reach the model as text, not just a status line.
-    expect(sent.display?.some((part) => part.kind === "text" && part.text.includes("answer: wire it up"))).toBe(
-      true
-    );
+    expect(sent.display?.some((part) => part.kind === "text" && part.text.includes("answer: wire it up"))).toBe(true);
     expect((sent.result as { turnEndReason?: string }).turnEndReason).toBe("ready_pattern");
 
     const read = await tool.execute(call({ action: "read", externalSessionId }), context);

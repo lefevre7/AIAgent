@@ -65,6 +65,8 @@ describe("TaskStateService", () => {
 
   test("rejects updates for an unknown session", async () => {
     const { service } = await buildService();
-    await expect(service.updateTaskState({ sessionId: "session.unknown", title: "x" })).rejects.toThrow(/unknown session/u);
+    await expect(service.updateTaskState({ sessionId: "session.unknown", title: "x" })).rejects.toThrow(
+      /unknown session/u
+    );
   });
 });

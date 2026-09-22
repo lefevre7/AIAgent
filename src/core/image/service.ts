@@ -1,7 +1,4 @@
-import type {
-  AppConfig,
-  ImageProviderConfig
-} from "@/core/config/schema";
+import type { AppConfig, ImageProviderConfig } from "@/core/config/schema";
 import type {
   ImageGenerationAdapter,
   ImageGenerationInput,
@@ -52,7 +49,9 @@ export class FileImageService implements ImageService {
       return this.requireAdapter(providerId).listModels?.() ?? [];
     }
 
-    const descriptors = await Promise.all(Array.from(this.adapters.values()).map(async (adapter) => adapter.listModels?.() ?? []));
+    const descriptors = await Promise.all(
+      Array.from(this.adapters.values()).map(async (adapter) => adapter.listModels?.() ?? [])
+    );
     return descriptors.flat().sort((left, right) => left.displayName.localeCompare(right.displayName));
   }
 
@@ -141,7 +140,9 @@ function materializeHeaders(providerConfig: ImageProviderConfig): Record<string,
 
   if (providerConfig.apiKey) {
     if (typeof providerConfig.apiKey !== "string") {
-      throw new Error("Image provider apiKey contains an unresolved secret reference. Use resolvedConfig when creating the image service.");
+      throw new Error(
+        "Image provider apiKey contains an unresolved secret reference. Use resolvedConfig when creating the image service."
+      );
     }
     const hasAuthorizationHeader = Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
     if (!hasAuthorizationHeader) {

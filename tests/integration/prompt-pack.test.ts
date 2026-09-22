@@ -31,7 +31,11 @@ describe("prompt pack", () => {
 
     await fs.writeFile(path.join(home, ".aia", "AGENTS.md"), "User-level instruction: be concise.", "utf8");
     await fs.writeFile(path.join(workspace, "AGENTS.md"), "Workspace instruction: prefer the canonical path.", "utf8");
-    await fs.writeFile(path.join(nested, "AGENTS.md"), "Nested instruction: edit only files under this app when possible.", "utf8");
+    await fs.writeFile(
+      path.join(nested, "AGENTS.md"),
+      "Nested instruction: edit only files under this app when possible.",
+      "utf8"
+    );
 
     await fs.writeFile(
       path.join(home, ".aia", "skills", "shared-skill", "SKILL.md"),
@@ -170,7 +174,9 @@ Package-local workflow.`,
       path.join(nested, "AGENTS.md")
     ]);
     expect(pack.availableSkills.map((skill) => skill.name)).toEqual(["global-skill", "local-skill", "shared-skill"]);
-    expect(pack.availableSkills.find((skill) => skill.name === "shared-skill")?.description).toBe("Workspace shared skill");
+    expect(pack.availableSkills.find((skill) => skill.name === "shared-skill")?.description).toBe(
+      "Workspace shared skill"
+    );
     expect(pack.systemPrompt).toContain("Project instructions override user-level instructions.");
     expect(pack.systemPrompt).toContain("Workspace instruction: prefer the canonical path.");
     expect(pack.systemPrompt).toContain("Nested instruction: edit only files under this app when possible.");
@@ -203,14 +209,10 @@ Package-local workflow.`,
     // The literal JSON example must be present so the model can imitate the
     // tool-call shape verbatim. We assert the call name and the required
     // argument together to defend against accidental schema drift.
-    expect(pack.systemPrompt).toContain(
-      `{"name":"attempt_complete","arguments":{"summary":"`
-    );
+    expect(pack.systemPrompt).toContain(`{"name":"attempt_complete","arguments":{"summary":"`);
     // The Completion Contract section must appear before the Safety section so
     // the model reads it first.
-    const completionIndex = pack.systemPrompt.indexOf(
-      "Completion Contract (read first)"
-    );
+    const completionIndex = pack.systemPrompt.indexOf("Completion Contract (read first)");
     const safetyIndex = pack.systemPrompt.indexOf("Safety and Reliability");
     expect(completionIndex).toBeGreaterThan(-1);
     expect(safetyIndex).toBeGreaterThan(completionIndex);

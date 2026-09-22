@@ -1,11 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { gatewayEventSchema, gatewayResponseSchema, type GatewayEvent } from "@/core/contracts";
-import {
-  bindGatewayWebSocketConnection,
-  type GatewayRuntimeLike,
-  type GatewayWebSocketLike
-} from "@/gateway";
+import { bindGatewayWebSocketConnection, type GatewayRuntimeLike, type GatewayWebSocketLike } from "@/gateway";
 
 describe("gateway websocket", () => {
   test("returns request responses over the shared websocket transport", async () => {
@@ -160,10 +156,12 @@ describe("gateway websocket", () => {
   });
 });
 
-function createRuntimeStub(overrides: {
-  replayEvents?: GatewayRuntimeLike["replayEvents"];
-  request?: GatewayRuntimeLike["request"];
-} = {}): GatewayRuntimeLike & { emitEvent(event: GatewayEvent): void } {
+function createRuntimeStub(
+  overrides: {
+    replayEvents?: GatewayRuntimeLike["replayEvents"];
+    request?: GatewayRuntimeLike["request"];
+  } = {}
+): GatewayRuntimeLike & { emitEvent(event: GatewayEvent): void } {
   let listener: ((event: GatewayEvent) => void) | undefined;
 
   return {

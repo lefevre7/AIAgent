@@ -239,7 +239,12 @@ function findLatestByKind(notes: WorkingMemoryNote[], kind: WorkingMemoryNote["k
 }
 
 function latestTimestamp(values: Array<string | undefined | null>): string {
-  return values.filter((value): value is string => typeof value === "string").sort().at(-1) ?? new Date().toISOString();
+  return (
+    values
+      .filter((value): value is string => typeof value === "string")
+      .sort()
+      .at(-1) ?? new Date().toISOString()
+  );
 }
 
 function resolveWorkingMemory(params: {

@@ -116,7 +116,7 @@ export const imageGenerationRequestSchema = z
     metadata: metadataSchema.default({}),
     parameters: imageGenerationParametersSchema,
     providerId: providerIdSchema,
-    sessionId: entityIdSchema.optional(),
+    sessionId: entityIdSchema.optional()
   })
   .strict();
 

@@ -20,9 +20,7 @@ function stripUndefinedEntries(value: unknown): unknown {
     return value;
   }
 
-  return Object.fromEntries(
-    Object.entries(value).filter(([, entry]) => entry !== undefined)
-  );
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
 }
 
 export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
@@ -34,10 +32,9 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
     z.array(jsonValueSchema),
     // The cast re-narrows the input type that z.preprocess widens to unknown;
     // the parsed output is still a Record<string, JsonValue>.
-    z.preprocess(
-      stripUndefinedEntries,
-      z.record(z.string(), jsonValueSchema)
-    ) as unknown as z.ZodType<Record<string, JsonValue>>
+    z.preprocess(stripUndefinedEntries, z.record(z.string(), jsonValueSchema)) as unknown as z.ZodType<
+      Record<string, JsonValue>
+    >
   ])
 );
 
@@ -45,11 +42,10 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 // (metadata, tool results, JSON Schema documents) goes through this so the
 // undefined-key tolerance above applies at the top level too, not only to
 // nested objects reached through jsonValueSchema.
-export const jsonRecordSchema: z.ZodType<Record<string, JsonValue>> =
-  z.preprocess(
-    stripUndefinedEntries,
-    z.record(z.string(), jsonValueSchema)
-  ) as unknown as z.ZodType<Record<string, JsonValue>>;
+export const jsonRecordSchema: z.ZodType<Record<string, JsonValue>> = z.preprocess(
+  stripUndefinedEntries,
+  z.record(z.string(), jsonValueSchema)
+) as unknown as z.ZodType<Record<string, JsonValue>>;
 
 // Normalizes an arbitrary runtime value into something jsonValueSchema will
 // accept, with the same semantics JSON.stringify applies on the way to disk:
@@ -100,11 +96,7 @@ export function toJsonValue(value: unknown): JsonValue | undefined {
 // corrupting the field.
 export function toJsonRecord(value: unknown): Record<string, JsonValue> {
   const normalized = toJsonValue(value);
-  return typeof normalized === "object" &&
-    normalized !== null &&
-    !Array.isArray(normalized)
-    ? normalized
-    : {};
+  return typeof normalized === "object" && normalized !== null && !Array.isArray(normalized) ? normalized : {};
 }
 
 export const metadataSchema = jsonRecordSchema;

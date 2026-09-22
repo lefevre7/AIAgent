@@ -61,13 +61,16 @@ describe("createHttpApp", () => {
   });
 
   it("serves the gateway health payload", async () => {
-    const app = createHttpApp((_request, response) => {
-      response.status(200).send("next-handler");
-    }, {
-      gateway: {
-        runtime: gatewayRuntimeStub
+    const app = createHttpApp(
+      (_request, response) => {
+        response.status(200).send("next-handler");
+      },
+      {
+        gateway: {
+          runtime: gatewayRuntimeStub
+        }
       }
-    });
+    );
 
     const response = await invoke(app, "/api/gateway/health");
 

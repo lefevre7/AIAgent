@@ -12,7 +12,7 @@ It exists because of a real failure mode: a local model that loops
 `AgentLoop.run` (`src/core/agent/loop.ts`) drives turns until the model calls
 `attempt_complete` and the runtime accepts it, an approval pause is hit, the model
 fails, or a safety guard stops it. `runtime.maxTurnsPerRun` defaults to
-`"unlimited"`, so the *only* thing that ends a stuck-but-not-erroring session is
+`"unlimited"`, so the _only_ thing that ends a stuck-but-not-erroring session is
 the **no-progress guard**.
 
 ## What counts as "no progress"
@@ -32,7 +32,7 @@ When the counter exceeds `maxConsecutiveNudges` the loop stops with
 
 ### Why case 3 exists
 
-`think` and `update_plan` have no side effects, but they *are* tool calls. Before
+`think` and `update_plan` have no side effects, but they _are_ tool calls. Before
 this fix, executing them reset the no-progress counter (`loop.ts`), so a model that
 kept thinking and re-planning never tripped the no-tool guard and — with unlimited
 turns — looped forever. Now a turn whose only calls are planning/reasoning still
@@ -69,8 +69,8 @@ and counting those as no-progress would prematurely kill legitimate research loo
 
 Local runtimes only populate the native OpenAI `tool_calls` field when their
 server-side chat template recognizes the model's tool-call syntax. Per LM Studio's
-docs, *"if LM Studio cannot parse any correctly formatted tool calls, it will
-simply return the response to `message.content`."* Reasoning/coder models often
+docs, _"if LM Studio cannot parse any correctly formatted tool calls, it will
+simply return the response to `message.content`."_ Reasoning/coder models often
 emit the call as text, so the runtime would see a tool-less turn and nudge forever
 (see lmstudio-ai/lmstudio-bug-tracker#825 for Qwen3-Coder specifically).
 
@@ -82,12 +82,12 @@ are preserved). Recovered turns set `metadata.toolCallsRecoveredFromText: true`.
 
 ### Formats recovered
 
-| Source | Shape |
-| --- | --- |
-| Hermes (Qwen 3.5, Hermes) | `<tool_call>{"name":"NAME","arguments":{...}}</tool_call>` |
-| Qwen3-Coder | `<function=NAME><parameter=key>value</parameter>...</function>` (XML; values coerced) |
-| GPT-OSS Harmony | `<\|channel\|>commentary to=functions.NAME<\|message\|>{...}<\|call\|>` |
-| LM Studio default | `[TOOL_REQUEST]{"name":"NAME","arguments":{...}}[END_TOOL_REQUEST]` |
+| Source                    | Shape                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------- |
+| Hermes (Qwen 3.5, Hermes) | `<tool_call>{"name":"NAME","arguments":{...}}</tool_call>`                            |
+| Qwen3-Coder               | `<function=NAME><parameter=key>value</parameter>...</function>` (XML; values coerced) |
+| GPT-OSS Harmony           | `<\|channel\|>commentary to=functions.NAME<\|message\|>{...}<\|call\|>`               |
+| LM Studio default         | `[TOOL_REQUEST]{"name":"NAME","arguments":{...}}[END_TOOL_REQUEST]`                   |
 
 There is also a tolerance for idiosyncratic JSON like
 `{"status":"ok","attempt_complete":{}}`, where the tool name is itself a key whose
@@ -106,7 +106,7 @@ recovered so downstream behaves identically to native parsing.
 ## Out of scope (deliberately)
 
 - **Reasoning text is left as-is.** `<think>`/analysis content is not stripped from
-  the persisted assistant message. Only tool-call *markup* is removed.
+  the persisted assistant message. Only tool-call _markup_ is removed.
 - **No new turn cap.** `maxTurnsPerRun` stays `"unlimited"`; the no-progress guard
   is the stopping mechanism. See [[small-model-optimization-choices]] rationale in
   `docs/SMALL_MODELS.md`.
@@ -133,7 +133,7 @@ recovered so downstream behaves identically to native parsing.
 `attempt_complete` is a runtime **completion gate**, not an executed tool: the loop
 intercepts it, so it produces no `ToolCall` record, no `tool.updated` event, and no tool
 result. Meanwhile the prompt pack tells the model to put its final answer in the
-`summary` argument and *not* to send it as a chat message. The two facts together meant
+`summary` argument and _not_ to send it as a chat message. The two facts together meant
 the answer was written to `messages.jsonl` as a tool-call argument and then dropped —
 the CLI (both modes) and the web transcript showed reasoning, tool lines, and no answer.
 The better a model followed the contract, the less the operator saw.
@@ -157,7 +157,7 @@ A blank or missing `summary` falls back to the generic status line and persists 
 message; `tests/integration/agent-loop.test.ts` covers both paths.
 
 **Test-fidelity note.** `tests/helpers/fake-language-model-server.ts` used to emit prose
-in `content` plus `attempt_complete` with *empty* arguments — the opposite of what the
+in `content` plus `attempt_complete` with _empty_ arguments — the opposite of what the
 shipped prompt asks for. That is why the CLI and web e2e passed against a product that
 dropped every real answer. The fake is now contract-accurate.
 
@@ -190,6 +190,7 @@ in the system prompt and in the tool's own `usageGuidance`.
   matters for providers that surface tool descriptions to the model.
 
 What deliberately did NOT change:
+
 - The nudge text itself (`promptPack.nudges.taskContinuation`) is unchanged.
   The existing nudge already says "call `attempt_complete`"; reworking it was
   optional per the user's direction.
@@ -204,6 +205,7 @@ The `prompt-payload.test.ts` budget for the base system prompt was raised from
 contract section back below the old budget, lower the constant again.
 
 Tests covering this:
+
 - `tests/integration/prompt-pack.test.ts` — asserts the section heading, the
   anti-prose sentence, the literal JSON template, and the section ordering
   (Completion Contract before Safety).
@@ -218,7 +220,7 @@ Tests covering this:
 A single generation can legitimately stream for minutes. The original code passed
 `AbortSignal.timeout(timeoutMs)` to the streaming fetch, an **absolute** deadline
 measured from request start — so a healthy long stream was killed mid-token with
-undici's *"operation was aborted due to timeout."*
+undici's _"operation was aborted due to timeout."_
 
 The fix is an **idle timeout**. Each adapter creates a `createStreamGuard`
 (`src/core/lm/shared.ts`) whose timer resets on every received chunk (`guard.touch()`)
@@ -239,8 +241,8 @@ eval surfaced as "stream stalled: no new tokens arrived within the idle timeout.
 
 ## In-generation repetition guard
 
-The no-progress guard above works *between* turns; it cannot stop a model that loops
-*inside one generation* (e.g. emitting "I'll use apply_patch" forever). `createStreamGuard`
+The no-progress guard above works _between_ turns; it cannot stop a model that loops
+_inside one generation_ (e.g. emitting "I'll use apply_patch" forever). `createStreamGuard`
 also watches the streamed text (`guard.observe(delta)` on content and reasoning) and
 aborts when the same non-trivial line repeats ≥6× consecutively. Combined with the
 `runtime.modelSettings.maxOutputTokens` cap (default 8192) and the idle timeout, a
@@ -388,7 +390,7 @@ explicitly a detached job. Consequences the loop has to respect:
   `UNGATED_EXTERNAL_AGENT_ACTIONS` in `src/core/external-agents/service.ts` encodes this.
 - A human can be typing in the same terminal. `writeHumanInput` is a separate entry point
   from `sendToSession` precisely so a human's bytes are never mistaken for a turn: they
-  are not summarized, not counted, and they soft-lock the *agent's* writes instead of
+  are not summarized, not counted, and they soft-lock the _agent's_ writes instead of
   being blocked by that lock.
 
 See [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md) for the full design.

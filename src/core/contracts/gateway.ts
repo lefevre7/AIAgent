@@ -38,10 +38,7 @@ import { mcpServerSummarySchema } from "@/core/contracts/mcp";
 import { memoryHitSchema, memoryQuerySchema } from "@/core/contracts/memory";
 import { messagePartSchema, messageSchema } from "@/core/contracts/messages";
 import { taskStateSnapshotSchema } from "@/core/contracts/plans";
-import {
-  providerHealthSchema,
-  providerIdSchema
-} from "@/core/contracts/providers";
+import { providerHealthSchema, providerIdSchema } from "@/core/contracts/providers";
 import {
   sessionRecordSchema,
   sessionSnapshotSchema,
@@ -63,13 +60,7 @@ export const gatewayRunKindSchema = z.enum([
   "tool_execute"
 ]);
 
-export const gatewayRunStatusSchema = z.enum([
-  "cancelled",
-  "completed",
-  "failed",
-  "queued",
-  "running"
-]);
+export const gatewayRunStatusSchema = z.enum(["cancelled", "completed", "failed", "queued", "running"]);
 
 export const gatewayRunCompletionReasonSchema = z.enum([
   "session_awaiting_approval",
@@ -126,17 +117,16 @@ const gatewayMessageInputBaseSchema = z
   })
   .strict();
 
-export const gatewayMessageInputSchema =
-  gatewayMessageInputBaseSchema.superRefine((value, context) => {
-    if (value.text || value.parts?.length) {
-      return;
-    }
+export const gatewayMessageInputSchema = gatewayMessageInputBaseSchema.superRefine((value, context) => {
+  if (value.text || value.parts?.length) {
+    return;
+  }
 
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Expected either "text" or "parts" for the message input.'
-    });
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: 'Expected either "text" or "parts" for the message input.'
   });
+});
 
 export const gatewayEventTopicSchema = z.enum([
   "approval.requested",
@@ -239,9 +229,7 @@ export const gatewayEventSchema = z.discriminatedUnion("topic", [
     .strict(),
   gatewayEventBaseSchema
     .extend({
-      payload: z
-        .object({ entryId: entityIdSchema, scope: z.string().min(1) })
-        .strict(),
+      payload: z.object({ entryId: entityIdSchema, scope: z.string().min(1) }).strict(),
       topic: z.literal("memory.updated")
     })
     .strict(),
@@ -531,9 +519,7 @@ export const gatewayRequestPayloadSchemas = {
     .strict(),
   "gateway.health": z.object({}).strict(),
   "gateway.subscribe": gatewaySubscriptionSchema,
-  "mcp.list": z
-    .object({ serverNames: z.array(z.string().min(1)).max(64).optional() })
-    .strict(),
+  "mcp.list": z.object({ serverNames: z.array(z.string().min(1)).max(64).optional() }).strict(),
   "memory.query": memoryQuerySchema,
   "model.health": z.object({ provider: providerIdSchema.optional() }).strict(),
   "run.cancel": gatewayRunCancelRequestSchema,
@@ -552,21 +538,15 @@ export const gatewayRequestPayloadSchemas = {
 
 export const gatewayResponsePayloadSchemas = {
   "approval.get": gatewayApprovalRecordSchema,
-  "approval.list": z
-    .object({ approvals: z.array(gatewayApprovalRecordSchema) })
-    .strict(),
+  "approval.list": z.object({ approvals: z.array(gatewayApprovalRecordSchema) }).strict(),
   "approval.resolve": z
     .object({
       approval: gatewayApprovalRecordSchema,
       steeringInjection: steeringInjectionSchema.optional()
     })
     .strict(),
-  "channel.health": z
-    .object({ channels: z.array(channelRuntimeStatusSchema) })
-    .strict(),
-  "channel.list": z
-    .object({ channels: z.array(channelRuntimeStatusSchema) })
-    .strict(),
+  "channel.health": z.object({ channels: z.array(channelRuntimeStatusSchema) }).strict(),
+  "channel.list": z.object({ channels: z.array(channelRuntimeStatusSchema) }).strict(),
   "channel.send": channelMessageSchema,
   "external_agent.cancel": externalAgentJobRecordSchema,
   "external_agent.get": externalAgentJobRecordSchema,
@@ -581,17 +561,13 @@ export const gatewayResponsePayloadSchemas = {
   "external_agent.session.attach": z
     .object({ command: z.string().min(1), session: externalAgentSessionRecordSchema })
     .strict(),
-  "external_agent.session.list": z
-    .object({ sessions: z.array(externalAgentSessionRecordSchema) })
-    .strict(),
+  "external_agent.session.list": z.object({ sessions: z.array(externalAgentSessionRecordSchema) }).strict(),
   "external_agent.session.read": externalAgentSessionTurnSchema,
   "external_agent.session.send": externalAgentSessionTurnSchema,
   "external_agent.session.start": externalAgentSessionRecordSchema,
   "external_agent.session.stop": externalAgentSessionRecordSchema,
   "external_agent.session.write": z.object({ ok: z.boolean() }).strict(),
-  "gateway.health": z
-    .object({ ok: z.boolean(), status: z.string().min(1) })
-    .strict(),
+  "gateway.health": z.object({ ok: z.boolean(), status: z.string().min(1) }).strict(),
   "gateway.subscribe": z
     .object({
       subscription: gatewaySubscriptionSchema
@@ -636,31 +612,21 @@ export const gatewayResponsePayloadSchemas = {
 
 export interface GatewayTransportClient {
   request(request: GatewayRequest): Promise<GatewayResponse>;
-  subscribe(
-    listener: (event: GatewayEvent) => void
-  ): Promise<() => Promise<void> | void>;
+  subscribe(listener: (event: GatewayEvent) => void): Promise<() => Promise<void> | void>;
 }
 
 export type GatewayApprovalRecord = z.infer<typeof gatewayApprovalRecordSchema>;
 export type GatewayEvent = z.infer<typeof gatewayEventSchema>;
 export type GatewayEventPage = z.infer<typeof gatewayEventPageSchema>;
-export type GatewayEventReplayQuery = z.infer<
-  typeof gatewayEventReplayQuerySchema
->;
+export type GatewayEventReplayQuery = z.infer<typeof gatewayEventReplayQuerySchema>;
 export type GatewayEventTopic = z.infer<typeof gatewayEventTopicSchema>;
 export type GatewayRequest = z.infer<typeof gatewayRequestSchema>;
 export type GatewayRequestTopic = z.infer<typeof gatewayRequestTopicSchema>;
 export type GatewayResponse = z.infer<typeof gatewayResponseSchema>;
-export type GatewayRunCompletionReason = z.infer<
-  typeof gatewayRunCompletionReasonSchema
->;
+export type GatewayRunCompletionReason = z.infer<typeof gatewayRunCompletionReasonSchema>;
 export type GatewayRunKind = z.infer<typeof gatewayRunKindSchema>;
 export type GatewayRunRecord = z.infer<typeof gatewayRunRecordSchema>;
 export type GatewayRunStatus = z.infer<typeof gatewayRunStatusSchema>;
-export type GatewaySessionCompactResult = z.infer<
-  typeof gatewaySessionCompactResultSchema
->;
-export type GatewaySessionSnapshot = z.infer<
-  typeof gatewaySessionSnapshotSchema
->;
+export type GatewaySessionCompactResult = z.infer<typeof gatewaySessionCompactResultSchema>;
+export type GatewaySessionSnapshot = z.infer<typeof gatewaySessionSnapshotSchema>;
 export type GatewaySubscription = z.infer<typeof gatewaySubscriptionSchema>;

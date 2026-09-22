@@ -27,7 +27,7 @@ export class TunnelService {
     }
 
     if (this.options.tunnelConfig.provider === "none") {
-      warnings.push("Tunnel support is enabled, but the provider is set to \"none\".");
+      warnings.push('Tunnel support is enabled, but the provider is set to "none".');
     }
 
     if (!publicBaseUrl) {

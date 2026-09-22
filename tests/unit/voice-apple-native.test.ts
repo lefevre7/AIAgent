@@ -86,7 +86,11 @@ async function writeExecutable(root: string, name: string, body: string): Promis
 
 async function fakeSwiftc(root: string, mode: "ok" | "fail"): Promise<string> {
   if (mode === "fail") {
-    return writeExecutable(root, "swiftc-fail.mjs", `#!/usr/bin/env node\nprocess.stderr.write("compile error\\n");\nprocess.exit(1);\n`);
+    return writeExecutable(
+      root,
+      "swiftc-fail.mjs",
+      `#!/usr/bin/env node\nprocess.stderr.write("compile error\\n");\nprocess.exit(1);\n`
+    );
   }
   const body = `#!/usr/bin/env node
 import fs from "node:fs";
@@ -185,15 +189,30 @@ describe("AppleNativeVoiceAdapter", () => {
     expect(ok.locale).toBe("en-US");
 
     await expect(
-      adapter.transcribe({ audio: audioArtifact("file:///tmp/fail.wav"), id: "transcription.2", metadata: {}, providerId: "apple_native" })
+      adapter.transcribe({
+        audio: audioArtifact("file:///tmp/fail.wav"),
+        id: "transcription.2",
+        metadata: {},
+        providerId: "apple_native"
+      })
     ).rejects.toMatchObject({ code: "voice_transcription_failed" });
 
     await expect(
-      adapter.transcribe({ audio: audioArtifact("file:///tmp/empty.wav"), id: "transcription.3", metadata: {}, providerId: "apple_native" })
+      adapter.transcribe({
+        audio: audioArtifact("file:///tmp/empty.wav"),
+        id: "transcription.3",
+        metadata: {},
+        providerId: "apple_native"
+      })
     ).rejects.toMatchObject({ code: "voice_helper_empty_output" });
 
     await expect(
-      adapter.transcribe({ audio: audioArtifact("file:///tmp/badjson.wav"), id: "transcription.4", metadata: {}, providerId: "apple_native" })
+      adapter.transcribe({
+        audio: audioArtifact("file:///tmp/badjson.wav"),
+        id: "transcription.4",
+        metadata: {},
+        providerId: "apple_native"
+      })
     ).rejects.toMatchObject({ code: "voice_helper_invalid_json" });
   });
 
@@ -307,7 +326,12 @@ describe("AppleNativeVoiceAdapter helper caching", () => {
     const root = await tempRoot();
     const swiftc = await fakeSwiftc(root, "ok");
 
-    const first = new AppleNativeVoiceAdapter({ artifactRoot: root, providerId: "apple_native", requireOnDeviceRecognition: false, swiftCompilerPath: swiftc });
+    const first = new AppleNativeVoiceAdapter({
+      artifactRoot: root,
+      providerId: "apple_native",
+      requireOnDeviceRecognition: false,
+      swiftCompilerPath: swiftc
+    });
     await expect(first.health()).resolves.toMatchObject({ status: "healthy" });
 
     // A fresh adapter pointing at the same artifact root should hit the on-disk

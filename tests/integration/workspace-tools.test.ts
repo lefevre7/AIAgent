@@ -75,10 +75,14 @@ describe("workspace tools", () => {
     const tools = toolsByName(root);
 
     const listed = await run(tools.get("list_files"), {}, root);
-    expect((listed.result as { entries: Array<{ path: string }> }).entries.some((entry) => entry.path === "README.md")).toBe(true);
+    expect(
+      (listed.result as { entries: Array<{ path: string }> }).entries.some((entry) => entry.path === "README.md")
+    ).toBe(true);
 
     const paths = await run(tools.get("search_paths"), { query: "app" }, root);
-    expect((paths.result as { matches: Array<{ path: string }> }).matches.some((match) => match.path === "src/app.ts")).toBe(true);
+    expect(
+      (paths.result as { matches: Array<{ path: string }> }).matches.some((match) => match.path === "src/app.ts")
+    ).toBe(true);
 
     const grep = await run(tools.get("grep_files"), { query: "TODO" }, root);
     expect((grep.result as { matches: Array<{ path: string }> }).matches[0]?.path).toBe("src/app.ts");
@@ -129,7 +133,11 @@ describe("workspace tools", () => {
     // no-op writes (identical content) report changed:false for text and binary
     const noopText = await run(tools.get("write_file"), { content: "alpha\nbeta\n", path: "notes.txt" }, root);
     expect((noopText.result as { changed?: boolean }).changed).toBe(false);
-    const noopBinary = await run(tools.get("write_file"), { base64Content: Buffer.from("hi").toString("base64"), path: "raw.bin" }, root);
+    const noopBinary = await run(
+      tools.get("write_file"),
+      { base64Content: Buffer.from("hi").toString("base64"), path: "raw.bin" },
+      root
+    );
     expect((noopBinary.result as { changed?: boolean }).changed).toBe(false);
 
     // append to existing + to a brand-new file (ENOENT → empty base)
@@ -172,7 +180,11 @@ describe("workspace tools", () => {
     ).rejects.toThrow(/ambiguous/u);
 
     await expect(
-      run(tools.get("apply_patch"), { patches: [{ deleteLineCount: 50, newText: "Z\n", startLine: 99 }], path: "doc.txt" }, root)
+      run(
+        tools.get("apply_patch"),
+        { patches: [{ deleteLineCount: 50, newText: "Z\n", startLine: 99 }], path: "doc.txt" },
+        root
+      )
     ).rejects.toThrow(/outside the file/u);
 
     await expect(
@@ -189,7 +201,9 @@ describe("workspace tools", () => {
       )
     ).rejects.toThrow(/overlap/u);
 
-    await expect(run(tools.get("read_file"), { path: "../escape.txt" }, root)).rejects.toThrow(/escapes the workspace root/u);
+    await expect(run(tools.get("read_file"), { path: "../escape.txt" }, root)).rejects.toThrow(
+      /escapes the workspace root/u
+    );
   });
 
   test("diff_preview reports clean repos, changes, and non-git directories", async () => {
@@ -198,7 +212,10 @@ describe("workspace tools", () => {
     execFileSync("git", ["init", "-q"], { cwd: repo, env: gitEnv });
     await fs.writeFile(path.join(repo, "tracked.txt"), "one\n", "utf8");
     execFileSync("git", ["add", "."], { cwd: repo, env: gitEnv });
-    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo, env: gitEnv });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], {
+      cwd: repo,
+      env: gitEnv
+    });
     const tools = toolsByName(repo);
 
     const clean = await run(tools.get("diff_preview"), {}, repo);

@@ -110,7 +110,9 @@ describe("WhatsApp channel integration", () => {
 
     const snapshot = await harness.sessions.getSessionSnapshot(session.id);
     expect(snapshot?.messages.some((message) => message.source === "channel")).toBe(true);
-    expect(snapshot?.messages.some((message) => extractText(message).join("\n").includes("WhatsApp reply ready."))).toBe(true);
+    expect(
+      snapshot?.messages.some((message) => extractText(message).join("\n").includes("WhatsApp reply ready."))
+    ).toBe(true);
   });
 
   test("relays approval prompts and continues the session after a WhatsApp-side approval command", async () => {
@@ -173,10 +175,14 @@ describe("WhatsApp channel integration", () => {
     });
 
     const snapshot = await harness.sessions.getSessionSnapshot(session.id);
-    expect(snapshot?.approvalResolutions.some((resolution) => resolution.actor === "channel" && resolution.decision === "approved")).toBe(
-      true
-    );
-    expect(snapshot?.toolCalls.some((toolCall) => toolCall.toolName === "test_mutation" && toolCall.status === "succeeded")).toBe(true);
+    expect(
+      snapshot?.approvalResolutions.some(
+        (resolution) => resolution.actor === "channel" && resolution.decision === "approved"
+      )
+    ).toBe(true);
+    expect(
+      snapshot?.toolCalls.some((toolCall) => toolCall.toolName === "test_mutation" && toolCall.status === "succeeded")
+    ).toBe(true);
 
     const outboundTexts = (await readOutboundEntries(harness.sessionDirectory)).map((entry) => entry.text ?? "");
     expect(outboundTexts.some((text) => text.includes('Reply "/approve'))).toBe(true);
@@ -242,9 +248,11 @@ describe("WhatsApp channel integration", () => {
     });
 
     const snapshot = await harness.sessions.getSessionSnapshot(session.id);
-    expect(snapshot?.steeringInjections.some((entry) => entry.source === "channel" && entry.message === "Focus on tests first.")).toBe(
-      true
-    );
+    expect(
+      snapshot?.steeringInjections.some(
+        (entry) => entry.source === "channel" && entry.message === "Focus on tests first."
+      )
+    ).toBe(true);
 
     const outboundTexts = (await readOutboundEntries(harness.sessionDirectory)).map((entry) => entry.text ?? "");
     expect(outboundTexts.some((text) => text.includes('Queued steering for "WhatsApp Steering Session".'))).toBe(true);
@@ -374,7 +382,12 @@ describe("WhatsApp channel integration", () => {
 });
 
 async function createWhatsAppHarness(
-  modelHandler: (request: Omit<LanguageModelRequest, "modelId" | "provider"> & { modelId?: string; provider?: LanguageModelRequest["provider"] }) => Promise<LanguageModelResponse>,
+  modelHandler: (
+    request: Omit<LanguageModelRequest, "modelId" | "provider"> & {
+      modelId?: string;
+      provider?: LanguageModelRequest["provider"];
+    }
+  ) => Promise<LanguageModelResponse>,
   // Security review H6: control commands are refused unless the sender is an
   // allowlisted operator, so tests that drive /approve must say who that is.
   operatorIdentities: string[] = ["user-42", "user-help"]
@@ -634,10 +647,12 @@ function createMemoryServiceStub() {
 
 class FakeGatewayModelRuntime {
   constructor(
-    private readonly handler: (request: Omit<LanguageModelRequest, "modelId" | "provider"> & {
-      modelId?: string;
-      provider?: LanguageModelRequest["provider"];
-    }) => Promise<LanguageModelResponse>
+    private readonly handler: (
+      request: Omit<LanguageModelRequest, "modelId" | "provider"> & {
+        modelId?: string;
+        provider?: LanguageModelRequest["provider"];
+      }
+    ) => Promise<LanguageModelResponse>
   ) {}
 
   async close(): Promise<void> {
@@ -747,11 +762,7 @@ async function readOutboundEntries(sessionDirectory: string) {
   }
 }
 
-async function waitFor(
-  predicate: () => Promise<boolean>,
-  timeoutMs = 5_000,
-  intervalMs = 25
-): Promise<void> {
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000, intervalMs = 25): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     if (await predicate()) {

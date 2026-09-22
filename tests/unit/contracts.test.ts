@@ -540,7 +540,7 @@ describe("core contracts", () => {
           styleTags: ["clean", "diagrammatic"]
         },
         providerId: "comfyui_local",
-        sessionId: session.id,
+        sessionId: session.id
       })
     );
 
@@ -898,50 +898,76 @@ describe("core contracts", () => {
     expect(await sessionRepository.getSession("session.typed.1")).toBeNull();
     expect(await modelAdapter.health()).toEqual(providerHealth);
     expect(await embeddingAdapter.health()).toEqual(providerHealth);
-    expect(await gatewayTransport.request(gatewayRequestSchema.parse({
-      createdAt: "2026-03-27T12:00:00.000Z",
-      id: "gateway-request.typed.1",
-      metadata: {},
-      payload: gatewayRequestPayloadSchemas["gateway.health"].parse({}),
-      topic: "gateway.health"
-    }))).toMatchObject({ ok: true });
+    expect(
+      await gatewayTransport.request(
+        gatewayRequestSchema.parse({
+          createdAt: "2026-03-27T12:00:00.000Z",
+          id: "gateway-request.typed.1",
+          metadata: {},
+          payload: gatewayRequestPayloadSchemas["gateway.health"].parse({}),
+          topic: "gateway.health"
+        })
+      )
+    ).toMatchObject({ ok: true });
     expect((await channelAdapter.health()).ok).toBe(true);
-    expect((await voiceAdapter.transcribe(transcriptionRequestSchema.parse({
-      audio: {
-        id: "artifact.audio.typed.2",
-        kind: "audio",
-        metadata: {},
-        uri: "file:///tmp/input.wav"
-      },
-      id: "transcription-request.typed.1",
-      metadata: {},
-      providerId: "voice.local"
-    }))).text).toContain("continue");
-    expect((await imageAdapter.generate(imageGenerationRequestSchema.parse({
-      id: "image-request.typed.1",
-      metadata: {},
-      parameters: {
-        prompt: "Generate a status icon",
-        references: [],
-        styleTags: []
-      },
-      providerId: "comfyui_local"
-    }))).providerId).toBe("comfyui_local");
-    expect((await externalAgentAdapter.run(externalAgentJobRequestSchema.parse({
-      agentId: "external-agent.typed.1",
-      args: [],
-      cwd: "/workspace",
-      id: "external-job-request.typed.1",
-      instructions: "Do work",
-      metadata: {}
-    }))).status).toBe("running");
-    expect(await memoryStore.query(memoryQuerySchema.parse({
-      includeKinds: [],
-      limit: 1,
-      minConfidence: 0,
-      scopes: ["workspace"],
-      text: "runtime"
-    }))).toEqual([]);
+    expect(
+      (
+        await voiceAdapter.transcribe(
+          transcriptionRequestSchema.parse({
+            audio: {
+              id: "artifact.audio.typed.2",
+              kind: "audio",
+              metadata: {},
+              uri: "file:///tmp/input.wav"
+            },
+            id: "transcription-request.typed.1",
+            metadata: {},
+            providerId: "voice.local"
+          })
+        )
+      ).text
+    ).toContain("continue");
+    expect(
+      (
+        await imageAdapter.generate(
+          imageGenerationRequestSchema.parse({
+            id: "image-request.typed.1",
+            metadata: {},
+            parameters: {
+              prompt: "Generate a status icon",
+              references: [],
+              styleTags: []
+            },
+            providerId: "comfyui_local"
+          })
+        )
+      ).providerId
+    ).toBe("comfyui_local");
+    expect(
+      (
+        await externalAgentAdapter.run(
+          externalAgentJobRequestSchema.parse({
+            agentId: "external-agent.typed.1",
+            args: [],
+            cwd: "/workspace",
+            id: "external-job-request.typed.1",
+            instructions: "Do work",
+            metadata: {}
+          })
+        )
+      ).status
+    ).toBe("running");
+    expect(
+      await memoryStore.query(
+        memoryQuerySchema.parse({
+          includeKinds: [],
+          limit: 1,
+          minConfidence: 0,
+          scopes: ["workspace"],
+          text: "runtime"
+        })
+      )
+    ).toEqual([]);
 
     expectTypeOf(modelAdapter.generate).returns.resolves.toEqualTypeOf<LanguageModelResponse>();
     expectTypeOf(voiceAdapter.transcribe).returns.resolves.toEqualTypeOf<TranscriptionResult>();

@@ -2,12 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import type {
-  ArtifactReference,
-  JsonValue,
-  MCPToolCapability,
-  ToolDefinition
-} from "@/core/contracts";
+import type { ArtifactReference, JsonValue, MCPToolCapability, ToolDefinition } from "@/core/contracts";
 import { artifactReferenceSchema } from "@/core/contracts";
 import type { MCPManager } from "@/core/mcp/manager";
 import { disambiguateInvocationName } from "@/core/mcp/names";
@@ -29,19 +24,13 @@ type McpRuntimeToolBuildOptions = McpRuntimeToolOptions & {
   invocationName?: string;
 };
 
-export function createMcpRuntimeTools(
-  manager: MCPManager,
-  options: McpRuntimeToolOptions = {}
-): RuntimeTool[] {
+export function createMcpRuntimeTools(manager: MCPManager, options: McpRuntimeToolOptions = {}): RuntimeTool[] {
   // Keep invocation names injective across ALL connected servers. Two servers
   // whose names slugify alike (or that expose the same tool slug) would collide
   // in the shared registry; disambiguate the later ones with a "-2"/"-3" suffix.
   const usedInvocationNames = new Set<string>();
   return manager.getToolCapabilities().map((capability) => {
-    const invocationName = disambiguateInvocationName(
-      capability.invocationName,
-      usedInvocationNames
-    );
+    const invocationName = disambiguateInvocationName(capability.invocationName, usedInvocationNames);
     return createMcpRuntimeTool(manager, capability, {
       ...options,
       invocationName
@@ -68,17 +57,9 @@ export function createMcpRuntimeTool(
       // Route by the capability's own (per-server unique) invocation name — the
       // registry-facing name may have been disambiguated for a cross-server
       // clash, but the manager resolves the raw tool name from this one.
-      const result = await manager.callTool(
-        capability.serverName ?? "",
-        capability.invocationName,
-        call.arguments
-      );
+      const result = await manager.callTool(capability.serverName ?? "", capability.invocationName, call.arguments);
       const content = Array.isArray(result.content) ? result.content : [];
-      const { artifacts, display } = await extractContent(
-        content,
-        options.artifactRoot,
-        call.id
-      );
+      const { artifacts, display } = await extractContent(content, options.artifactRoot, call.id);
 
       return {
         artifacts,
@@ -144,10 +125,7 @@ async function extractContent(
           callId,
           index: artifacts.length,
           kind: "document",
-          mediaType:
-            typeof resource.mimeType === "string"
-              ? resource.mimeType
-              : "application/octet-stream",
+          mediaType: typeof resource.mimeType === "string" ? resource.mimeType : "application/octet-stream",
           name: typeof resource.uri === "string" ? resource.uri : "resource"
         });
         if (artifact) {
@@ -158,8 +136,7 @@ async function extractContent(
     }
 
     if (item.type === "image" && typeof item.data === "string") {
-      const mediaType =
-        typeof item.mimeType === "string" ? item.mimeType : "image/png";
+      const mediaType = typeof item.mimeType === "string" ? item.mimeType : "image/png";
       pushText(`[image: ${mediaType}]`);
       if (artifactRoot) {
         const artifact = await persistArtifact({
@@ -179,8 +156,7 @@ async function extractContent(
     }
 
     if (item.type === "audio" && typeof item.data === "string") {
-      const mediaType =
-        typeof item.mimeType === "string" ? item.mimeType : "audio/wav";
+      const mediaType = typeof item.mimeType === "string" ? item.mimeType : "audio/wav";
       pushText(`[audio: ${mediaType}]`);
       if (artifactRoot) {
         const artifact = await persistArtifact({
@@ -235,10 +211,7 @@ async function persistArtifact(params: {
       byteLength: buffer.byteLength,
       id: `${params.callId}.mcp-artifact.${params.index}`.slice(0, 256),
       kind: params.kind,
-      mediaType:
-        params.mediaType.length >= 1 && params.mediaType.length <= 256
-          ? params.mediaType
-          : undefined,
+      mediaType: params.mediaType.length >= 1 && params.mediaType.length <= 256 ? params.mediaType : undefined,
       metadata: {},
       name: clampArtifactName(params.name),
       sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
@@ -257,10 +230,7 @@ function clampArtifactName(value: string): string {
   return trimmed.length > 0 ? trimmed : "mcp-artifact";
 }
 
-function buildMcpToolDefinition(
-  capability: MCPToolCapability,
-  invocationName: string
-): ToolDefinition {
+function buildMcpToolDefinition(capability: MCPToolCapability, invocationName: string): ToolDefinition {
   const readOnly = capability.annotations.readOnlyHint === true;
   const destructive = capability.annotations.destructiveHint === true;
   const openWorld = capability.annotations.openWorldHint === true;
@@ -282,8 +252,7 @@ function buildMcpToolDefinition(
     // `trust` config), which still lets an explicit deny rule win.
     approvalMode: "ask",
     descriptor: {
-      approvalNotes:
-        `Approval is requested before running ${capability.displayName}. Mark its MCP server "trusted" (or add an mcp_server/mcp_tool allow rule) to auto-approve it; the server-reported read-only hint is advisory and does not skip approval.`,
+      approvalNotes: `Approval is requested before running ${capability.displayName}. Mark its MCP server "trusted" (or add an mcp_server/mcp_tool allow rule) to auto-approve it; the server-reported read-only hint is advisory and does not skip approval.`,
       examples: [
         `Use when the MCP server "${capability.serverName}" exposes a specialized capability you cannot satisfy with built-in tools.`,
         `Prefer this when ${capability.displayName} is the canonical action provided by the connected MCP server.`
@@ -304,14 +273,11 @@ function buildMcpToolDefinition(
       ]
     },
     description:
-      capability.description ??
-      `Call the MCP tool "${capability.name}" on server "${capability.serverName}".`,
+      capability.description ?? `Call the MCP tool "${capability.name}" on server "${capability.serverName}".`,
     displayName: capability.displayName,
     execution: {
       inputMode: "json",
-      resumable:
-        capability.execution.taskSupport === "required" ||
-        capability.execution.taskSupport === "optional",
+      resumable: capability.execution.taskSupport === "required" || capability.execution.taskSupport === "optional",
       taskSupport: capability.execution.taskSupport ?? "forbidden"
     },
     idempotent: capability.annotations.idempotentHint === true,
@@ -368,10 +334,7 @@ function sanitizeFileSegment(value: string): string {
   return cleaned.length > 0 ? cleaned.slice(0, 120) : "mcp";
 }
 
-function extensionForMediaType(
-  mediaType: string,
-  kind: "audio" | "document" | "image"
-): string {
+function extensionForMediaType(mediaType: string, kind: "audio" | "document" | "image"): string {
   switch (mediaType) {
     case "image/png":
       return ".png";
@@ -428,10 +391,9 @@ class DynamicMcpToolRegistry implements ExecutableToolRegistry {
     if (this.cached && this.cached.generation === generation) {
       return this.cached.registry;
     }
-    const registry = createExecutableToolRegistry(
-      createMcpRuntimeTools(this.manager, this.options),
-      { onDuplicate: "skip" }
-    );
+    const registry = createExecutableToolRegistry(createMcpRuntimeTools(this.manager, this.options), {
+      onDuplicate: "skip"
+    });
     this.cached = { generation, registry };
     return registry;
   }

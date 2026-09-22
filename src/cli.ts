@@ -23,11 +23,7 @@ import {
   type VoiceCaptureRecord,
   type VoiceService
 } from "@/core";
-import {
-  createAIAgentSdkFromConfig,
-  type AIAgentSdk,
-  type AIAgentSessionHandle
-} from "@/sdk";
+import { createAIAgentSdkFromConfig, type AIAgentSdk, type AIAgentSessionHandle } from "@/sdk";
 import { attachToExternalAgentSession } from "@/gateway/attach-client";
 import type {
   GatewayApprovalRecord,
@@ -228,10 +224,7 @@ async function runChatCli(
   try {
     sdk = await resolveSdk(deps, input.cwd);
   } catch (error) {
-    writeLine(
-      streams.stderr,
-      `Failed to start AIAgent: ${renderCliError(error)}`
-    );
+    writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
     return 1;
   }
 
@@ -293,10 +286,7 @@ async function runChatCli(
             const { servers } = await sdk.request("mcp.list", {});
             writeLine(streams.stdout, formatMcpServers(servers));
           } catch (error) {
-            writeLine(
-              streams.stderr,
-              `Failed to list MCP servers: ${renderCliError(error)}`
-            );
+            writeLine(streams.stderr, `Failed to list MCP servers: ${renderCliError(error)}`);
           }
           continue;
         }
@@ -309,10 +299,7 @@ async function runChatCli(
             const { sessions } = await sdk.request("external_agent.session.list", {});
             writeLine(streams.stdout, formatExternalAgentSessions(sessions));
           } catch (error) {
-            writeLine(
-              streams.stderr,
-              `Failed to list interactive external-agent sessions: ${renderCliError(error)}`
-            );
+            writeLine(streams.stderr, `Failed to list interactive external-agent sessions: ${renderCliError(error)}`);
           }
           continue;
         }
@@ -326,43 +313,24 @@ async function runChatCli(
             const result = await sdk.request("external_agent.session.attach", {
               externalSessionId
             });
-            writeLine(
-              streams.stdout,
-              `Opened a terminal window running: ${result.command}`
-            );
+            writeLine(streams.stdout, `Opened a terminal window running: ${result.command}`);
           } catch (error) {
-            writeLine(
-              streams.stderr,
-              `Failed to attach to ${externalSessionId}: ${renderCliError(error)}`
-            );
+            writeLine(streams.stderr, `Failed to attach to ${externalSessionId}: ${renderCliError(error)}`);
           }
           continue;
         }
         if (command === "unknown") {
-          writeLine(
-            streams.stderr,
-            `Unknown command "${line}". Type /help for options, or /exit to leave.`
-          );
+          writeLine(streams.stderr, `Unknown command "${line}". Type /help for options, or /exit to leave.`);
           continue;
         }
 
-        await runChatTurn(
-          created.handle,
-          line,
-          streams,
-          nextLine,
-          approvalState,
-          modelProvenance
-        );
+        await runChatTurn(created.handle, line, streams, nextLine, approvalState, modelProvenance);
       }
     } finally {
       await iterator.return?.();
     }
   } catch (error) {
-    writeLine(
-      streams.stderr,
-      `Failed to start AIAgent: ${renderCliError(error)}`
-    );
+    writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
     return 1;
   } finally {
     await sdk.close().catch(() => undefined);
@@ -420,18 +388,14 @@ export function formatChatModelProvenance(loaded: LoadedAIAgentConfig): string {
   // default can legitimately be the same id an operator configured, and
   // telling them their own setting was ignored is worse than saying nothing.
   if (!workspace && globals.length === 0 && model === DEFAULT_LM_STUDIO_MODEL) {
-    lines.push(
-      "That is the built-in default — no config file was found, so this is probably not the model you meant."
-    );
+    lines.push("That is the built-in default — no config file was found, so this is probably not the model you meant.");
   }
   lines.push(
     workspace
       ? `  workspace config:   ${workspace}`
       : `  workspace config:   none (no ${APP_CONFIG_FILE_NAME} found from ${loaded.paths.workspaceRoot} upward)`
   );
-  lines.push(
-    globals.length > 0 ? `  user-global config: ${globals.join(", ")}` : "  user-global config: none"
-  );
+  lines.push(globals.length > 0 ? `  user-global config: ${globals.join(", ")}` : "  user-global config: none");
   lines.push(
     `Set runtime.defaultModel and providers.lmStudio.model in whichever should apply; the user-global file applies in every directory.`
   );
@@ -469,8 +433,7 @@ function formatModelUnavailable(model: {
   providerId: string;
   status: string;
 }): string {
-  const detail =
-    typeof model.details.error === "string" ? ` (${model.details.error})` : "";
+  const detail = typeof model.details.error === "string" ? ` (${model.details.error})` : "";
   return [
     `Cannot start an interactive session: the chat model provider "${model.providerId}" is ${model.status}${detail}.`,
     'Start the provider (for example launch LM Studio or Ollama), then run `aia` again. For a one-shot run use `aia --prompt "…"`.'
@@ -525,9 +488,7 @@ function extractToolOutput(result: JsonValue | undefined): string | null {
     if (typeof value === "object" && value !== null && !Array.isArray(value)) {
       const streams = value as Record<string, JsonValue>;
       const sections = [
-        typeof streams.stdout === "string" && streams.stdout.trim().length > 0
-          ? streams.stdout
-          : undefined,
+        typeof streams.stdout === "string" && streams.stdout.trim().length > 0 ? streams.stdout : undefined,
         typeof streams.stderr === "string" && streams.stderr.trim().length > 0
           ? `stderr:\n${streams.stderr}`
           : undefined
@@ -543,9 +504,7 @@ function truncateForDisplay(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
 }
 
-function describeCompletionReason(
-  reason: GatewayRunCompletionReason | undefined
-): string {
+function describeCompletionReason(reason: GatewayRunCompletionReason | undefined): string {
   switch (reason) {
     case "session_awaiting_approval":
     case "tool_awaiting_approval":
@@ -569,10 +528,7 @@ function describeCompletionReason(
 
 // Anything other than a clean completion gets a line. A turn that ends for an
 // unstated reason is indistinguishable from the agent quitting on you.
-function formatTurnStopNotice(
-  run: GatewayRunRecord | null,
-  snapshot: SessionSnapshot
-): string | null {
+function formatTurnStopNotice(run: GatewayRunRecord | null, snapshot: SessionSnapshot): string | null {
   if (run?.completionReason === "session_completed") {
     return null;
   }
@@ -637,18 +593,12 @@ async function runChatTurn(
       // having quietly stopped.
       closeReasoning();
       const target = event.payload.target;
-      writeLine(
-        streams.stderr,
-        `${DIM}· paused for approval: ${target.label} → ${target.value}${RESET}`
-      );
+      writeLine(streams.stderr, `${DIM}· paused for approval: ${target.label} → ${target.value}${RESET}`);
     } else if (event.topic === "gateway.status") {
       const metrics = event.payload.metrics;
       if (metrics) {
         closeReasoning();
-        writeLine(
-          streams.stderr,
-          `${DIM}${formatStatusMetrics(metrics)}${RESET}`
-        );
+        writeLine(streams.stderr, `${DIM}${formatStatusMetrics(metrics)}${RESET}`);
       }
     }
   };
@@ -674,13 +624,7 @@ async function runChatTurn(
       streams.stdout.write("\n");
     }
 
-    finalRun =
-      (await resolvePendingApprovals(
-        handle,
-        streams,
-        nextLine,
-        approvalState
-      )) ?? finalRun;
+    finalRun = (await resolvePendingApprovals(handle, streams, nextLine, approvalState)) ?? finalRun;
 
     const snapshot = (await handle.snapshot()).snapshot;
 
@@ -751,22 +695,15 @@ async function resolvePendingApprovals(
       const alwaysKey = `${target.kind}:${target.value}`;
       if (state.alwaysApprove.has(alwaysKey)) {
         await handle.resolveApproval({
-          comment:
-            'Auto-approved: the operator answered "always" for this target earlier in the CLI session.',
+          comment: 'Auto-approved: the operator answered "always" for this target earlier in the CLI session.',
           decision: "approved",
           requestId: approval.request.id
         });
-        writeLine(
-          streams.stdout,
-          `Auto-approved ${target.value} (always for this session).`
-        );
+        writeLine(streams.stdout, `Auto-approved ${target.value} (always for this session).`);
         continue;
       }
 
-      writeLine(
-        streams.stdout,
-        `${ANSI_DIM}  ${approval.request.justification}${ANSI_RESET}`
-      );
+      writeLine(streams.stdout, `${ANSI_DIM}  ${approval.request.justification}${ANSI_RESET}`);
       streams.stdout.write(
         `Approve ${target.label} → ${target.value}? [y/N/a/e] (y = yes, N = no, a = always for this session, e = no + explain what to do instead) `
       );
@@ -832,10 +769,7 @@ async function answerAgentQuestion(
   writeLine(streams.stdout, `The agent asks: ${approval.request.justification}`);
   const options = readQuestionOptions(approval.request.metadata?.options);
   for (const [index, option] of options.entries()) {
-    writeLine(
-      streams.stdout,
-      `  ${index + 1}) ${option.label}${option.description ? ` — ${option.description}` : ""}`
-    );
+    writeLine(streams.stdout, `  ${index + 1}) ${option.label}${option.description ? ` — ${option.description}` : ""}`);
   }
 
   streams.stdout.write(
@@ -846,9 +780,7 @@ async function answerAgentQuestion(
   const typed = (await nextLine())?.trim() ?? "";
   // A bare number is shorthand for the option at that position; the tool only
   // ever sees the label, so option numbering stays a CLI presentation detail.
-  const chosen = /^\d+$/u.test(typed)
-    ? options[Number.parseInt(typed, 10) - 1]
-    : undefined;
+  const chosen = /^\d+$/u.test(typed) ? options[Number.parseInt(typed, 10) - 1] : undefined;
   const answer = chosen?.label ?? typed;
 
   await handle.resolveApproval({
@@ -856,15 +788,10 @@ async function answerAgentQuestion(
     decision: "approved",
     requestId: approval.request.id
   });
-  writeLine(
-    streams.stdout,
-    answer.length > 0 ? "Answer sent to the agent." : "Continued without an answer."
-  );
+  writeLine(streams.stdout, answer.length > 0 ? "Answer sent to the agent." : "Continued without an answer.");
 }
 
-function readQuestionOptions(
-  raw: JsonValue | undefined
-): Array<{ description?: string; label: string }> {
+function readQuestionOptions(raw: JsonValue | undefined): Array<{ description?: string; label: string }> {
   if (!Array.isArray(raw)) {
     return [];
   }
@@ -877,8 +804,7 @@ function readQuestionOptions(
     if (!label) {
       return [];
     }
-    const description =
-      typeof option.description === "string" ? option.description : undefined;
+    const description = typeof option.description === "string" ? option.description : undefined;
     return [{ ...(description ? { description } : {}), label }];
   });
 }
@@ -956,11 +882,7 @@ async function mainCli(): Promise<void> {
  * runtime. That is what lets a desktop window, the agent, and the operator all
  * drive the same PTY.
  */
-async function runAttachCli(
-  args: string[],
-  streams: CliStreams,
-  deps: CliDependencies = {}
-): Promise<number> {
+async function runAttachCli(args: string[], streams: CliStreams, deps: CliDependencies = {}): Promise<number> {
   const { positionals, values } = parseArgs({
     args,
     allowPositionals: true,
@@ -998,11 +920,7 @@ async function runAttachCli(
   }
 }
 
-async function runVoiceCli(
-  args: string[],
-  streams: CliStreams,
-  deps: CliDependencies = {}
-): Promise<number> {
+async function runVoiceCli(args: string[], streams: CliStreams, deps: CliDependencies = {}): Promise<number> {
   const subcommand = args[0];
   if (!subcommand || subcommand === "--help" || subcommand === "-h") {
     writeLine(streams.stdout, formatVoiceHelp());
@@ -1023,10 +941,7 @@ async function runVoiceCli(
             }
           });
           if (values.help) {
-            writeLine(
-              streams.stdout,
-              "Usage: aia voice list-devices [--provider <id>] [--kind input|output]"
-            );
+            writeLine(streams.stdout, "Usage: aia voice list-devices [--provider <id>] [--kind input|output]");
             return 0;
           }
 
@@ -1059,10 +974,7 @@ async function runVoiceCli(
             }
           });
           if (values.help) {
-            writeLine(
-              streams.stdout,
-              "Usage: aia voice list-voices [--provider <id>] [--locale <locale>]"
-            );
+            writeLine(streams.stdout, "Usage: aia voice list-voices [--provider <id>] [--locale <locale>]");
             return 0;
           }
 
@@ -1161,17 +1073,11 @@ async function runVoiceCli(
             id: `voice.capture.${crypto.randomUUID()}`,
             inputDevice: values["input-device"],
             locale: values.locale,
-            maxDurationMs: parseOptionalInteger(
-              values["max-duration-ms"],
-              "--max-duration-ms"
-            ),
+            maxDurationMs: parseOptionalInteger(values["max-duration-ms"], "--max-duration-ms"),
             metadata: {},
             providerId: values.provider,
             sessionId: values.session,
-            silenceTimeoutMs: parseOptionalInteger(
-              values["silence-timeout-ms"],
-              "--silence-timeout-ms"
-            )
+            silenceTimeoutMs: parseOptionalInteger(values["silence-timeout-ms"], "--silence-timeout-ms")
           });
 
           writeLine(
@@ -1185,9 +1091,7 @@ async function runVoiceCli(
               return;
             }
             stopping = true;
-            await context.voiceService
-              .stopCapture(capture.id)
-              .catch(() => undefined);
+            await context.voiceService.stopCapture(capture.id).catch(() => undefined);
           };
 
           const onSignal = () => {
@@ -1198,14 +1102,8 @@ async function runVoiceCli(
           process.on("SIGTERM", onSignal);
 
           try {
-            const result = await context.voiceService.waitForCapture(
-              capture.id
-            );
-            if (
-              result.status !== "completed" ||
-              !result.text ||
-              !result.audio
-            ) {
+            const result = await context.voiceService.waitForCapture(capture.id);
+            if (result.status !== "completed" || !result.text || !result.audio) {
               writeLine(streams.stderr, formatVoiceCaptureFailure(result));
               return 1;
             }
@@ -1338,16 +1236,10 @@ async function appendVoiceUserMessage(params: {
           kind: "audio",
           transcript: params.text,
           uri: params.audio.uri,
-          voice:
-            typeof params.audio.metadata.voice === "string"
-              ? params.audio.metadata.voice
-              : undefined,
+          voice: typeof params.audio.metadata.voice === "string" ? params.audio.metadata.voice : undefined,
           waveform: Array.isArray(params.audio.metadata.waveform)
             ? params.audio.metadata.waveform
-                .filter(
-                  (value): value is number =>
-                    typeof value === "number" && value >= 0 && value <= 1
-                )
+                .filter((value): value is number => typeof value === "number" && value >= 0 && value <= 1)
                 .slice(0, 512)
             : undefined
         }
@@ -1367,13 +1259,8 @@ async function appendVoiceUserMessage(params: {
   });
 }
 
-async function resolveSdk(
-  deps: CliDependencies,
-  cwd: string
-): Promise<AIAgentSdk> {
-  return deps.createSdk
-    ? deps.createSdk({ cwd })
-    : createAIAgentSdkFromConfig({ cwd });
+async function resolveSdk(deps: CliDependencies, cwd: string): Promise<AIAgentSdk> {
+  return deps.createSdk ? deps.createSdk({ cwd }) : createAIAgentSdkFromConfig({ cwd });
 }
 
 function parseChatCommand(
@@ -1423,7 +1310,7 @@ function formatChatHelp(): string {
     "",
     "Approval prompts accept y (approve once), a (approve and auto-approve this target for the",
     "rest of the session), or anything else to deny. A denial can carry an optional note that is",
-    "sent to the agent as steering, e.g. \"use ls instead\"."
+    'sent to the agent as steering, e.g. "use ls instead".'
   ].join("\n");
 }
 
@@ -1442,8 +1329,7 @@ function formatExternalAgentSessions(
 
   return sessions
     .map(
-      (session) =>
-        `${session.id}  ${session.status}  ${session.agentId}  ${session.turnCount} turn(s)  ${session.cwd}`
+      (session) => `${session.id}  ${session.status}  ${session.agentId}  ${session.turnCount} turn(s)  ${session.cwd}`
     )
     .join("\n");
 }
@@ -1463,17 +1349,13 @@ function formatMcpServers(
   }
   return servers
     .map((server) => {
-      const lines = [
-        `${server.serverName}  [${server.state}, ${server.transport}]`
-      ];
+      const lines = [`${server.serverName}  [${server.state}, ${server.transport}]`];
       if (server.error) {
         lines.push(`  error: ${server.error}`);
       }
       if (server.tools.length > 0) {
         for (const tool of server.tools) {
-          lines.push(
-            `  - ${tool.invocationName}${tool.description ? `: ${tool.description}` : ""}`
-          );
+          lines.push(`  - ${tool.invocationName}${tool.description ? `: ${tool.description}` : ""}`);
         }
       } else {
         lines.push("  (no tools exposed)");
@@ -1483,18 +1365,12 @@ function formatMcpServers(
     .join("\n");
 }
 
-async function runCompactCommand(
-  handle: AIAgentSessionHandle,
-  streams: CliStreams
-): Promise<void> {
+async function runCompactCommand(handle: AIAgentSessionHandle, streams: CliStreams): Promise<void> {
   try {
     const result = await handle.compact();
     writeLine(streams.stdout, formatCompactResult(result));
   } catch (error) {
-    writeLine(
-      streams.stderr,
-      `Failed to compact the session: ${renderCliError(error)}`
-    );
+    writeLine(streams.stderr, `Failed to compact the session: ${renderCliError(error)}`);
   }
 }
 
@@ -1567,8 +1443,7 @@ function renderCliError(error: unknown): string {
 }
 
 function formatVoiceCaptureFailure(record: VoiceCaptureRecord): string {
-  const message =
-    record.error?.message ?? "Voice capture did not complete successfully.";
+  const message = record.error?.message ?? "Voice capture did not complete successfully.";
   return `${record.status}: ${message}`;
 }
 
@@ -1599,24 +1474,17 @@ function isStructuredError(error: unknown): error is StructuredError {
   );
 }
 
-function parseDeviceKind(
-  value: string | undefined
-): "input" | "output" | undefined {
+function parseDeviceKind(value: string | undefined): "input" | "output" | undefined {
   if (!value) {
     return undefined;
   }
   if (value === "input" || value === "output") {
     return value;
   }
-  throw new Error(
-    `Invalid device kind "${value}". Expected "input" or "output".`
-  );
+  throw new Error(`Invalid device kind "${value}". Expected "input" or "output".`);
 }
 
-function parseOptionalInteger(
-  value: string | undefined,
-  label: string
-): number | undefined {
+function parseOptionalInteger(value: string | undefined, label: string): number | undefined {
   if (!value) {
     return undefined;
   }
@@ -1628,10 +1496,7 @@ function parseOptionalInteger(
   return parsed;
 }
 
-async function requireSession(
-  store: FileSessionStore,
-  sessionId: string
-): Promise<SessionRecord> {
+async function requireSession(store: FileSessionStore, sessionId: string): Promise<SessionRecord> {
   const session = await store.getSession(sessionId);
   if (!session) {
     throw new Error(`Session "${sessionId}" was not found.`);
@@ -1652,9 +1517,7 @@ async function withVoiceContext(
   }
 }
 
-async function buildVoiceContext(
-  deps: CliDependencies
-): Promise<VoiceCliContext> {
+async function buildVoiceContext(deps: CliDependencies): Promise<VoiceCliContext> {
   if (deps.createVoiceContext) {
     return deps.createVoiceContext();
   }
@@ -1697,9 +1560,7 @@ function extractCompletionSummary(snapshot: SessionSnapshot): string | null {
   return extractMessageText(summaryMessage) || null;
 }
 
-function extractLatestAssistantSummary(
-  snapshot: GatewaySessionSnapshot
-): string | null {
+function extractLatestAssistantSummary(snapshot: GatewaySessionSnapshot): string | null {
   const assistantMessage = snapshot.snapshot.messages
     .slice()
     .reverse()

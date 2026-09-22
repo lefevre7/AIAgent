@@ -56,9 +56,7 @@ async function* lineSource(items: string[]): AsyncIterable<string> {
   }
 }
 
-function scriptToolCalls(
-  calls: Array<{ args: Record<string, unknown>; name: string }>
-): ScriptedLanguageModelAdapter {
+function scriptToolCalls(calls: Array<{ args: Record<string, unknown>; name: string }>): ScriptedLanguageModelAdapter {
   return new ScriptedLanguageModelAdapter({
     modelId: "run-finalization-model",
     providerId: "example_lm",
@@ -82,14 +80,8 @@ function collectEvents(sdk: AIAgentSdk): {
     events.push(event);
   });
   return {
-    runStatuses: () =>
-      events
-        .filter((event) => event.topic === "run.updated")
-        .map((event) => event.payload.status),
-    toolActivity: () =>
-      events
-        .filter((event) => event.topic === "tool.updated")
-        .map((event) => event.payload)
+    runStatuses: () => events.filter((event) => event.topic === "run.updated").map((event) => event.payload.status),
+    toolActivity: () => events.filter((event) => event.topic === "tool.updated").map((event) => event.payload)
   };
 }
 
@@ -132,9 +124,7 @@ describe("gateway run finalization", () => {
         expect(observed.runStatuses()).toContain("completed");
 
         const pending = await created.handle.listPendingApprovals();
-        expect(pending.map((entry) => entry.request.target.value)).toEqual([
-          "which codex"
-        ]);
+        expect(pending.map((entry) => entry.request.target.value)).toEqual(["which codex"]);
       }
     });
   });
@@ -188,9 +178,7 @@ describe("gateway run finalization", () => {
         expect(record.status).toBe("completed");
         expect(observed.runStatuses().at(-1)).toBe("completed");
 
-        const status = observed
-          .toolActivity()
-          .find((call) => call.toolName === "mcp_status");
+        const status = observed.toolActivity().find((call) => call.toolName === "mcp_status");
         expect(status?.status).toBe("succeeded");
         // The tool.updated event carrying this result is what used to throw.
         expect(JSON.stringify(status?.result)).toContain("unreachable");
@@ -262,34 +250,20 @@ describe("gateway run finalization", () => {
         ]
       },
       run: async ({ sdk, workspaceRoot }) => {
-        const exitCode = await runCli(
-          ["--cwd", workspaceRoot],
-          capture.streams as never,
-          {
-            createSdk: async () => sdk,
-            interactiveInput: lineSource([
-              "please run an example prompt in codex",
-              "y",
-              "/exit"
-            ])
-          }
-        );
+        const exitCode = await runCli(["--cwd", workspaceRoot], capture.streams as never, {
+          createSdk: async () => sdk,
+          interactiveInput: lineSource(["please run an example prompt in codex", "y", "/exit"])
+        });
 
         expect(exitCode).toBe(0);
         // The prompt the operator never saw in the original incident.
-        expect(capture.getStdout()).toContain(
-          "Approve command → which codex?"
-        );
+        expect(capture.getStdout()).toContain("Approve command → which codex?");
         expect(capture.getStdout()).toContain("Approved which codex.");
         // Tool lines carry their arguments, so repeated reads are legible.
         expect(capture.getStderr()).toContain("· list_files(path=.)");
-        expect(capture.getStderr()).toContain(
-          "· shell_command(command=which codex)"
-        );
+        expect(capture.getStderr()).toContain("· shell_command(command=which codex)");
         // The pause is announced while the run is still going.
-        expect(capture.getStderr()).toContain(
-          "paused for approval: command → which codex"
-        );
+        expect(capture.getStderr()).toContain("paused for approval: command → which codex");
       }
     });
   });

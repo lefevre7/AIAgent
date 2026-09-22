@@ -1,14 +1,4 @@
-const BLOCK_REMOVALS = [
-  "script",
-  "style",
-  "noscript",
-  "template",
-  "svg",
-  "canvas",
-  "iframe",
-  "footer",
-  "nav"
-] as const;
+const BLOCK_REMOVALS = ["script", "style", "noscript", "template", "svg", "canvas", "iframe", "footer", "nav"] as const;
 
 export function extractHtmlTitle(html: string): string | undefined {
   const match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -28,7 +18,9 @@ export function htmlToMarkdown(html: string): string {
 
   const codeBlocks: string[] = [];
   content = content.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_match, inner) => {
-    const code = decodeHtmlEntities(stripTags(inner)).replace(/\n{3,}/g, "\n\n").trim();
+    const code = decodeHtmlEntities(stripTags(inner))
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
     const placeholder = `__AIA_CODE_BLOCK_${codeBlocks.length}__`;
     codeBlocks.push(code.length > 0 ? `\n\`\`\`\n${code}\n\`\`\`\n` : "");
     return placeholder;
@@ -119,7 +111,10 @@ function renderInline(value: string): string {
   text = text.replace(/<\/?(span|section|article|header|main|tbody|thead|tr|td|th|table)\b[^>]*>/gi, " ");
   text = stripTags(text);
   text = decodeHtmlEntities(text);
-  return text.replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim();
+  return text
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\n\s*/g, "\n")
+    .trim();
 }
 
 function stripTags(value: string): string {

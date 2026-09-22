@@ -20,20 +20,20 @@ Sources surveyed (sibling repos under `AIAgents/`):
 
 ## AIAgent canonical tools
 
-| Family | Tools |
-| --- | --- |
-| Completion / meta | `attempt_complete`, `tool_search`, `think` |
-| Plan / todo | `update_plan` |
-| Files (read) | `read_file`, `list_files`, `search_paths` (alias `find_files`/`search_files`), `grep_files` |
-| Files (write) | `write_file`, `append_file`, `edit_file` (atomic multi-edit), `apply_patch`, `diff_preview`, `undo_last_edit`, `undo_file_edit`, `notebook_edit` |
-| Shell | `shell_command`, `exec_command`, `read_command_output`, `write_stdin`, `wait_command`, `kill_command`, `list_command_sessions` |
-| Browser | `browser_open`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_type`, `browser_select_option`, `browser_press_key`, `browser_snapshot`, `browser_screenshot`, `browser_list_pages`, `browser_close_page`, `browser_list_downloads`, `browser_upload_file`, `browser_wait` |
-| Web research | `web_fetch`, `web_search` |
-| Memory | `memory_search`, `memory_get`, `memory_status`, `memory_index`, `memory_write` |
-| Voice | `voice_list_voices`, `voice_synthesize_text`, `voice_transcribe_audio` |
-| Image | `image_generate` (text→image, image→image, inpaint) |
-| External agents | `external_agent` (run/get/list/cancel/resume + start/send/read/stop/attach) |
-| MCP | `mcp_search`, `mcp_read_resource`, `mcp_read_resource_template`, plus dynamic MCP server tools |
+| Family            | Tools                                                                                                                                                                                                                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Completion / meta | `attempt_complete`, `tool_search`, `think`                                                                                                                                                                                                                                               |
+| Plan / todo       | `update_plan`                                                                                                                                                                                                                                                                            |
+| Files (read)      | `read_file`, `list_files`, `search_paths` (alias `find_files`/`search_files`), `grep_files`                                                                                                                                                                                              |
+| Files (write)     | `write_file`, `append_file`, `edit_file` (atomic multi-edit), `apply_patch`, `diff_preview`, `undo_last_edit`, `undo_file_edit`, `notebook_edit`                                                                                                                                         |
+| Shell             | `shell_command`, `exec_command`, `read_command_output`, `write_stdin`, `wait_command`, `kill_command`, `list_command_sessions`                                                                                                                                                           |
+| Browser           | `browser_open`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_type`, `browser_select_option`, `browser_press_key`, `browser_snapshot`, `browser_screenshot`, `browser_list_pages`, `browser_close_page`, `browser_list_downloads`, `browser_upload_file`, `browser_wait` |
+| Web research      | `web_fetch`, `web_search`                                                                                                                                                                                                                                                                |
+| Memory            | `memory_search`, `memory_get`, `memory_status`, `memory_index`, `memory_write`                                                                                                                                                                                                           |
+| Voice             | `voice_list_voices`, `voice_synthesize_text`, `voice_transcribe_audio`                                                                                                                                                                                                                   |
+| Image             | `image_generate` (text→image, image→image, inpaint)                                                                                                                                                                                                                                      |
+| External agents   | `external_agent` (run/get/list/cancel/resume + start/send/read/stop/attach)                                                                                                                                                                                                              |
+| MCP               | `mcp_search`, `mcp_read_resource`, `mcp_read_resource_template`, plus dynamic MCP server tools                                                                                                                                                                                           |
 
 ## Deduped capability matrix
 
@@ -41,51 +41,51 @@ Status legend: **Have** (already shipped) · **Added** (added in this pass) ·
 **Covered** (an existing tool already satisfies it) · **Planned** (in scope, not yet
 built — see notes) · **Out** (out of scope — rationale given).
 
-| Capability | Seen in | AIAgent | Status |
-| --- | --- | --- | --- |
-| Read file | all | `read_file` | Have |
-| Write / create file | all | `write_file`, `append_file` | Have |
-| String/replace edit | all | `edit_file` | Have |
-| Multiple atomic edits to one file | opendev, vscode | `edit_file` (`edits[]`) | Covered |
-| Apply unified-diff patch | codex, openai, Roo, opendev, vscode, aider | `apply_patch` | Have |
-| Diff preview | opendev | `diff_preview` | Have |
-| Undo edit | aider | `undo_last_edit`, `undo_file_edit` | Have |
-| List files / dir | all | `list_files` | Have |
-| Find files by name / glob | Roo, vscode, opendev | `search_paths`, `list_files` | Covered |
-| Grep / regex content search | all | `grep_files` | Have |
-| Shell / bash exec | all | `shell_command`, `exec_command` | Have |
-| Interactive/persistent shell (stdin, wait, kill) | codex | `exec_command`, `write_stdin`, `wait_command`, `kill_command`, `list_command_sessions` | Have |
-| Read prior command output | Roo, vscode | `read_command_output` | Have |
-| Web fetch (URL→markdown) | all | `web_fetch` | Have |
-| Web search | all | `web_search` | Have |
-| Browser automation | Roo, opendev, openclaw, OpenHands | `browser_*` | Have |
-| Web screenshot | opendev | `browser_screenshot` | Covered |
-| Image generation | codex, openai, Roo, openclaw | `image_generate` | Have |
-| Memory read / write / search | aider, openclaw, opendev, vscode | `memory_*` | Have |
-| Plan / todo management | all | `update_plan` | Have |
-| Finish / attempt completion | all | `attempt_complete` | Have |
-| Tool discovery / search | codex, openai, mistral-vibe, vscode | `tool_search` | Have |
-| MCP tool use + resources | all | `mcp_*` + dynamic | Have |
-| Voice TTS / STT | openclaw | `voice_*` | Have |
-| Run external agent CLI | claude, codex, mistral-vibe | `external_agent` | Have |
-| Interactive external agent terminal | — | `external_agent` (`start`/`send`/`read`/`stop`/`attach`) | Have — see [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md) |
-| **Think / reasoning scratchpad** | OpenHands | `think` | **Added** |
-| **Edit notebook cells** | vscode, opendev | `notebook_edit` | **Added** |
-| **Ask the operator a question** | codex, Roo, opendev, mistral-vibe | `ask_user_question` | **Added** |
-| **View / analyze an image (vision)** | codex, openclaw, opendev, vscode | `view_image` | **Added** |
-| **Search / browse past sessions** | openclaw, opendev | `sessions_search` | **Added** |
-| **Send a message to a channel** | opendev, openclaw | `channel_send` | **Added** |
-| **Analyze a PDF** | openclaw | `pdf_read` | **Added** |
-| Structural (AST) search | opendev | — | Out (needs `ast-grep` binary) |
-| LSP query (defs/refs/rename) | opendev | — | Out (needs language servers) |
-| Code interpreter / JS REPL | codex, openai | `exec_command` (general) | Out (covered by shell; dedicated kernel deferred) |
-| Schedule / cron jobs | openclaw, opendev | — | Out (no scheduler in MVP) |
-| Internal subagent / spawn / handoff / agent-as-tool | codex, opendev, openclaw, openai, voltagent | `external_agent` | Out (product boundary: no internal subagent runtime) |
-| Request OS/network permissions | codex | (approval policy) | Out (handled by the approval policy, not a model tool) |
-| Switch mode / new task / slash command | Roo | — | Out (mode/IDE-specific) |
-| VS Code API / commands / extensions / SCM | vscode | — | Out (not an IDE host) |
-| GitHub repo integration | vscode | — | Out (product boundary: no GitHub product integration) |
-| Gateway / nodes / canvas control | openclaw | (gateway is infra) | Out (owner-only infra, not a model tool) |
+| Capability                                          | Seen in                                     | AIAgent                                                                                | Status                                                 |
+| --------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Read file                                           | all                                         | `read_file`                                                                            | Have                                                   |
+| Write / create file                                 | all                                         | `write_file`, `append_file`                                                            | Have                                                   |
+| String/replace edit                                 | all                                         | `edit_file`                                                                            | Have                                                   |
+| Multiple atomic edits to one file                   | opendev, vscode                             | `edit_file` (`edits[]`)                                                                | Covered                                                |
+| Apply unified-diff patch                            | codex, openai, Roo, opendev, vscode, aider  | `apply_patch`                                                                          | Have                                                   |
+| Diff preview                                        | opendev                                     | `diff_preview`                                                                         | Have                                                   |
+| Undo edit                                           | aider                                       | `undo_last_edit`, `undo_file_edit`                                                     | Have                                                   |
+| List files / dir                                    | all                                         | `list_files`                                                                           | Have                                                   |
+| Find files by name / glob                           | Roo, vscode, opendev                        | `search_paths`, `list_files`                                                           | Covered                                                |
+| Grep / regex content search                         | all                                         | `grep_files`                                                                           | Have                                                   |
+| Shell / bash exec                                   | all                                         | `shell_command`, `exec_command`                                                        | Have                                                   |
+| Interactive/persistent shell (stdin, wait, kill)    | codex                                       | `exec_command`, `write_stdin`, `wait_command`, `kill_command`, `list_command_sessions` | Have                                                   |
+| Read prior command output                           | Roo, vscode                                 | `read_command_output`                                                                  | Have                                                   |
+| Web fetch (URL→markdown)                            | all                                         | `web_fetch`                                                                            | Have                                                   |
+| Web search                                          | all                                         | `web_search`                                                                           | Have                                                   |
+| Browser automation                                  | Roo, opendev, openclaw, OpenHands           | `browser_*`                                                                            | Have                                                   |
+| Web screenshot                                      | opendev                                     | `browser_screenshot`                                                                   | Covered                                                |
+| Image generation                                    | codex, openai, Roo, openclaw                | `image_generate`                                                                       | Have                                                   |
+| Memory read / write / search                        | aider, openclaw, opendev, vscode            | `memory_*`                                                                             | Have                                                   |
+| Plan / todo management                              | all                                         | `update_plan`                                                                          | Have                                                   |
+| Finish / attempt completion                         | all                                         | `attempt_complete`                                                                     | Have                                                   |
+| Tool discovery / search                             | codex, openai, mistral-vibe, vscode         | `tool_search`                                                                          | Have                                                   |
+| MCP tool use + resources                            | all                                         | `mcp_*` + dynamic                                                                      | Have                                                   |
+| Voice TTS / STT                                     | openclaw                                    | `voice_*`                                                                              | Have                                                   |
+| Run external agent CLI                              | claude, codex, mistral-vibe                 | `external_agent`                                                                       | Have                                                   |
+| Interactive external agent terminal                 | —                                           | `external_agent` (`start`/`send`/`read`/`stop`/`attach`)                               | Have — see [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md)    |
+| **Think / reasoning scratchpad**                    | OpenHands                                   | `think`                                                                                | **Added**                                              |
+| **Edit notebook cells**                             | vscode, opendev                             | `notebook_edit`                                                                        | **Added**                                              |
+| **Ask the operator a question**                     | codex, Roo, opendev, mistral-vibe           | `ask_user_question`                                                                    | **Added**                                              |
+| **View / analyze an image (vision)**                | codex, openclaw, opendev, vscode            | `view_image`                                                                           | **Added**                                              |
+| **Search / browse past sessions**                   | openclaw, opendev                           | `sessions_search`                                                                      | **Added**                                              |
+| **Send a message to a channel**                     | opendev, openclaw                           | `channel_send`                                                                         | **Added**                                              |
+| **Analyze a PDF**                                   | openclaw                                    | `pdf_read`                                                                             | **Added**                                              |
+| Structural (AST) search                             | opendev                                     | —                                                                                      | Out (needs `ast-grep` binary)                          |
+| LSP query (defs/refs/rename)                        | opendev                                     | —                                                                                      | Out (needs language servers)                           |
+| Code interpreter / JS REPL                          | codex, openai                               | `exec_command` (general)                                                               | Out (covered by shell; dedicated kernel deferred)      |
+| Schedule / cron jobs                                | openclaw, opendev                           | —                                                                                      | Out (no scheduler in MVP)                              |
+| Internal subagent / spawn / handoff / agent-as-tool | codex, opendev, openclaw, openai, voltagent | `external_agent`                                                                       | Out (product boundary: no internal subagent runtime)   |
+| Request OS/network permissions                      | codex                                       | (approval policy)                                                                      | Out (handled by the approval policy, not a model tool) |
+| Switch mode / new task / slash command              | Roo                                         | —                                                                                      | Out (mode/IDE-specific)                                |
+| VS Code API / commands / extensions / SCM           | vscode                                      | —                                                                                      | Out (not an IDE host)                                  |
+| GitHub repo integration                             | vscode                                      | —                                                                                      | Out (product boundary: no GitHub product integration)  |
+| Gateway / nodes / canvas control                    | openclaw                                    | (gateway is infra)                                                                     | Out (owner-only infra, not a model tool)               |
 
 ## Added in this pass
 
@@ -126,15 +126,15 @@ Every high-volume tool clips what it hands the model and leaves an actionable
 marker (`truncateToolOutput`, `src/core/tools/output.ts`) naming the follow-up
 call and the on-disk artifact. Current budgets:
 
-| Tool | Budget | Follow-up |
-|---|---|---|
-| `shell_command` | 12k chars of combined output | `read_command_output(sessionId, offset)` |
-| `read_command_output` | 16k chars default | itself, with `offset` |
-| `exec_command`, `write_stdin`, `wait_command`, `kill_command` | 8k-char tail | `read_command_output(sessionId, offset: 0)` |
-| `grep_files` | 12k chars of rendered matches | narrower query, `path` scope, or smaller `maxResults` |
+| Tool                                                          | Budget                        | Follow-up                                             |
+| ------------------------------------------------------------- | ----------------------------- | ----------------------------------------------------- |
+| `shell_command`                                               | 12k chars of combined output  | `read_command_output(sessionId, offset)`              |
+| `read_command_output`                                         | 16k chars default             | itself, with `offset`                                 |
+| `exec_command`, `write_stdin`, `wait_command`, `kill_command` | 8k-char tail                  | `read_command_output(sessionId, offset: 0)`           |
+| `grep_files`                                                  | 12k chars of rendered matches | narrower query, `path` scope, or smaller `maxResults` |
 
 **Why `grep_files` needs a character budget and not just `maxResults`.** A match
-count bounds how *many* lines come back, not how *big* one is, and a match
+count bounds how _many_ lines come back, not how _big_ one is, and a match
 carries its whole source line. One hit inside a minified bundle or a
 `.js.map` — a single multi-megabyte line — is enough: `grep_files({query:
 "edit_file"})` against this repo returned 85 matches (under the 100 default) that

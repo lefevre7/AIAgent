@@ -205,16 +205,29 @@ describe("workspace and command built-ins", () => {
     const root = await createTempRoot();
     const runtime = createRuntime(root);
 
-    const read = await executeApproved(runtime, root, "read_command_output", { sessionId: "command.missing", stream: "combined" });
+    const read = await executeApproved(runtime, root, "read_command_output", {
+      sessionId: "command.missing",
+      stream: "combined"
+    });
     expect(read.toolCall.status).toBe("failed");
 
-    const write = await executeApproved(runtime, root, "write_stdin", { sessionId: "command.missing", submit: true, text: "x" });
+    const write = await executeApproved(runtime, root, "write_stdin", {
+      sessionId: "command.missing",
+      submit: true,
+      text: "x"
+    });
     expect(write.toolCall.status).toBe("failed");
 
-    const wait = await executeApproved(runtime, root, "wait_command", { sessionId: "command.missing", timeoutMs: 1_000 });
+    const wait = await executeApproved(runtime, root, "wait_command", {
+      sessionId: "command.missing",
+      timeoutMs: 1_000
+    });
     expect(wait.toolCall.status).toBe("failed");
 
-    const kill = await executeApproved(runtime, root, "kill_command", { sessionId: "command.missing", timeoutMs: 1_000 });
+    const kill = await executeApproved(runtime, root, "kill_command", {
+      sessionId: "command.missing",
+      timeoutMs: 1_000
+    });
     expect(kill.toolCall.status).toBe("failed");
   });
 
@@ -247,12 +260,7 @@ function createRuntime(root: string): ToolRuntime {
   });
 }
 
-async function executeApproved(
-  runtime: ToolRuntime,
-  cwd: string,
-  toolName: string,
-  args: Record<string, unknown>
-) {
+async function executeApproved(runtime: ToolRuntime, cwd: string, toolName: string, args: Record<string, unknown>) {
   return runtime.executeApproved(
     toolCallRecordSchema.parse({
       arguments: args,

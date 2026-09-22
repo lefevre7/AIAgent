@@ -134,7 +134,11 @@ export async function probeAudioDurationMs(filePath: string): Promise<number | u
   }
 }
 
-export async function runProcess(command: string, args: string[], options: RunProcessOptions = {}): Promise<RunProcessResult> {
+export async function runProcess(
+  command: string,
+  args: string[],
+  options: RunProcessOptions = {}
+): Promise<RunProcessResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,

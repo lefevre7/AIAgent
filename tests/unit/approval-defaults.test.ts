@@ -66,7 +66,18 @@ describe("default approval rules", () => {
   });
 
   test("allow common read-only inspection commands, including ones with flags", () => {
-    for (const command of ["pwd", "ls -la", "ls", "find . -name '*.ts'", "rg approval src", "cat README.md", "git status --short", "git diff HEAD~1", "head -n 20 file", "wc -l file"]) {
+    for (const command of [
+      "pwd",
+      "ls -la",
+      "ls",
+      "find . -name '*.ts'",
+      "rg approval src",
+      "cat README.md",
+      "git status --short",
+      "git diff HEAD~1",
+      "head -n 20 file",
+      "wc -l file"
+    ]) {
       const match = evaluateCommand(command);
       expect(match.mode, command).toBe("allow");
       expect(match.rule?.id, command).toBe("rule.command.read.allow");
@@ -74,7 +85,15 @@ describe("default approval rules", () => {
   });
 
   test("ask for build, test, and package-manager commands", () => {
-    for (const command of ["npm test", "pnpm install", "node script.js", "python3 -m pytest", "cargo build", "./gradlew test", "gradle build"]) {
+    for (const command of [
+      "npm test",
+      "pnpm install",
+      "node script.js",
+      "python3 -m pytest",
+      "cargo build",
+      "./gradlew test",
+      "gradle build"
+    ]) {
       const match = evaluateCommand(command);
       expect(match.mode, command).toBe("ask");
       expect(match.rule?.id, command).toBe("rule.command.build.ask");

@@ -23,14 +23,40 @@ vi.mock("@/server/control-plane/service", () => {
     lastCompaction: null,
     lexical: { enabled: false, ready: false },
     modes: ["lexical"],
-    sources: { chatSessionRoot: "/tmp/chat", extraPaths: [], includeSessionSummaries: true, userGlobalRoot: "/tmp/user", workspaceRoot: "/tmp/ws" }
+    sources: {
+      chatSessionRoot: "/tmp/chat",
+      extraPaths: [],
+      includeSessionSummaries: true,
+      userGlobalRoot: "/tmp/user",
+      workspaceRoot: "/tmp/ws"
+    }
   };
   const settings = {
     browser: { artifactRoot: "/tmp/b", headless: true, viewport: { height: 900, width: 1440 } },
     channels: [],
-    gateway: { authRequired: false, hostname: "127.0.0.1", port: 3000, requestTimeoutMs: 120000, websocketPath: "/api/gateway/ws" },
-    memory: { embeddingModel: null, embeddingProvider: "ollama", embeddingsEnabled: false, retrievalLimit: 8, stateRoot: "/tmp/s", userGlobalRoot: "/tmp/u", workspaceRoot: "/tmp/ws" },
-    runtime: { defaultModel: "m", defaultProvider: "lm_studio", logLevel: "info", statusUpdates: true, verboseEvents: false },
+    gateway: {
+      authRequired: false,
+      hostname: "127.0.0.1",
+      port: 3000,
+      requestTimeoutMs: 120000,
+      websocketPath: "/api/gateway/ws"
+    },
+    memory: {
+      embeddingModel: null,
+      embeddingProvider: "ollama",
+      embeddingsEnabled: false,
+      retrievalLimit: 8,
+      stateRoot: "/tmp/s",
+      userGlobalRoot: "/tmp/u",
+      workspaceRoot: "/tmp/ws"
+    },
+    runtime: {
+      defaultModel: "m",
+      defaultProvider: "lm_studio",
+      logLevel: "info",
+      statusUpdates: true,
+      verboseEvents: false
+    },
     tunnel: { enabled: false, hostname: null, provider: "none", publicBaseUrl: null }
   };
   return {
@@ -40,12 +66,25 @@ vi.mock("@/server/control-plane/service", () => {
           approvals: [],
           bootstrap: { directories: [], name: "AIAgent", providers: [], surfaces: [] },
           channels: { deliveries: [], routes: [], statuses: [], webhookEndpoints: [] },
-          gateway: { authMode: "loopback_only", health: { ok: true, phase: "bootstrap", surface: "gateway" }, status: { ok: true, status: "ready" }, websocketPath: "/api/gateway/ws" },
+          gateway: {
+            authMode: "loopback_only",
+            health: { ok: true, phase: "bootstrap", surface: "gateway" },
+            status: { ok: true, status: "ready" },
+            websocketPath: "/api/gateway/ws"
+          },
           logs: { events: [] },
           memory: { hits: [], query: query.memoryText ?? null, sessionId: null, status: baseStatus },
           sessions: { items: [], selected: null },
           settings,
-          tunnel: { enabled: false, exposures: [], metadata: {}, provider: "none", publicBaseUrl: undefined, ready: false, warnings: [] }
+          tunnel: {
+            enabled: false,
+            exposures: [],
+            metadata: {},
+            provider: "none",
+            publicBaseUrl: undefined,
+            ready: false,
+            warnings: []
+          }
         };
       }
     }

@@ -7,11 +7,7 @@ import type {
   ProviderHealth
 } from "@/core/contracts";
 import { languageModelResponseSchema } from "@/core/contracts";
-import {
-  fetchJson,
-  fetchStream,
-  normalizeUnknownProviderError
-} from "@/core/lm/http";
+import { fetchJson, fetchStream, normalizeUnknownProviderError } from "@/core/lm/http";
 import {
   buildRejectedToolCallMetadata,
   buildStreamAbortError,
@@ -67,9 +63,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     this.providerId = options.providerId ?? "ollama";
   }
 
-  async generate(
-    request: LanguageModelRequest
-  ): Promise<LanguageModelResponse> {
+  async generate(request: LanguageModelRequest): Promise<LanguageModelResponse> {
     const response = await fetchJson<OllamaChatResponse>({
       body: await this.buildPayload(request, false),
       fetchImpl: this.options.fetchImpl,
@@ -138,11 +132,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
       });
       const info = response.data.model_info ?? {};
       for (const [key, value] of Object.entries(info)) {
-        if (
-          key.endsWith(".context_length") &&
-          typeof value === "number" &&
-          value > 0
-        ) {
+        if (key.endsWith(".context_length") && typeof value === "number" && value > 0) {
           return value;
         }
       }
@@ -152,9 +142,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     }
   }
 
-  async *stream(
-    request: LanguageModelRequest
-  ): AsyncIterable<LanguageModelStreamEvent> {
+  async *stream(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent> {
     const guard = createStreamGuard({
       firstTokenTimeoutMs: this.options.streamFirstTokenTimeoutMs,
       idleTimeoutMs: this.options.streamIdleTimeoutMs,
@@ -227,10 +215,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
 
           const parsed = JSON.parse(trimmed) as OllamaChatResponse;
           modelId = parsed.model ?? modelId;
-          if (
-            typeof parsed.message?.thinking === "string" &&
-            parsed.message.thinking.length > 0
-          ) {
+          if (typeof parsed.message?.thinking === "string" && parsed.message.thinking.length > 0) {
             guard.observe(parsed.message.thinking);
             yield {
               delta: parsed.message.thinking,
@@ -254,9 +239,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
           usage = {
             inputTokens: parsed.prompt_eval_count ?? usage.inputTokens,
             outputTokens: parsed.eval_count ?? usage.outputTokens,
-            totalTokens:
-              (parsed.prompt_eval_count ?? usage.inputTokens) +
-              (parsed.eval_count ?? usage.outputTokens)
+            totalTokens: (parsed.prompt_eval_count ?? usage.inputTokens) + (parsed.eval_count ?? usage.outputTokens)
           };
         }
       }
@@ -292,9 +275,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
         content: resolved.content,
         metadata: {
           ...buildRejectedToolCallMetadata(resolved.rejected),
-          ...(resolved.recoveredFromText
-            ? { toolCallsRecoveredFromText: true }
-            : {})
+          ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
         },
         modelId,
         request,
@@ -305,10 +286,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     };
   }
 
-  private buildResponse(
-    request: LanguageModelRequest,
-    response: OllamaChatResponse
-  ): LanguageModelResponse {
+  private buildResponse(request: LanguageModelRequest, response: OllamaChatResponse): LanguageModelResponse {
     const resolved = resolveToolCallProposals({
       content: response.message?.content ?? "",
       definitions: request.availableTools,
@@ -319,22 +297,16 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
       content: resolved.content,
       metadata: {
         ...buildRejectedToolCallMetadata(resolved.rejected),
-        ...(resolved.recoveredFromText
-          ? { toolCallsRecoveredFromText: true }
-          : {})
+        ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
       },
       modelId: response.model ?? request.modelId,
       request,
-      stopReason:
-        resolved.proposals.length > 0
-          ? "tool_calls"
-          : (response.done_reason ?? "end_turn"),
+      stopReason: resolved.proposals.length > 0 ? "tool_calls" : (response.done_reason ?? "end_turn"),
       toolCalls: resolved.proposals,
       usage: {
         inputTokens: response.prompt_eval_count ?? 0,
         outputTokens: response.eval_count ?? 0,
-        totalTokens:
-          (response.prompt_eval_count ?? 0) + (response.eval_count ?? 0)
+        totalTokens: (response.prompt_eval_count ?? 0) + (response.eval_count ?? 0)
       }
     });
   }
@@ -375,14 +347,8 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     });
   }
 
-  private async buildPayload(
-    request: LanguageModelRequest,
-    stream: boolean
-  ): Promise<Record<string, unknown>> {
-    const tools =
-      request.settings.toolChoice === "none"
-        ? []
-        : serializeToolDefinitions(request.availableTools);
+  private async buildPayload(request: LanguageModelRequest, stream: boolean): Promise<Record<string, unknown>> {
+    const tools = request.settings.toolChoice === "none" ? [] : serializeToolDefinitions(request.availableTools);
     return compactRecord({
       format: serializeOllamaResponseFormat(request.responseFormat),
       keep_alive: this.options.keepAlive,
@@ -395,10 +361,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
         num_predict: request.settings.maxOutputTokens,
         presence_penalty: request.settings.presencePenalty,
         repeat_penalty: request.settings.repetitionPenalty,
-        stop:
-          request.settings.stopSequences.length > 0
-            ? request.settings.stopSequences
-            : undefined,
+        stop: request.settings.stopSequences.length > 0 ? request.settings.stopSequences : undefined,
         temperature: request.settings.temperature,
         top_k: request.settings.topK,
         top_p: request.settings.topP

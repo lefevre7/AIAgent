@@ -205,14 +205,20 @@ describe("PlaywrightBrowserAutomationService", () => {
     const service = await createService();
     await service.openPage({ sessionId: SESSION, url: "https://example.com" });
 
-    await expect(service.click({ doubleClick: true, selector: "#go", sessionId: SESSION })).resolves.toMatchObject({ id: expect.any(String) });
+    await expect(service.click({ doubleClick: true, selector: "#go", sessionId: SESSION })).resolves.toMatchObject({
+      id: expect.any(String)
+    });
     await expect(service.click({ ref: "e1", sessionId: SESSION })).resolves.toBeTruthy();
     await expect(service.fill({ selector: "#in", sessionId: SESSION, submit: true, text: "hi" })).resolves.toBeTruthy();
     await expect(service.type({ delayMs: 1, selector: "#in", sessionId: SESSION, text: "yo" })).resolves.toBeTruthy();
-    await expect(service.selectOptions({ selector: "#sel", sessionId: SESSION, values: ["a", "a", "b"] })).resolves.toBeTruthy();
+    await expect(
+      service.selectOptions({ selector: "#sel", sessionId: SESSION, values: ["a", "a", "b"] })
+    ).resolves.toBeTruthy();
     await expect(service.press({ key: "Enter", selector: "#go", sessionId: SESSION })).resolves.toBeTruthy();
     await expect(service.press({ key: "Escape", sessionId: SESSION })).resolves.toBeTruthy();
-    await expect(service.upload({ paths: ["/tmp/a.txt"], selector: "#file", sessionId: SESSION })).resolves.toBeTruthy();
+    await expect(
+      service.upload({ paths: ["/tmp/a.txt"], selector: "#file", sessionId: SESSION })
+    ).resolves.toBeTruthy();
 
     await expect(service.waitFor({ sessionId: SESSION, timeMs: 1 })).resolves.toBeTruthy();
     await expect(service.waitFor({ sessionId: SESSION, url: "https://example.com/**" })).resolves.toBeTruthy();

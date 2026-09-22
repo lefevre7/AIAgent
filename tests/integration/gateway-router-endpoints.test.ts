@@ -4,11 +4,19 @@ import httpMocks from "node-mocks-http";
 import { describe, expect, test } from "vitest";
 
 import { gatewayResponseSchema } from "@/core/contracts";
-import { createGatewayHealthSnapshot, createGatewayRouter, handleGatewayRequest, type GatewayRuntimeLike } from "@/gateway";
+import {
+  createGatewayHealthSnapshot,
+  createGatewayRouter,
+  handleGatewayRequest,
+  type GatewayRuntimeLike
+} from "@/gateway";
 
 type Captured = { approvalsQuery?: unknown; eventsQuery?: unknown; snapshotId?: string; approvalId?: string };
 
-function buildRuntime(overrides: Partial<GatewayRuntimeLike> = {}): { runtime: GatewayRuntimeLike; captured: Captured } {
+function buildRuntime(overrides: Partial<GatewayRuntimeLike> = {}): {
+  runtime: GatewayRuntimeLike;
+  captured: Captured;
+} {
   const captured: Captured = {};
   const runtime: GatewayRuntimeLike = {
     getApprovalRecord: async (requestId: string) => {
