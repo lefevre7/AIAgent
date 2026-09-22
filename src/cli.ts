@@ -11,7 +11,10 @@ import {
   createBootstrapInfo,
   createVoiceServiceFromConfig,
   loadAIAgentConfig,
+  APP_CONFIG_FILE_NAME,
+  DEFAULT_LM_STUDIO_MODEL,
   type ArtifactReference,
+  type LoadedAIAgentConfig,
   type SessionRecord,
   type StructuredError,
   type VoiceCaptureRecord,
@@ -232,6 +235,10 @@ async function runChatCli(
       return 1;
     }
 
+    // Resolved once, not per turn: it only changes if the config files do, and
+    // a failing turn is the worst moment to start reading the filesystem.
+    const modelProvenance = await resolveChatModelProvenance(input.cwd);
+
     const created = await sdk.sessions.create({
       cwd: input.cwd,
       goal: input.goal,
@@ -335,7 +342,8 @@ async function runChatCli(
           line,
           streams,
           nextLine,
-          approvalState
+          approvalState,
+          modelProvenance
         );
       }
     } finally {
@@ -379,6 +387,72 @@ async function probeModelHealth(sdk: AIAgentSdk): Promise<{
     providerId: health.providerId,
     status: health.status
   };
+}
+
+/**
+ * Explains which chat model was requested and where that id came from.
+ *
+ * The startup gate proves the *provider* is reachable, which is not the same as
+ * the resolved *model* being loadable — and the id is the part most likely to be
+ * wrong, because config is per-directory. Running `aia` outside a configured
+ * workspace silently falls back to the built-in default, so the provider's error
+ * names a model the operator never chose and looks like their config was
+ * ignored. Observed exactly that: `aia` outside the repo asked LM Studio for the
+ * default 26B model while the workspace config specified a different one.
+ */
+export function formatChatModelProvenance(loaded: LoadedAIAgentConfig): string {
+  const model = loaded.resolvedConfig.runtime.defaultModel;
+  const workspace = loaded.sources.config.workspace;
+  const globals = loaded.sources.config.global;
+
+  const lines = [`Chat model requested: "${model}".`];
+  // Only claim "default" when no config file was read at all. Comparing the
+  // value against DEFAULT_LM_STUDIO_MODEL is not provenance: the shipped
+  // default can legitimately be the same id an operator configured, and
+  // telling them their own setting was ignored is worse than saying nothing.
+  if (!workspace && globals.length === 0 && model === DEFAULT_LM_STUDIO_MODEL) {
+    lines.push(
+      "That is the built-in default — no config file was found, so this is probably not the model you meant."
+    );
+  }
+  lines.push(
+    workspace
+      ? `  workspace config:   ${workspace}`
+      : `  workspace config:   none (no ${APP_CONFIG_FILE_NAME} found from ${loaded.paths.workspaceRoot} upward)`
+  );
+  lines.push(
+    globals.length > 0 ? `  user-global config: ${globals.join(", ")}` : "  user-global config: none"
+  );
+  lines.push(
+    `Set runtime.defaultModel and providers.lmStudio.model in whichever should apply; the user-global file applies in every directory.`
+  );
+
+  return lines.join("\n");
+}
+
+/**
+ * Loads config purely to describe where the chat model id came from.
+ *
+ * Returns null on any failure: this exists to make an error clearer, so it must
+ * never be able to turn one error into two.
+ */
+async function resolveChatModelProvenance(cwd: string): Promise<string | undefined> {
+  try {
+    return formatChatModelProvenance(await loadAIAgentConfig({ cwd }));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when a provider error is about the model rather than the transport.
+ *
+ * Deliberately a loose text match: every provider words this differently and
+ * none of them expose a machine-readable "bad model" code, so the choice is
+ * between a substring check and showing the hint on unrelated failures.
+ */
+export function mentionsChatModel(message: string): boolean {
+  return /\bmodel\b/iu.test(message);
 }
 
 function formatModelUnavailable(model: {
@@ -504,7 +578,8 @@ async function runChatTurn(
   text: string,
   streams: CliStreams,
   nextLine: () => Promise<string | null>,
-  approvalState: CliApprovalState = createCliApprovalState()
+  approvalState: CliApprovalState = createCliApprovalState(),
+  modelProvenance?: string
 ): Promise<void> {
   const DIM = "[2m";
   const RESET = "[0m";
@@ -602,6 +677,12 @@ async function runChatTurn(
     const errorMessage = snapshot.session.lastError?.message;
     if (errorMessage) {
       writeLine(streams.stderr, `Error: ${errorMessage}`);
+      // A provider error that names a model is almost always a config-location
+      // problem rather than a provider problem, and the provider cannot know
+      // that. Say which id we asked for and which files chose it.
+      if (modelProvenance && mentionsChatModel(errorMessage)) {
+        writeLine(streams.stderr, `${DIM}${modelProvenance}${RESET}`);
+      }
     } else {
       // A turn that ends for any reason other than "the agent finished" used
       // to print nothing at all, which is how a paused or blocked run read as

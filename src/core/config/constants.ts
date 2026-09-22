@@ -16,7 +16,13 @@ export const DEFAULT_USER_STATE_DIRECTORY = path.join(os.homedir(), USER_STATE_D
 export const DEFAULT_GLOBAL_CONFIG_PATH = path.join(DEFAULT_USER_STATE_DIRECTORY, APP_CONFIG_FILE_NAME);
 export const DEFAULT_GLOBAL_APPROVALS_PATH = path.join(DEFAULT_USER_STATE_DIRECTORY, APPROVALS_CONFIG_FILE_NAME);
 export const DEFAULT_LM_STUDIO_BASE_URL = "http://localhost:1234/v1";
-export const DEFAULT_LM_STUDIO_MODEL = "google/gemma-4-26b-a4b-qat";
+// Shipped default chat model. Kept to something that loads on a typical dev
+// machine: the previous default was a 26B that LM Studio refuses to load
+// alongside another large model ("insufficient system resources"), which read
+// as "my config was ignored" whenever `aia` ran outside a configured workspace
+// and fell back to this value. Override per workspace or user-global with
+// runtime.defaultModel + providers.lmStudio.model.
+export const DEFAULT_LM_STUDIO_MODEL = "qwen3.8-27b-mlx";
 export const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
 export const DEFAULT_GATEWAY_HOSTNAME = DEFAULT_HOSTNAME;
 export const DEFAULT_GATEWAY_PORT = DEFAULT_PORT;

@@ -16,7 +16,7 @@ describe("config defaults and env overrides", () => {
     expect(appConfigSchema.parse(config).memory.userGlobalRoot).toBe(
       "/tmp/test-home/.aia/memory"
     );
-    expect(config.providers.lmStudio.model).toBe("google/gemma-4-26b-a4b-qat");
+    expect(config.providers.lmStudio.model).toBe("qwen3.8-27b-mlx");
     expect(config.browser.artifactRoot).toBe("./.aia/browser");
     expect(config.browser.headless).toBe(true);
     expect(config.externalAgents.enabled).toBe(true);
