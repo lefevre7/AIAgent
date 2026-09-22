@@ -474,7 +474,7 @@ All earlier open questions are now closed. `R<n>` numbers are referenced from th
 - **R1 — PTY for all.** The earlier 1A (Claude `--input-format stream-json`) is **withdrawn**. A protocol pipe is not a terminal a human can attach to, and the shared-window requirement is non-negotiable. Every interactive external agent runs its native TUI in a PTY. No per-vendor protocol adapters.
 - **R2 — We host the PTY ourselves; no tmux.** `tmux` is not installed on the target machine (verified). AIAgent owns the `node-pty` process. Screen state for the model is reconstructed with **`@xterm/headless`** (v6.0.0 available), which maintains a real screen buffer and applies the ANSI escapes, so `read` returns the _rendered screen_ rather than raw bytes. A new `aia attach <sessionId>` CLI subcommand relays raw stdin/stdout over the existing gateway WebSocket, reusing gateway auth — which also makes the terminal reachable over the tunnel surface, something tmux could never do.
 - **R3 — Window opens via `osascript`.** `tell application "Terminal" to do script "aia attach <sessionId>"`. `osascript` verified present at `/usr/bin/osascript`.
-- **R4 — Never auto-open.** Matches the repo's existing "do not auto-open the browser" posture. The window opens only on an explicit `external_agent { action: "attach" }` call or the CLI `/attach <id>` command. `start` prints the attach command instead.
+- **R4 — Never auto-open.** ~~Matches the repo's existing "do not auto-open the browser" posture. The window opens only on an explicit `external_agent { action: "attach" }` call or the CLI `/attach <id>` command. `start` prints the attach command instead.~~ **Superseded 2026-09-22 (see the addendum at the end of this file):** `start` now opens the window by default, because a terminal a human has to be told to open is not a shared terminal. Gated by `externalAgents.interactive.autoAttachOnStart`.
 - **R5 — Turn-boundary detection combines idle + ready-pattern + screen stability.** A turn is complete when the `@xterm/headless` screen buffer is unchanged across two samples `stabilityMs` apart **and** no bytes arrived for `idleMs`, **or** a per-agent `readyPattern` regex matches the rendered screen. Screen-diff stability is what survives spinners and progress animations, which byte-idle alone does not.
 - **R6 — Soft write lock.** The service tracks the last human keystroke timestamp (trivially available because human input arrives through the `aia attach` WebSocket while agent input arrives through the tool). A tool `send` is refused with a structured error while a human typed within `humanLockMs` (default 10s).
 - **R7 — Paragraph summary via a real model call** through the existing `LanguageModelRuntime`, so the model driving AIAgent gets prose rather than a screen dump. Tests use the scripted adapter (`ScriptedLanguageModelAdapter` in `examples/shared.ts`).
@@ -801,3 +801,75 @@ WhatsApp adapter's media and attachment paths, `aia trust`, `/mcp`, `/agents`, a
   extracted (the part this pass had to modify anyway); the rest is its own commit.
 - Prettier drift was handled as a separate mechanical commit; `prettier --check` is now
   in the gate, so it stays clean.
+
+## Addendum (2026-09-22b): stale prompt input, and the shared terminal actually opening
+
+Two operator-reported defects. Both were about the product not doing what the operator told it to.
+
+### "Sometimes when I press `a` for always, it thinks I've rejected"
+
+The approval parser was correct — `a` maps to approve. The bug was in _which line it read_.
+
+`createStdinLineSource` buffers from the moment it is created, so anything typed while the agent was
+working is already queued when an approval prompt appears. The most common case is an impatient Enter.
+`nextLine()` handed that stale line back as the answer, it was neither `y` nor `a`, and the request was
+**denied** — then the operator's real keystroke landed on the next prompt or went to the model as a chat
+message. Hence "sometimes": it only happens when there is stale input.
+
+The REPL had always skipped blank lines (`if (line.length === 0) continue`); the approval prompt did not,
+and treated blank as "no" by the documented `[y/N/a/e]` convention. So the two readers of the same stream
+disagreed about what an empty line meant.
+
+Fix: **an answer must be typed after the question was asked.** `CliLineReader` replaces the bare
+`nextLine` callback and exposes `discardBuffered()`; `createOperatorPrompt` drains, writes the question,
+then reads. Every operator question goes through it — approvals, the "what should it do instead?"
+follow-up, and `ask_user_question`.
+
+Rules worth keeping:
+
+- **Draining is TTY-only.** When stdin is piped, queued lines are a script's deliberately pre-supplied
+  answers and discarding them would break every scripted run. `createStdinLineReader` takes the
+  `interactive` flag from `process.stdin.isTTY`.
+- **The conversation prompt deliberately does not drain.** A line typed while the agent worked _is_ the
+  operator's next message. Only questions discard stale input, which is why the distinction lives in the
+  reader's API rather than in a flag at one call site.
+- A lazy async iterable (the old test source) cannot reproduce this — nothing is ever buffered ahead of
+  the read. `createBufferedTestReader` in `cli-interactive.test.ts` models a terminal honestly: typed
+  lines accumulate, and a drain drops what has not been consumed.
+
+### The interactive session's terminal window
+
+**R4 is reversed, at the operator's request.** It said windows must never open by themselves ("a
+background agent that spawns windows is hostile"). The counter-argument is stronger: the entire point of
+an interactive session is that a human and the agent share one terminal, and that cannot happen if
+someone has to notice a printed command first. `start` now opens the window, gated by
+`externalAgents.interactive.autoAttachOnStart` (default **true**) so it remains one config edit to undo.
+
+Starting a session is still approval-gated (decision 32), so a window only ever appears for a session the
+operator approved — which is why the window itself stays ungated.
+
+**The part that made this more than a one-line change.** `aia attach` is a client; the PTY lives in
+whichever process hosts the gateway. Only `src/server/start.ts` attached the gateway WebSocket, so a
+window opened from a bare `aia` REPL died on `ECONNREFUSED` before rendering anything — the feature was
+useless exactly where the agent is usually driven from. Auto-opening a window onto a dead socket would
+have been worse than printing a command.
+
+`src/gateway/attach-endpoint.ts` therefore lets the interactive CLI serve the gateway itself:
+
+- **Loopback, ephemeral port**, so a dev server already holding 3000 never blocks it.
+- The URL is published to `.aia/attach-endpoint.json`; `aia attach` prefers it, falls back to the
+  configured gateway, and `--url` always wins.
+- The record carries the CLI's pid, and `readAttachEndpoint` treats a record whose process is gone as
+  absent — a crashed CLI must not send a window to a dead listener.
+- Failing to listen is **not fatal**: the REPL runs normally, only the shared window is unavailable.
+  Likewise a window that will not open never fails the `start`; the result carries `attachError`.
+- Security note: this surface is unauthenticated unless `gateway.auth.token` is set, exactly like the dev
+  server's, and any local process can reach it. Same trust boundary as before — but it now exists
+  whenever `aia` runs interactively, not only when a server is up.
+
+Verified live end to end: the REPL publishes an endpoint, `aia attach` reaches it and gets a real runtime
+answer instead of a connection error, the record is cleaned up on exit, and `openTerminalWindow` opens a
+real window on this machine.
+
+Docs updated: `docs/EXTERNAL_AGENTS.md` ("Sharing the terminal with a human", the new "Where the window
+connects" and "Auto-attach" sections), `docs/CONFIG.md`, `README.md`.

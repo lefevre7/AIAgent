@@ -65,16 +65,50 @@ so the model knows whether it got a real answer or just ran out of patience.
 
 ## Sharing the terminal with a human
 
-An interactive session is not private to the agent. `external_agent { action: "attach" }` — or `/attach <id>`
-in the CLI — opens a **real terminal window on your desktop** running `aia attach <sessionId>`.
+An interactive session is not private to the agent. **Starting one opens a real terminal window on your
+desktop**, running `aia attach <sessionId>`, so you and the agent are driving the same PTY from the first
+turn. `external_agent { action: "attach" }` and the CLI's `/attach <id>` open one on demand as well —
+useful after you have closed a window, or for a session started with auto-attach off.
 
 That window is a thin relay over the existing gateway WebSocket: your keystrokes become
 `external_agent.session.write` requests, and the session's output arrives as `tool.output.delta` events.
 Because it rides the gateway, attaching inherits gateway auth and works over the tunnel surface.
 Press **Ctrl-]** to detach without killing the session.
 
-**Windows never open by themselves.** A window appears only when you explicitly ask, matching the same
-posture as "do not auto-open the browser". `start` just prints the attach command.
+### Where the window connects (and why the CLI now listens)
+
+`aia attach` is a _client_: the PTY lives in whichever process hosts the gateway, and the window dials in.
+That used to mean windows only worked while `npm run dev` / `npm start` was running, because those were
+the only places that attached the gateway WebSocket — a window opened from a bare `aia` REPL died on
+`ECONNREFUSED` before showing anything.
+
+The interactive CLI therefore serves the gateway itself, on **loopback with an ephemeral port**, and
+publishes the URL to `.aia/attach-endpoint.json`. `aia attach` prefers that published endpoint, falls back
+to the configured `gateway` host/port, and an explicit `--url` always wins.
+
+- The ephemeral port means a running dev server on 3000 never blocks it.
+- The record carries the CLI's pid; a record whose process is gone is ignored, so a crashed CLI cannot
+  send a window to a dead listener.
+- The listener is removed on exit.
+- It is **loopback-only**, and — exactly like the dev server — unauthenticated unless `gateway.auth.token`
+  is set. Any process on the machine can reach it. That is the same trust boundary the dev server has
+  always had, but it now exists whenever you run `aia` interactively.
+- If the listener cannot start, the REPL runs normally; only the shared window is unavailable.
+
+### Auto-attach
+
+`externalAgents.interactive.autoAttachOnStart` (**default true**) controls whether `start` opens the
+window. Set it to `false` to keep sessions headless; `start` then prints the attach command as before.
+
+Opening a window is **never allowed to fail the start**. On a host with no window server, or off macOS,
+the session still starts and the result carries `attachError` alongside the normal session record — the
+window is a convenience, not the session.
+
+> **This reverses an earlier decision.** R4 in `AGENTS.md` said windows must never open by themselves
+> ("a background agent that spawns windows is hostile"). The operator reversed it: the point of an
+> interactive session is that a human and the agent share one terminal, and that cannot happen if someone
+> has to notice a printed command first. Starting a session is still approval-gated (decision 32), so a
+> window only ever appears for a session you approved.
 
 Two writers need a rule. AIAgent uses a **soft write lock**: after a human keystroke, agent `send` calls
 are refused for `humanLockMs` (default 10s) with a structured error telling the agent to wait. Human
@@ -197,6 +231,7 @@ signed out — run `claude` and `/login`. Nothing in AIAgent can paper over that
       "sessionWarningThreshold": 4, // warn (do not block) past this many live sessions
       "stabilityMs": 1000,
       "terminalApp": "Terminal", // macOS app used by `attach`
+      "autoAttachOnStart": true, // open the shared window as soon as a session starts
       "turnTimeoutMs": 600000
     },
     "agents": {

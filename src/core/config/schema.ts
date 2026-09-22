@@ -402,6 +402,13 @@ const externalAgentsConfigSchema = z
     /** Defaults for every interactive session; each agent may override them. */
     interactive: z
       .object({
+        /**
+         * Open a shared terminal window as soon as an interactive session
+         * starts, so the operator and the agent drive the same PTY without
+         * anyone having to run `attach` first. Set false to keep sessions
+         * headless (the attach command is still printed).
+         */
+        autoAttachOnStart: z.boolean(),
         cols: z.number().int().min(20).max(500),
         /** Milliseconds after a human keystroke during which agent writes are refused. */
         humanLockMs: z.number().int().min(0).max(600_000),
@@ -795,6 +802,7 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
       },
       enabled: true,
       interactive: {
+        autoAttachOnStart: true,
         cols: 120,
         humanLockMs: 10_000,
         idleMs: 2_000,

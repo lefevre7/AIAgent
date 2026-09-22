@@ -25,6 +25,7 @@ import {
 } from "@/core";
 import { createAIAgentSdkFromConfig, type AIAgentSdk, type AIAgentSessionHandle } from "@/sdk";
 import { attachToExternalAgentSession } from "@/gateway/attach-client";
+import { readAttachEndpoint, serveAttachEndpoint, type ServedAttachEndpoint } from "@/gateway/attach-endpoint";
 import type {
   GatewayApprovalRecord,
   GatewayEvent,
@@ -45,6 +46,25 @@ type CliStreams = {
   stdout: CliStream;
 };
 
+/**
+ * Interactive input, with an explicit distinction between "the next line of
+ * the conversation" and "a line typed in answer to a question we just asked".
+ *
+ * The distinction exists because the stdin reader buffers from the moment it
+ * is created, so anything typed while the agent was working — most commonly an
+ * impatient Enter — is already queued when an approval prompt appears.
+ * Consuming it as the answer silently denied the request, and the operator's
+ * real keystroke then landed on the next prompt. An answer must be typed
+ * *after* the question was asked.
+ */
+export type CliLineReader = {
+  /** Releases the underlying input (e.g. the readline interface). */
+  close?(): void | Promise<void>;
+  /** Drops input that arrived before now. No-op unless stdin is a terminal. */
+  discardBuffered(): void;
+  next(): Promise<string | null>;
+};
+
 type CliDependencies = {
   // Overrides the terminal relay used by `aia attach`, so tests never need a
   // real gateway socket.
@@ -58,7 +78,10 @@ type CliDependencies = {
   createVoiceContext?: () => Promise<VoiceCliContext>;
   // Overrides the interactive line source. When omitted, a readline interface
   // over process.stdin is used (only when stdin is a TTY).
-  interactiveInput?: AsyncIterable<string>;
+  interactiveInput?: AsyncIterable<string> | CliLineReader;
+  // Overrides the loopback gateway listener the REPL publishes for `aia attach`.
+  // Tests substitute a recorder so they never bind a real port.
+  serveAttachEndpoint?: (sdk: AIAgentSdk) => Promise<ServedAttachEndpoint | null>;
 };
 
 const CHAT_PROMPT = "› ";
@@ -188,7 +211,7 @@ export async function runCli(
   // No one-shot prompt: always enter the interactive REPL. On a TTY this is a
   // live session; when stdin is piped it reads lines until EOF. The loop ends on
   // /exit, /quit, or end-of-input.
-  const lineSource = deps.interactiveInput ?? createStdinLineSource();
+  const lineSource = deps.interactiveInput ? toLineReader(deps.interactiveInput) : createStdinLineReader();
   return runChatCli(
     {
       cwd: values.cwd ? path.resolve(values.cwd) : process.cwd(),
@@ -217,7 +240,7 @@ async function runChatCli(
     title: string;
   },
   streams: CliStreams,
-  lineSource: AsyncIterable<string>,
+  lineSource: CliLineReader,
   deps: CliDependencies
 ): Promise<number> {
   let sdk: AIAgentSdk;
@@ -240,6 +263,24 @@ async function runChatCli(
     // Resolved once, not per turn: it only changes if the config files do, and
     // a failing turn is the worst moment to start reading the filesystem.
     const modelProvenance = await resolveChatModelProvenance(input.cwd);
+    const loadedConfig = await loadAIAgentConfig({ cwd: input.cwd });
+
+    // Serve the gateway on loopback so a terminal window opened for an
+    // interactive external-agent session has something to attach to. Only the
+    // dev/prod server used to listen, so a window opened from here died on
+    // ECONNREFUSED. A failure to listen is not fatal: the REPL is still
+    // perfectly usable without a shared terminal.
+    const attachEndpoint = deps.serveAttachEndpoint
+      ? await deps.serveAttachEndpoint(sdk)
+      : await serveAttachEndpoint({
+          requestTimeoutMs: loadedConfig.resolvedConfig.gateway.requestTimeoutMs,
+          runtime: sdk.controlPlane,
+          stateRoot: loadedConfig.resolvedConfig.memory.stateRoot,
+          ...(typeof loadedConfig.resolvedConfig.gateway.auth.token === "string"
+            ? { token: loadedConfig.resolvedConfig.gateway.auth.token }
+            : {}),
+          websocketPath: loadedConfig.resolvedConfig.gateway.websocketPath
+        });
 
     const created = await sdk.sessions.create({
       cwd: input.cwd,
@@ -253,17 +294,13 @@ async function runChatCli(
     writeLine(streams.stdout, formatChatWelcome(created.session.id));
     const approvalState = createCliApprovalState();
 
-    // Manual iteration so approval prompts can pull the next line on demand.
-    const iterator = lineSource[Symbol.asyncIterator]();
-    const nextLine = async (): Promise<string | null> => {
-      const result = await iterator.next();
-      return result.done ? null : result.value;
-    };
-
     try {
       for (;;) {
         streams.stdout.write(CHAT_PROMPT);
-        const raw = await nextLine();
+        // The conversation prompt deliberately does *not* drain: lines typed
+        // while the agent worked are the operator's next message, queued on
+        // purpose. Only question prompts discard stale input.
+        const raw = await lineSource.next();
         if (raw === null) {
           return 0;
         }
@@ -324,10 +361,11 @@ async function runChatCli(
           continue;
         }
 
-        await runChatTurn(created.handle, line, streams, nextLine, approvalState, modelProvenance);
+        await runChatTurn(created.handle, line, streams, lineSource, approvalState, modelProvenance);
       }
     } finally {
-      await iterator.return?.();
+      await lineSource.close?.();
+      await attachEndpoint?.close().catch(() => undefined);
     }
   } catch (error) {
     writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
@@ -542,7 +580,7 @@ async function runChatTurn(
   handle: AIAgentSessionHandle,
   text: string,
   streams: CliStreams,
-  nextLine: () => Promise<string | null>,
+  reader: CliLineReader,
   approvalState: CliApprovalState = createCliApprovalState(),
   modelProvenance?: string
 ): Promise<void> {
@@ -624,7 +662,7 @@ async function runChatTurn(
       streams.stdout.write("\n");
     }
 
-    finalRun = (await resolvePendingApprovals(handle, streams, nextLine, approvalState)) ?? finalRun;
+    finalRun = (await resolvePendingApprovals(handle, streams, reader, approvalState)) ?? finalRun;
 
     const snapshot = (await handle.snapshot()).snapshot;
 
@@ -673,9 +711,10 @@ async function runChatTurn(
 async function resolvePendingApprovals(
   handle: AIAgentSessionHandle,
   streams: CliStreams,
-  nextLine: () => Promise<string | null>,
+  reader: CliLineReader,
   state: CliApprovalState
 ): Promise<GatewayRunRecord | null> {
+  const ask = createOperatorPrompt(streams, reader);
   let lastRun: GatewayRunRecord | null = null;
 
   for (let round = 0; round < 50; round += 1) {
@@ -688,7 +727,7 @@ async function resolvePendingApprovals(
       const target = approval.request.target;
 
       if (target.kind === "question") {
-        await answerAgentQuestion(handle, approval, streams, nextLine);
+        await answerAgentQuestion(handle, approval, streams, reader);
         continue;
       }
 
@@ -704,10 +743,14 @@ async function resolvePendingApprovals(
       }
 
       writeLine(streams.stdout, `${ANSI_DIM}  ${approval.request.justification}${ANSI_RESET}`);
-      streams.stdout.write(
-        `Approve ${target.label} → ${target.value}? [y/N/a/e] (y = yes, N = no, a = always for this session, e = no + explain what to do instead) `
-      );
-      const answer = (await nextLine())?.trim().toLowerCase() ?? "";
+      const answer =
+        (
+          await ask(
+            `Approve ${target.label} → ${target.value}? [y/N/a/e] (y = yes, N = no, a = always for this session, e = no + explain what to do instead) `
+          )
+        )
+          ?.trim()
+          .toLowerCase() ?? "";
 
       if (answer === "a" || answer === "always") {
         state.alwaysApprove.add(alwaysKey);
@@ -733,8 +776,7 @@ async function resolvePendingApprovals(
 
       let note = "";
       if (answer === "e" || answer === "explain") {
-        streams.stdout.write("What should the agent do instead? ");
-        note = (await nextLine())?.trim() ?? "";
+        note = (await ask("What should the agent do instead? "))?.trim() ?? "";
       }
       await handle.resolveApproval({
         ...(note.length > 0 ? { comment: note } : {}),
@@ -760,24 +802,47 @@ async function resolvePendingApprovals(
   return lastRun;
 }
 
+/**
+ * Asks the operator something and reads their reply.
+ *
+ * Buffered input is dropped immediately before the question is written: on a
+ * terminal, a human cannot have answered a question they had not yet seen, so
+ * anything already queued is stale — an impatient Enter pressed while the
+ * agent was working, say. Consuming it silently denied approvals the operator
+ * meant to grant, and pushed their real keystroke onto the next prompt.
+ */
+function createOperatorPrompt(
+  streams: CliStreams,
+  reader: CliLineReader
+): (question: string) => Promise<string | null> {
+  return async (question: string) => {
+    reader.discardBuffered();
+    streams.stdout.write(question);
+    return reader.next();
+  };
+}
+
 async function answerAgentQuestion(
   handle: AIAgentSessionHandle,
   approval: GatewayApprovalRecord,
   streams: CliStreams,
-  nextLine: () => Promise<string | null>
+  reader: CliLineReader
 ): Promise<void> {
+  const ask = createOperatorPrompt(streams, reader);
   writeLine(streams.stdout, `The agent asks: ${approval.request.justification}`);
   const options = readQuestionOptions(approval.request.metadata?.options);
   for (const [index, option] of options.entries()) {
     writeLine(streams.stdout, `  ${index + 1}) ${option.label}${option.description ? ` — ${option.description}` : ""}`);
   }
 
-  streams.stdout.write(
-    options.length > 0
-      ? "Your answer (number, or type your own answer; Enter to skip): "
-      : "Your answer (Enter to skip): "
-  );
-  const typed = (await nextLine())?.trim() ?? "";
+  const typed =
+    (
+      await ask(
+        options.length > 0
+          ? "Your answer (number, or type your own answer; Enter to skip): "
+          : "Your answer (Enter to skip): "
+      )
+    )?.trim() ?? "";
   // A bare number is shorthand for the option at that position; the tool only
   // ever sees the label, so option numbering stays a CLI presentation detail.
   const chosen = /^\d+$/u.test(typed) ? options[Number.parseInt(typed, 10) - 1] : undefined;
@@ -903,7 +968,12 @@ async function runAttachCli(args: string[], streams: CliStreams, deps: CliDepend
       cwd: values.cwd ? path.resolve(values.cwd) : process.cwd()
     });
     const gateway = loaded.resolvedConfig.gateway;
-    const url = values.url ?? `ws://${gateway.hostname}:${gateway.port}${gateway.websocketPath}`;
+    // Prefer the listener published by a running interactive CLI: that is the
+    // process actually hosting the PTY when the agent is driven from `aia`.
+    // Fall back to the configured gateway, which is where a dev/prod server
+    // listens. An explicit --url always wins.
+    const published = await readAttachEndpoint(loaded.resolvedConfig.memory.stateRoot);
+    const url = values.url ?? published?.url ?? `ws://${gateway.hostname}:${gateway.port}${gateway.websocketPath}`;
     const token = typeof gateway.auth.token === "string" ? gateway.auth.token : undefined;
 
     writeLine(streams.stderr, `Attached to ${externalSessionId}. Press Ctrl-] to detach.`);
@@ -1386,7 +1456,7 @@ function formatCompactResult(result: GatewaySessionCompactResult): string {
   return lines.join("\n");
 }
 
-function createStdinLineSource(): AsyncIterable<string> {
+function createStdinLineReader(options: { interactive?: boolean } = {}): CliLineReader {
   // Buffer lines from the moment the reader is created so input that arrives
   // while the runtime is still booting (notably piped/scripted input) is not
   // lost before iteration starts.
@@ -1408,24 +1478,55 @@ function createStdinLineSource(): AsyncIterable<string> {
     notify();
   });
 
+  // Only a real terminal gets its buffer dropped. When stdin is piped, the
+  // queued lines are a script's deliberately pre-supplied answers, and
+  // discarding them would break every scripted run.
+  const interactive = options.interactive ?? Boolean(process.stdin.isTTY);
+
   return {
-    async *[Symbol.asyncIterator](): AsyncIterator<string> {
-      try {
-        while (true) {
-          if (queue.length > 0) {
-            yield queue.shift() as string;
-            continue;
-          }
-          if (closed) {
-            return;
-          }
-          await new Promise<void>((resolve) => {
-            wake = resolve;
-          });
-        }
-      } finally {
-        rl.close();
+    close(): void {
+      rl.close();
+    },
+    discardBuffered(): void {
+      if (interactive) {
+        queue.length = 0;
       }
+    },
+    async next(): Promise<string | null> {
+      while (true) {
+        if (queue.length > 0) {
+          return queue.shift() as string;
+        }
+        if (closed) {
+          return null;
+        }
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
+    }
+  };
+}
+
+/**
+ * Wraps a plain async iterable (tests, scripted input) as a line reader.
+ * `discardBuffered` is a no-op: a lazy iterable holds nothing ahead of the
+ * read, and a script's answers are supplied in order on purpose.
+ */
+function toLineReader(source: AsyncIterable<string> | CliLineReader): CliLineReader {
+  if ("next" in source && "discardBuffered" in source) {
+    return source;
+  }
+
+  const iterator = (source as AsyncIterable<string>)[Symbol.asyncIterator]();
+  return {
+    async close(): Promise<void> {
+      await iterator.return?.();
+    },
+    discardBuffered: () => undefined,
+    async next(): Promise<string | null> {
+      const result = await iterator.next();
+      return result.done ? null : result.value;
     }
   };
 }

@@ -2580,6 +2580,7 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
           await externalAgentSessionService.noteAttached(externalSessionId);
           return { command };
         },
+        autoAttachOnStart: params.loaded.resolvedConfig.externalAgents.interactive.autoAttachOnStart,
         service: externalAgentSessionService
       }
     : undefined;

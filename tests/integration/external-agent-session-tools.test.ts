@@ -39,7 +39,7 @@ const jobService = {
   }
 } as unknown as ExternalAgentService;
 
-async function createTool(): Promise<{
+async function createTool(options: { attachFails?: boolean; autoAttachOnStart?: boolean } = {}): Promise<{
   attached: string[];
   context: RuntimeToolContext;
   tool: ReturnType<typeof createExternalAgentTool>;
@@ -82,8 +82,12 @@ async function createTool(): Promise<{
     sessionHost: {
       async attach(externalSessionId) {
         attached.push(externalSessionId);
+        if (options.attachFails) {
+          throw new Error("no window server available");
+        }
         return { command: `aia attach ${externalSessionId}` };
       },
+      ...(options.autoAttachOnStart === undefined ? {} : { autoAttachOnStart: options.autoAttachOnStart }),
       service
     }
   });
@@ -121,11 +125,64 @@ describe("external_agent interactive actions", () => {
     );
 
     const attachResult = await tool.execute(call({ action: "attach", externalSessionId }), context);
-    expect(attached).toEqual([externalSessionId]);
+    // Twice: once automatically at start, once for this explicit attach.
+    expect(attached).toEqual([externalSessionId, externalSessionId]);
     expect((attachResult.result as { command: string }).command).toBe(`aia attach ${externalSessionId}`);
 
     const stopped = await tool.execute(call({ action: "stop", externalSessionId }), context);
     expect((stopped.result as { session: { status: string } }).session.status).toBe("stopped");
+  });
+
+  // Reverses the original "never auto-open" decision at the operator's
+  // request: the point of an interactive session is that the human and the
+  // agent drive the same PTY, and that cannot happen if someone has to notice
+  // a printed command first.
+  test("opens the shared terminal window as soon as a session starts", async () => {
+    const { attached, context, tool } = await createTool();
+
+    const started = await tool.execute(call({ action: "start", agentId: "mock" }), context);
+    const result = started.result as { attachCommand?: string; session: { id: string } };
+
+    expect(attached).toEqual([result.session.id]);
+    expect(result.attachCommand).toBe(`aia attach ${result.session.id}`);
+    expect(
+      started.display?.some((part) => part.kind === "status" && part.summary.includes("shared terminal window"))
+    ).toBe(true);
+
+    await tool.execute(call({ action: "stop", externalSessionId: result.session.id }), context);
+  });
+
+  test("keeps sessions headless when autoAttachOnStart is off", async () => {
+    const { attached, context, tool } = await createTool({ autoAttachOnStart: false });
+
+    const started = await tool.execute(call({ action: "start", agentId: "mock" }), context);
+    const result = started.result as { attachCommand?: string; session: { id: string } };
+
+    expect(attached).toEqual([]);
+    expect(result.attachCommand).toBeUndefined();
+    // The model is still told how to open one on request.
+    expect(started.display?.some((part) => part.kind === "status" && part.summary.includes('action "attach"'))).toBe(
+      true
+    );
+
+    await tool.execute(call({ action: "stop", externalSessionId: result.session.id }), context);
+  });
+
+  // A machine with no window server, or a non-macOS host, must still get a
+  // working session — the window is a convenience, not the session.
+  test("starts the session anyway when the window cannot be opened", async () => {
+    const { context, tool } = await createTool({ attachFails: true });
+
+    const started = await tool.execute(call({ action: "start", agentId: "mock" }), context);
+    const result = started.result as { attachError?: string; session: { id: string; status: string } };
+
+    expect(result.session.status).not.toBe("failed");
+    expect(result.attachError).toContain("no window server available");
+    expect(
+      started.display?.some((part) => part.kind === "status" && part.summary.includes("could not be opened"))
+    ).toBe(true);
+
+    await tool.execute(call({ action: "stop", externalSessionId: result.session.id }), context);
   });
 
   test("the tool is registered on a gateway built from config alone", async () => {

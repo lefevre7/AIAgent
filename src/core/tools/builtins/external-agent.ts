@@ -126,6 +126,11 @@ const externalAgentInputSchema = z.discriminatedUnion("action", [
 
 export type ExternalAgentSessionHost = {
   attach(externalSessionId: string): Promise<{ command: string }>;
+  /**
+   * Whether `start` should open the shared terminal window itself
+   * (`externalAgents.interactive.autoAttachOnStart`).
+   */
+  autoAttachOnStart?: boolean;
   service: ExternalAgentSessionService;
 };
 
@@ -249,15 +254,40 @@ export function createExternalAgentTool(params: {
             cwd: input.cwd ?? context.session.cwd,
             sessionId: context.session.id
           });
+
+          // Open the shared window straight away so the operator and the agent
+          // are driving the same PTY from the first turn. Opening a window is
+          // never allowed to fail the start: the session is running and usable
+          // headless, and on a machine with no window server (or a non-macOS
+          // host) that is the only sensible outcome.
+          let attachCommand: string | null = null;
+          let attachError: string | null = null;
+          if (host.autoAttachOnStart !== false) {
+            try {
+              attachCommand = (await host.attach(record.id)).command;
+            } catch (error) {
+              attachError = error instanceof Error ? error.message : String(error);
+            }
+          }
+
+          const summary = attachCommand
+            ? `Started interactive session ${record.id} for ${record.agentId} and opened a shared terminal window. You and the operator are driving the same terminal; send it work with action "send".`
+            : `Started interactive session ${record.id} for ${record.agentId}. Send it work with action "send"; open a shared window with action "attach".`;
+
           return {
             display: [
               {
                 kind: "status",
                 state: record.status,
-                summary: `Started interactive session ${record.id} for ${record.agentId}. Send it work with action "send"; open a shared window with action "attach".`
+                summary: attachError ? `${summary} (A terminal window could not be opened: ${attachError})` : summary
               }
             ],
-            result: { action: "start", session: record }
+            result: {
+              action: "start",
+              ...(attachCommand ? { attachCommand } : {}),
+              ...(attachError ? { attachError } : {}),
+              session: record
+            }
           };
         }
         case "stop": {

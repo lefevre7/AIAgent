@@ -34,6 +34,15 @@ Each connection has at most one active subscription filter. Sending `gateway.sub
 
 If a subscribe payload includes a cursor, the gateway replays matching persisted events before continuing with live delivery.
 
+#### Who listens
+
+The dev/prod server (`src/server/start.ts`) attaches this WebSocket to its HTTP server on the configured
+host and port. The **interactive CLI also serves it**, on loopback with an ephemeral port, and publishes
+the URL to `.aia/attach-endpoint.json` — that is what lets `aia attach` join an external-agent terminal
+hosted by a bare `aia` REPL rather than only by a running server. `aia attach` prefers the published
+endpoint, falls back to the configured host/port, and honours an explicit `--url` above both. See
+`docs/EXTERNAL_AGENTS.md`.
+
 ### HTTP
 
 HTTP is kept for health and debug/read workflows:
@@ -54,6 +63,13 @@ Gateway auth is transport-neutral and applied to both HTTP and WebSocket access.
 
 - If `config.gateway.auth.token` is configured, that token is required everywhere.
 - If no token is configured, loopback access is allowed and non-loopback access is rejected.
+- Loopback is determined from the **socket peer address only**. `X-Forwarded-For` is client-supplied and
+  is never consulted (security review H2).
+- A server that binds a routable or unspecified address (`0.0.0.0` / `::`), or that enables a tunnel,
+  **refuses to start** without a token (M13). A tunnel terminating in front of the gateway forwards to
+  the loopback socket, so remote traffic is genuinely loopback by the time auth sees it — configuration
+  is the only reliable signal that remote access is possible.
+- The CLI's loopback listener follows the same rules, so it is unauthenticated unless a token is set.
 - HTTP accepts `Authorization: Bearer <token>`, raw `Authorization`, or `x-aia-gateway-token`.
 - WebSocket accepts the same headers and also a `token` query parameter for browser-compatible auth.
 

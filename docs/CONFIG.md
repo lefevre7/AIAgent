@@ -128,6 +128,7 @@ reasoning part, and provider-native reasoning is archived in the events log. See
 | `humanLockMs`             | `10000`      | Agent writes are refused this long after a human keystroke.     |
 | `sessionWarningThreshold` | `4`          | Warn (never block) past this many live sessions.                |
 | `terminalApp`             | `"Terminal"` | macOS app opened by `attach`.                                   |
+| `autoAttachOnStart`       | `true`       | Open the shared terminal window as soon as a session starts.    |
 
 Each agent in `externalAgents.agents` may carry its own `interactive` block (`args`,
 `idleMs`, `readyPattern?`, `stabilityMs`, `turnTimeoutMs`) which wins over the defaults.

@@ -371,6 +371,33 @@ the CLI prints the question and its options and sends the typed reply as the
 resolution comment, which the resumed tool call returns to the model as the answer
 (previously the CLI approved with no comment, so the tool saw an empty answer).
 
+### An answer must be typed after the question — 2026-09-22
+
+Operator report: "sometimes when I press `a` for always, it thinks I've rejected."
+
+The parser was fine; the problem was _which line it read_. The stdin reader buffers
+from the moment it is created (so piped input is never lost), which means anything
+typed while the agent was working is already queued when an approval prompt appears
+— most often an impatient Enter. That stale line was handed back as the answer, was
+neither `y` nor `a`, and the request was denied; the operator's real keystroke then
+landed on the next prompt. The REPL had always skipped blank lines, but the approval
+prompt treated blank as "no", so the two readers of the same stream disagreed about
+what an empty line meant.
+
+`CliLineReader` now replaces the bare `nextLine` callback and exposes
+`discardBuffered()`. `createOperatorPrompt` drains, writes the question, then reads,
+and every operator question goes through it: approvals, the "what should it do
+instead?" follow-up, and `ask_user_question`.
+
+Two rules that keep this correct:
+
+- **Draining is TTY-only.** Piped input is a script's deliberately pre-supplied
+  answers; discarding it would break every scripted run.
+- **The conversation prompt deliberately does not drain.** A line typed while the
+  agent worked _is_ the operator's next message. Only questions discard stale input
+  — which is why the distinction lives in the reader's API, not in a flag at one
+  call site.
+
 ## Interactive external agents and the loop — 2026-09-18
 
 An interactive external-agent session is a process that **outlives the tool call that

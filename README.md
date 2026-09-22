@@ -34,13 +34,18 @@ npm run cli
 
 It creates a session and keeps prompting for input. The loop stays open until you type `/exit` or `/quit` (or stdin reaches end-of-input); `/help` lists the commands. Anything else is sent to the agent as a message.
 
-While the model works, the CLI shows a `Thinking…` indicator and then streams the response live, along with tool-activity lines. When a tool needs approval (file writes, shell commands, etc.) it prompts inline — `Approve <tool> → <target>? [y/N/a]` — and only runs the tool if you approve:
+While the model works, the CLI shows a `Thinking…` indicator and then streams the response live, along with tool-activity lines. When a tool needs approval (file writes, shell commands, etc.) it prompts inline — `Approve <tool> → <target>? [y/N/a/e]` — and only runs the tool if you approve:
 
 - `y` approves this request once.
 - `a` approves it and auto-approves the same target (same tool, command, path, or MCP server) for the rest of this CLI session.
-- anything else denies it. You are then offered an optional note ("use ls instead"); if you type one, it is queued as steering so the agent adapts on the resumed turn instead of retrying the same action.
+- `e` denies it and asks what the agent should do instead; your note is queued as steering so it adapts on the resumed turn rather than retrying the same action.
+- anything else (including a bare Enter) denies it.
+
+Anything you typed _before_ a prompt appeared is discarded rather than used as the answer — an impatient Enter pressed while the agent was working used to be consumed as a silent "no", which made a subsequent `a` look like it had been rejected.
 
 When the agent asks you a question (`ask_user_question`), the CLI prints the question and its options and sends your typed reply straight back to the agent.
+
+When the agent starts an interactive external-agent session, a real terminal window opens on your desktop running `aia attach <id>`, so you and the agent drive the same terminal at once (Ctrl-] detaches without killing the session). The interactive CLI serves the gateway on loopback to make that possible — see [docs/EXTERNAL_AGENTS.md](docs/EXTERNAL_AGENTS.md). Set `externalAgents.interactive.autoAttachOnStart` to `false` to keep sessions headless.
 
 Interactive commands: `/help`, `/compact` (summarize the transcript so far into `chat-session-memory/` and stop replaying it to the model, useful when the context-window percentage climbs), `/mcp` (list configured MCP servers and their tools), and `/exit` / `/quit`.
 

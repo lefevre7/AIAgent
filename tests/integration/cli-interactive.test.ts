@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { runCli } from "@/cli";
+import { runCli, type CliLineReader } from "@/cli";
 import type { AIAgentSdk } from "@/sdk";
 import { COMPLETION_SUMMARY_MESSAGE_TAG } from "@/core/contracts";
 import type { ArtifactReference, GatewaySessionSnapshot, SessionRecord, VoiceService } from "@/core/contracts";
@@ -38,10 +38,70 @@ function createCaptureStreams(): { streams: CaptureStreams; getStderr: () => str
   };
 }
 
+/**
+ * Every REPL run would otherwise bind a real loopback port and write
+ * `.aia/attach-endpoint.json` into the repo, so 28 tests would race on one
+ * file and open 28 sockets. The listener has its own coverage in
+ * `attach-endpoint.test.ts`; here it is stubbed out.
+ */
+async function runCliWithStubbedEndpoint(
+  argv: string[],
+  streams: CaptureStreams,
+  deps: Parameters<typeof runCli>[2] = {}
+): Promise<number> {
+  return runCli(argv, streams, { serveAttachEndpoint: async () => null, ...deps });
+}
+
 async function* lineSource(items: string[]): AsyncIterable<string> {
   for (const item of items) {
     yield item;
   }
+}
+
+/**
+ * A terminal-shaped line reader: typed lines accumulate in a buffer, and
+ * `discardBuffered` throws away whatever has not been read yet — the behaviour
+ * a real TTY reader has and a lazy array iterable does not.
+ */
+function createBufferedTestReader(initial: string[] = []): CliLineReader & {
+  type: (line: string) => Promise<void>;
+  waitForDrain: () => Promise<void>;
+} {
+  const queue: string[] = [...initial];
+  let wake: (() => void) | null = null;
+  let drains = 0;
+  const notify = (): void => {
+    const resume = wake;
+    wake = null;
+    resume?.();
+  };
+
+  return {
+    discardBuffered(): void {
+      queue.length = 0;
+      drains += 1;
+    },
+    async next(): Promise<string | null> {
+      while (queue.length === 0) {
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
+      return queue.shift() as string;
+    },
+    async type(line: string): Promise<void> {
+      queue.push(line);
+      notify();
+      // Let the CLI consume it before the test types anything else.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    },
+    async waitForDrain(): Promise<void> {
+      const seen = drains;
+      for (let attempt = 0; attempt < 200 && drains === seen; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    }
+  };
 }
 
 function buildSnapshot(text: string, lastError?: string, completionSummary?: string): GatewaySessionSnapshot {
@@ -227,7 +287,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk();
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["hello there", "/exit", "ignored after exit"])
     });
@@ -246,7 +306,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk();
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource([])
     });
@@ -261,7 +321,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk({ modelStatus: "unavailable" });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["hello"])
     });
@@ -278,7 +338,7 @@ describe("interactive CLI loop", () => {
   test("prints a clean startup error (not a raw stack) when boot fails", async () => {
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => {
         throw new Error("runtime boot exploded");
       },
@@ -293,7 +353,7 @@ describe("interactive CLI loop", () => {
     const capture = createCaptureStreams();
     let sdkCreated = false;
 
-    const exitCode = await runCli(["info"], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint(["info"], capture.streams, {
       createSdk: async () => {
         sdkCreated = true;
         throw new Error("info must not create a session");
@@ -311,7 +371,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk();
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["hi there", "/exit"])
     });
@@ -325,7 +385,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk({ reasoning: "Plan: mkdir ~/temp then write index.html." });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["make a site", "/exit"])
     });
@@ -345,7 +405,7 @@ describe("interactive CLI loop", () => {
     });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["write a file", "/exit"])
     });
@@ -361,7 +421,7 @@ describe("interactive CLI loop", () => {
     });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["run a command", "/exit"])
     });
@@ -378,7 +438,7 @@ describe("interactive CLI loop", () => {
     });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["write the file", "y", "/exit"])
     });
@@ -398,7 +458,7 @@ describe("interactive CLI loop", () => {
     });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       // "n" denies and consumes no further input; explaining is opt-in via "e".
       interactiveInput: lineSource(["run it", "n", "/exit"])
@@ -417,7 +477,7 @@ describe("interactive CLI loop", () => {
     });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["run it", "e", "use ls instead of find", "/exit"])
     });
@@ -440,7 +500,7 @@ describe("interactive CLI loop", () => {
     });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       // "a" for the first write_file; the second write_file is auto-approved
       // without a prompt; the unrelated shell_command still prompts ("y").
@@ -462,6 +522,82 @@ describe("interactive CLI loop", () => {
     expect(capture.getStdout()).toContain("Approve Run Command → shell_command? [y/N/a/e]");
   });
 
+  // Reported by the operator: "sometimes when I press a for always, it thinks
+  // I've rejected." The stdin reader buffers from the moment it is created, so
+  // anything typed while the agent was working — most commonly an impatient
+  // Enter — is already queued when the approval prompt appears. It was handed
+  // back as the answer, was not "a"/"y", and the request was denied; the real
+  // keystroke then landed on the next prompt.
+  test("discards input typed before an approval prompt instead of answering with it", async () => {
+    const fake = createFakeSdk({
+      pendingApprovals: [{ label: "Write File", requestId: "approval.stale", value: "write_file" }]
+    });
+    const capture = createCaptureStreams();
+    // A terminal-like reader: lines land in a buffer as they are "typed", and
+    // a drain drops whatever has not been consumed yet.
+    const reader = createBufferedTestReader(["write a file"]);
+
+    const cliDone = runCliWithStubbedEndpoint([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: reader
+    });
+
+    // The impatient Enter, pressed while the agent was still working.
+    await reader.type("");
+    // Then the operator sees the prompt and answers it.
+    await reader.waitForDrain();
+    await reader.type("a");
+    await reader.type("/exit");
+
+    expect(await cliDone).toBe(0);
+    expect(fake.getResolved()).toEqual([{ decision: "approved", requestId: "approval.stale" }]);
+    expect(capture.getStdout()).toContain("further write_file requests are auto-approved for this session");
+  });
+
+  // The REPL hosts the PTY for interactive external-agent sessions, so it has
+  // to serve the gateway itself — otherwise a terminal window opened for one
+  // has nothing to connect to. Every other test here stubs this out.
+  test("serves a loopback gateway endpoint for the session and closes it on exit", async () => {
+    const fake = createFakeSdk();
+    const capture = createCaptureStreams();
+    let closed = false;
+    let servedFor: unknown = null;
+
+    const exitCode = await runCli([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: lineSource(["/exit"]),
+      serveAttachEndpoint: async (sdk) => {
+        servedFor = sdk;
+        return {
+          async close() {
+            closed = true;
+          },
+          url: "ws://127.0.0.1:54321/api/gateway/ws"
+        };
+      }
+    });
+
+    expect(exitCode).toBe(0);
+    expect(servedFor).toBe(fake.sdk);
+    // A leaked listener would keep a port bound for the life of the process.
+    expect(closed).toBe(true);
+  });
+
+  test("keeps answering piped approval input in order, because a script supplies it deliberately", async () => {
+    const fake = createFakeSdk({
+      pendingApprovals: [{ label: "Write File", requestId: "approval.piped", value: "write_file" }]
+    });
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: lineSource(["write a file", "y", "/exit"])
+    });
+
+    expect(exitCode).toBe(0);
+    expect(fake.getResolved()).toEqual([{ decision: "approved", requestId: "approval.piped" }]);
+  });
+
   test("answers an agent question directly and threads the reply as the resolution comment", async () => {
     const fake = createFakeSdk({
       pendingApprovals: [
@@ -477,7 +613,7 @@ describe("interactive CLI loop", () => {
     });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["set up the db", "postgres", "/exit"])
     });
@@ -509,7 +645,7 @@ describe("interactive CLI loop", () => {
     });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["set up the db", "2", "/exit"])
     });
@@ -526,7 +662,7 @@ describe("interactive CLI loop", () => {
     });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["hello", "/compact", "/exit"])
     });
@@ -543,7 +679,7 @@ describe("interactive CLI loop", () => {
     const empty = createFakeSdk({ compactResult: { hiddenMessageCount: 0 } });
     const emptyCapture = createCaptureStreams();
     expect(
-      await runCli([], emptyCapture.streams, {
+      await runCliWithStubbedEndpoint([], emptyCapture.streams, {
         createSdk: async () => empty.sdk,
         interactiveInput: lineSource(["/compact", "/exit"])
       })
@@ -553,7 +689,7 @@ describe("interactive CLI loop", () => {
     const failing = createFakeSdk({ compactError: "Session has pending approvals" });
     const failingCapture = createCaptureStreams();
     expect(
-      await runCli([], failingCapture.streams, {
+      await runCliWithStubbedEndpoint([], failingCapture.streams, {
         createSdk: async () => failing.sdk,
         interactiveInput: lineSource(["/compact", "still here", "/exit"])
       })
@@ -566,7 +702,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk();
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["/quit"])
     });
@@ -580,7 +716,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk();
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["/help", "/bogus", "real message", "/exit"])
     });
@@ -596,7 +732,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk();
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["   ", "only message"])
     });
@@ -610,7 +746,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk({ lastError: "model exploded" });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["trigger", "/exit"])
     });
@@ -627,7 +763,7 @@ describe("interactive CLI loop", () => {
     const fake = createFakeSdk({ completionSummary: "17 * 23 = 391." });
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["what is 17 * 23?", "/exit"])
     });
@@ -681,24 +817,24 @@ function createPromptSdk(
 describe("CLI help, voice help, and one-shot prompt", () => {
   test("prints top-level help", async () => {
     const capture = createCaptureStreams();
-    const exitCode = await runCli(["--help"], capture.streams, {});
+    const exitCode = await runCliWithStubbedEndpoint(["--help"], capture.streams, {});
     expect(exitCode).toBe(0);
     expect(capture.getStdout()).toContain("Available commands:");
   });
 
   test("prints voice help for --help and a bare voice command", async () => {
     const help = createCaptureStreams();
-    expect(await runCli(["voice", "--help"], help.streams, {})).toBe(0);
+    expect(await runCliWithStubbedEndpoint(["voice", "--help"], help.streams, {})).toBe(0);
     expect(help.getStdout().toLowerCase()).toContain("voice");
 
     const bare = createCaptureStreams();
-    expect(await runCli(["voice"], bare.streams, {})).toBe(0);
+    expect(await runCliWithStubbedEndpoint(["voice"], bare.streams, {})).toBe(0);
     expect(bare.getStdout().toLowerCase()).toContain("voice");
   });
 
   test("reports an unknown voice subcommand", async () => {
     const capture = createCaptureStreams();
-    const exitCode = await runCli(["voice", "teleport"], capture.streams, {});
+    const exitCode = await runCliWithStubbedEndpoint(["voice", "teleport"], capture.streams, {});
     expect(exitCode).toBe(1);
     expect(capture.getStderr()).toContain("Unknown voice subcommand: teleport");
   });
@@ -706,7 +842,9 @@ describe("CLI help, voice help, and one-shot prompt", () => {
   test("runs a one-shot --prompt session and prints the assistant summary", async () => {
     const fake = createPromptSdk({ assistant: "All done." });
     const capture = createCaptureStreams();
-    const exitCode = await runCli(["--prompt", "do the thing"], capture.streams, { createSdk: async () => fake.sdk });
+    const exitCode = await runCliWithStubbedEndpoint(["--prompt", "do the thing"], capture.streams, {
+      createSdk: async () => fake.sdk
+    });
     expect(exitCode).toBe(0);
     expect(capture.getStdout()).toContain("Assistant: All done.");
     expect(capture.getStdout()).toContain("Status: completed");
@@ -717,7 +855,9 @@ describe("CLI help, voice help, and one-shot prompt", () => {
   test("returns a non-zero exit and surfaces session errors for an unfinished prompt run", async () => {
     const fake = createPromptSdk({ lastError: "ran out of fuel", status: "failed" });
     const capture = createCaptureStreams();
-    const exitCode = await runCli(["--prompt", "do the thing"], capture.streams, { createSdk: async () => fake.sdk });
+    const exitCode = await runCliWithStubbedEndpoint(["--prompt", "do the thing"], capture.streams, {
+      createSdk: async () => fake.sdk
+    });
     expect(exitCode).toBe(1);
     expect(capture.getStdout()).toContain("Error: ran out of fuel");
   });
@@ -725,7 +865,9 @@ describe("CLI help, voice help, and one-shot prompt", () => {
   test("surfaces a failure when the prompt session cannot be created", async () => {
     const fake = createPromptSdk({ throwOnCreate: true });
     const capture = createCaptureStreams();
-    const exitCode = await runCli(["--prompt", "do the thing"], capture.streams, { createSdk: async () => fake.sdk });
+    const exitCode = await runCliWithStubbedEndpoint(["--prompt", "do the thing"], capture.streams, {
+      createSdk: async () => fake.sdk
+    });
     expect(exitCode).toBe(1);
     expect(capture.getStderr()).toContain("exploded");
     expect(fake.wasClosed()).toBe(true);
@@ -848,18 +990,26 @@ describe("CLI voice subcommands", () => {
   test("lists devices and voices, with empty fallbacks", async () => {
     const cap = createCaptureStreams();
     expect(
-      await runCli(["voice", "list-devices", "--kind", "output"], cap.streams, voiceDeps(fakeVoiceService()))
+      await runCliWithStubbedEndpoint(
+        ["voice", "list-devices", "--kind", "output"],
+        cap.streams,
+        voiceDeps(fakeVoiceService())
+      )
     ).toBe(0);
     expect(cap.getStdout()).toContain("Speaker");
 
     const voicesCap = createCaptureStreams();
     expect(
-      await runCli(["voice", "list-voices", "--locale", "en"], voicesCap.streams, voiceDeps(fakeVoiceService()))
+      await runCliWithStubbedEndpoint(
+        ["voice", "list-voices", "--locale", "en"],
+        voicesCap.streams,
+        voiceDeps(fakeVoiceService())
+      )
     ).toBe(0);
     expect(voicesCap.getStdout()).toContain("Alex");
 
     const emptyCap = createCaptureStreams();
-    await runCli(
+    await runCliWithStubbedEndpoint(
       ["voice", "list-devices"],
       emptyCap.streams,
       voiceDeps(fakeVoiceService({ listDevices: async () => [] }))
@@ -870,7 +1020,7 @@ describe("CLI voice subcommands", () => {
   test("transcribes a file and records it on a session", async () => {
     const filePath = await tempAudioFile();
     const cap = createCaptureStreams();
-    const exitCode = await runCli(
+    const exitCode = await runCliWithStubbedEndpoint(
       ["voice", "transcribe-file", "--file", filePath, "--session", "session.voice.cli"],
       cap.streams,
       voiceDeps(fakeVoiceService())
@@ -881,14 +1031,20 @@ describe("CLI voice subcommands", () => {
 
   test("requires a file for transcribe-file", async () => {
     const cap = createCaptureStreams();
-    expect(await runCli(["voice", "transcribe-file"], cap.streams, voiceDeps(fakeVoiceService()))).toBe(1);
+    expect(
+      await runCliWithStubbedEndpoint(["voice", "transcribe-file"], cap.streams, voiceDeps(fakeVoiceService()))
+    ).toBe(1);
     expect(cap.getStdout()).toContain("Usage: aia voice transcribe-file");
   });
 
   test("captures audio and reports failures", async () => {
     const okCap = createCaptureStreams();
     expect(
-      await runCli(["voice", "capture", "--max-duration-ms", "5000"], okCap.streams, voiceDeps(fakeVoiceService()))
+      await runCliWithStubbedEndpoint(
+        ["voice", "capture", "--max-duration-ms", "5000"],
+        okCap.streams,
+        voiceDeps(fakeVoiceService())
+      )
     ).toBe(0);
     expect(okCap.getStdout()).toContain("captured words");
 
@@ -897,29 +1053,39 @@ describe("CLI voice subcommands", () => {
       waitForCapture: async () =>
         ({ id: "capture.1", metadata: {}, providerId: "apple_native", startedAt: "x", status: "failed" }) as never
     });
-    expect(await runCli(["voice", "capture"], failCap.streams, voiceDeps(failing))).toBe(1);
+    expect(await runCliWithStubbedEndpoint(["voice", "capture"], failCap.streams, voiceDeps(failing))).toBe(1);
   });
 
   test("synthesizes and speaks text", async () => {
     const synthCap = createCaptureStreams();
     expect(
-      await runCli(["voice", "synthesize", "--text", "hello"], synthCap.streams, voiceDeps(fakeVoiceService()))
+      await runCliWithStubbedEndpoint(
+        ["voice", "synthesize", "--text", "hello"],
+        synthCap.streams,
+        voiceDeps(fakeVoiceService())
+      )
     ).toBe(0);
     expect(synthCap.getStdout()).toContain("file:///tmp/synth.aiff");
 
     const speakCap = createCaptureStreams();
-    expect(await runCli(["voice", "speak", "--text", "hello"], speakCap.streams, voiceDeps(fakeVoiceService()))).toBe(
-      0
-    );
+    expect(
+      await runCliWithStubbedEndpoint(
+        ["voice", "speak", "--text", "hello"],
+        speakCap.streams,
+        voiceDeps(fakeVoiceService())
+      )
+    ).toBe(0);
     expect(speakCap.getStdout()).toContain("Speech playback completed.");
 
     const noTextCap = createCaptureStreams();
-    expect(await runCli(["voice", "synthesize"], noTextCap.streams, voiceDeps(fakeVoiceService()))).toBe(1);
+    expect(
+      await runCliWithStubbedEndpoint(["voice", "synthesize"], noTextCap.streams, voiceDeps(fakeVoiceService()))
+    ).toBe(1);
   });
 
   test("surfaces an error for an invalid numeric option", async () => {
     const cap = createCaptureStreams();
-    const exitCode = await runCli(
+    const exitCode = await runCliWithStubbedEndpoint(
       ["voice", "capture", "--max-duration-ms", "not-a-number"],
       cap.streams,
       voiceDeps(fakeVoiceService())
@@ -952,7 +1118,7 @@ describe("CLI trust subcommand", () => {
 
   test("prints help without touching any trust state", async () => {
     const capture = createCaptureStreams();
-    const exitCode = await runCli(["trust", "--help"], capture.streams, {});
+    const exitCode = await runCliWithStubbedEndpoint(["trust", "--help"], capture.streams, {});
     expect(exitCode).toBe(0);
     expect(capture.getStdout()).toContain("aia trust");
     expect(capture.getStdout()).toContain("--revoke");
@@ -964,7 +1130,7 @@ describe("CLI trust subcommand", () => {
     );
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli(["trust", "--cwd", workspace], capture.streams, {});
+    const exitCode = await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], capture.streams, {});
 
     expect(exitCode).toBe(0);
     expect(capture.getStdout()).toContain("No trust needed");
@@ -978,28 +1144,28 @@ describe("CLI trust subcommand", () => {
     );
 
     const granting = createCaptureStreams();
-    expect(await runCli(["trust", "--cwd", workspace], granting.streams, {})).toBe(0);
+    expect(await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], granting.streams, {})).toBe(0);
     expect(granting.getStdout()).toContain("Trusted ");
     expect(granting.getStdout()).toContain("Now allowed: payload");
     // The operator is shown the hash they are consenting to.
     expect(granting.getStdout()).toMatch(/sha256: [0-9a-f]{64}/u);
 
     const repeat = createCaptureStreams();
-    expect(await runCli(["trust", "--cwd", workspace], repeat.streams, {})).toBe(0);
+    expect(await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], repeat.streams, {})).toBe(0);
     expect(repeat.getStdout()).toContain("Already trusted");
 
     const revoking = createCaptureStreams();
-    expect(await runCli(["trust", "--revoke", "--cwd", workspace], revoking.streams, {})).toBe(0);
+    expect(await runCliWithStubbedEndpoint(["trust", "--revoke", "--cwd", workspace], revoking.streams, {})).toBe(0);
     expect(revoking.getStdout()).toContain("Revoked trust");
 
     const afterRevoke = createCaptureStreams();
-    expect(await runCli(["trust", "--cwd", workspace], afterRevoke.streams, {})).toBe(0);
+    expect(await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], afterRevoke.streams, {})).toBe(0);
     expect(afterRevoke.getStdout()).toContain("Trusted ");
   });
 
   test("reports an unknown flag instead of silently ignoring it", async () => {
     const capture = createCaptureStreams();
-    const exitCode = await runCli(["trust", "--nope"], capture.streams, {});
+    const exitCode = await runCliWithStubbedEndpoint(["trust", "--nope"], capture.streams, {});
     expect(exitCode).toBe(1);
     expect(capture.getStderr().length).toBeGreaterThan(0);
   });
@@ -1071,7 +1237,7 @@ describe("CLI inspection commands and attach", () => {
     });
     const capture = createCaptureStreams();
 
-    await runCli([], capture.streams, {
+    await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => sdk,
       interactiveInput: lineSource(["/mcp", "/exit"])
     });
@@ -1090,7 +1256,7 @@ describe("CLI inspection commands and attach", () => {
     });
     const capture = createCaptureStreams();
 
-    await runCli([], capture.streams, {
+    await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => sdk,
       interactiveInput: lineSource(["/mcp", "/agents", "/exit"])
     });
@@ -1115,7 +1281,7 @@ describe("CLI inspection commands and attach", () => {
     });
     const capture = createCaptureStreams();
 
-    await runCli([], capture.streams, {
+    await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => sdk,
       interactiveInput: lineSource(["/agents", "/exit"])
     });
@@ -1131,7 +1297,7 @@ describe("CLI inspection commands and attach", () => {
     });
     const capture = createCaptureStreams();
 
-    await runCli([], capture.streams, {
+    await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => sdk,
       interactiveInput: lineSource(["/mcp", "/exit"])
     });
@@ -1142,12 +1308,12 @@ describe("CLI inspection commands and attach", () => {
 
   test("aia attach requires a session id and otherwise relays through the gateway", async () => {
     const missing = createCaptureStreams();
-    expect(await runCli(["attach"], missing.streams, {})).toBe(1);
+    expect(await runCliWithStubbedEndpoint(["attach"], missing.streams, {})).toBe(1);
     expect(missing.getStderr()).toContain("Usage: aia attach");
 
     const calls: Array<{ externalSessionId: string; url: string }> = [];
     const capture = createCaptureStreams();
-    const exitCode = await runCli(["attach", "external-agent-session.abc"], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint(["attach", "external-agent-session.abc"], capture.streams, {
       attachToExternalAgentSession: async (options) => {
         calls.push({ externalSessionId: options.externalSessionId, url: options.url });
         return 0;
@@ -1167,7 +1333,7 @@ describe("CLI inspection commands and attach", () => {
     const calls: string[] = [];
     const capture = createCaptureStreams();
 
-    const exitCode = await runCli(
+    const exitCode = await runCliWithStubbedEndpoint(
       ["attach", "external-agent-session.abc", "--url", "ws://tunnel.example.com/api/gateway/ws"],
       capture.streams,
       {
@@ -1184,7 +1350,7 @@ describe("CLI inspection commands and attach", () => {
 
   test("aia attach reports a relay failure rather than throwing", async () => {
     const capture = createCaptureStreams();
-    const exitCode = await runCli(["attach", "external-agent-session.abc"], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint(["attach", "external-agent-session.abc"], capture.streams, {
       attachToExternalAgentSession: async () => {
         throw new Error("socket refused");
       }
