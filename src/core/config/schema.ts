@@ -457,13 +457,23 @@ const discordChannelConfigSchema = z
     appId: secretInputSchema.optional(),
     botToken: secretInputSchema.optional(),
     defaultGuildId: z.string().min(1).max(256).optional(),
-    enabled: z.boolean()
+    enabled: z.boolean(),
+    // Sender ids allowed to issue channel control commands (/approve, /deny,
+    // /cancel, /steer). Security review H6: without this, anyone who could
+    // post into the bound conversation could approve a pending dangerous tool
+    // call. Empty means no one — control commands fail closed.
+    operatorIdentities: z.array(z.string().min(1).max(256)).max(64).default([])
   })
   .strict();
 
 const whatsappChannelConfigSchema = z
   .object({
     enabled: z.boolean(),
+    // Sender ids allowed to issue channel control commands (/approve, /deny,
+    // /cancel, /steer). Security review H6: without this, anyone who could
+    // post into the bound conversation could approve a pending dangerous tool
+    // call. Empty means no one — control commands fail closed.
+    operatorIdentities: z.array(z.string().min(1).max(256)).max(64).default([]),
     sessionDirectory: z.string().min(1).optional()
   })
   .strict();
@@ -473,6 +483,11 @@ const teamsChannelConfigSchema = z
     appId: secretInputSchema.optional(),
     appPassword: secretInputSchema.optional(),
     enabled: z.boolean(),
+    // Sender ids allowed to issue channel control commands (/approve, /deny,
+    // /cancel, /steer). Security review H6: without this, anyone who could
+    // post into the bound conversation could approve a pending dangerous tool
+    // call. Empty means no one — control commands fail closed.
+    operatorIdentities: z.array(z.string().min(1).max(256)).max(64).default([]),
     publicBaseUrl: urlLikeStringSchema.optional(),
     tenantId: secretInputSchema.optional()
   })
@@ -482,7 +497,12 @@ const imessageChannelConfigSchema = z
   .object({
     blueBubblesPassword: secretInputSchema.optional(),
     blueBubblesUrl: urlLikeStringSchema.optional(),
-    enabled: z.boolean()
+    enabled: z.boolean(),
+    // Sender ids allowed to issue channel control commands (/approve, /deny,
+    // /cancel, /steer). Security review H6: without this, anyone who could
+    // post into the bound conversation could approve a pending dangerous tool
+    // call. Empty means no one — control commands fail closed.
+    operatorIdentities: z.array(z.string().min(1).max(256)).max(64).default([])
   })
   .strict();
 
@@ -743,16 +763,20 @@ export function createDefaultAppConfig(params: {
     },
     channels: {
       discord: {
-        enabled: false
+        enabled: false,
+        operatorIdentities: []
       },
       imessage: {
-        enabled: false
+        enabled: false,
+        operatorIdentities: []
       },
       teams: {
-        enabled: false
+        enabled: false,
+        operatorIdentities: []
       },
       whatsapp: {
         enabled: false,
+        operatorIdentities: [],
         sessionDirectory: "./.aia/channels/whatsapp"
       }
     },

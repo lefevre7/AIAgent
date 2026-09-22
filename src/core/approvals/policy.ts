@@ -456,7 +456,13 @@ function stringifyCommandValue(value: unknown): string | null {
   return null;
 }
 
-function stringifyArgv(value: unknown): string | null {
+/**
+ * Renders an argv array as one shell-looking command line for approval
+ * matching and operator display. Exported so every producer of a `command`
+ * approval target quotes identically — a policy regex has to match one
+ * spelling, not several.
+ */
+export function stringifyArgv(value: unknown): string | null {
   if (!Array.isArray(value) || value.length === 0 || !value.every((entry) => typeof entry === "string")) {
     return null;
   }

@@ -25,10 +25,16 @@ two named projects and aggregates V8 coverage across both. Per the project
 decision, **only `src/core/config/**` (plus `*.d.ts`) is excluded** from the
 denominator; everything else counts.
 
-Current measured coverage is ~77% lines / ~76% branches / ~83% functions, enforced
-by a threshold floor in the coverage config. The floor is set just under the
-measured numbers so regressions fail the gate; ratchet it upward as more
-deterministic tests land.
+Current measured coverage is **92.2% lines/statements, 82.6% branches, 97.2%
+functions**, enforced by a threshold floor in the coverage config (92.1 / 78 /
+97). The floor sits just under the measured numbers so regressions fail the
+gate; ratchet it upward as more deterministic tests land.
+
+Note the unit project sets `testTimeout: 30_000` to match the integration one.
+A few unit tests spawn real macOS helpers (`say`, the native voice helper), and
+under V8 coverage instrumentation those exceed vitest's 5s default — which used
+to make `npm run test:coverage` fail intermittently while `npm run test:unit`
+passed.
 
 **Target: 100% of `src/` (config excepted).** Nothing else is excluded from the
 denominator. Code that touches a non-deterministic boundary is covered by faking
@@ -47,9 +53,9 @@ that boundary rather than by exclusion:
   module with the network/bootstrap mocked, or render the component with `renderToString`.
 
 Opt-in live suites still exist (see below) to prove the real adapters end-to-end, but they
-are no longer the *only* coverage for these areas. The coverage gate is intentionally
-separate from `validate:penultimate` so the main gate stays fast; run
-`npm run test:coverage` when changing core runtime code.
+are no longer the *only* coverage for these areas. `npm run test:coverage` is **part of
+`validate:penultimate`**: it previously sat outside every gate, and the thresholds
+silently fell below their own floor without anything failing.
 
 Deterministic coverage now includes:
 

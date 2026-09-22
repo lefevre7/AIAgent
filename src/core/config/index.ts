@@ -7,3 +7,4 @@ export * from "@/core/config/normalize";
 export * from "@/core/config/paths";
 export * from "@/core/config/schema";
 export * from "@/core/config/secrets";
+export * from "@/core/config/trust";

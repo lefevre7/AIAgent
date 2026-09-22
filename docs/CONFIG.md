@@ -137,3 +137,72 @@ An agent with no `interactive` block can still run one-shot jobs but cannot star
 (`--dangerously-skip-permissions` for Claude, `--dangerously-bypass-approvals-and-sandbox`
 for Codex). That is deliberate and it lives in config precisely so you can delete it. Read
 the security section of `docs/EXTERNAL_AGENTS.md` before leaving it enabled.
+
+## Workspace config trust
+
+Workspace config is discovered by walking **up** from the cwd, and a config file can
+declare secret providers. The `exec` provider runs an arbitrary command; the `file`
+provider reads an arbitrary path. Both are rebased against the config's own directory,
+so merely running `aia` inside a cloned repo used to be enough to execute
+`<repo>/payload.sh` with your environment (security review H3).
+
+Those two provider kinds are therefore **inert until you trust the config**:
+
+```bash
+aia trust              # review the file first, then grant
+aia trust --revoke     # take it back
+aia trust --cwd <path> # act on another workspace
+```
+
+- Trust is keyed on the config's **path and the SHA-256 of its exact contents**, so a
+  repo you trusted cannot silently grow an `exec` provider later — any edit revokes trust
+  until you grant it again. `aia trust` prints the hash it is acting on.
+- The record lives in `~/.aia/trust.json`, never in the workspace. A record stored inside
+  the repo could simply be shipped pre-populated by whoever wrote the config.
+- `env` providers are unaffected: they can only read the environment the process already
+  has.
+- Untrusted providers **fail closed and the load continues**, with one
+  `AIA_UNTRUSTED_CONFIG` warning naming them. Nothing breaks unless a config value
+  actually references one, in which case that resolution raises an error telling you to
+  run `aia trust`.
+
+## Gateway exposure requires a token
+
+`gateway.auth.token` is optional only for a loopback-bound gateway with no tunnel. The
+server **refuses to start** without one when:
+
+- `hostname` is a routable address, or
+- `hostname` is `0.0.0.0` / `::` (every interface), or
+- `tunnel.enabled` is `true`.
+
+This was previously a warning, so the insecure configuration still came up and served
+traffic (security review M13). It also covers the case header handling cannot: a tunnel
+or reverse proxy terminating in front of AIAgent forwards to the loopback socket, so
+remote requests *are* genuinely loopback by the time the auth check sees them. Note that
+`X-Forwarded-For` is deliberately ignored everywhere — it is client-supplied, and
+trusting it was security review H2.
+
+## Channel operator identities
+
+Each channel takes `operatorIdentities`, the sender ids allowed to issue control
+commands (`/approve`, `/deny`, `/cancel`, `/steer`):
+
+```jsonc
+"channels": {
+  "whatsapp": {
+    "enabled": true,
+    "operatorIdentities": ["15551234567"],
+    "sessionDirectory": "./.aia/channels/whatsapp"
+  }
+}
+```
+
+An entry may be a bare `userId` or a channel-qualified `channel:userId`. Matching ignores
+case and surrounding whitespace.
+
+**This fails closed: an empty list authorizes nobody**, and control commands from an
+unlisted sender are refused with a message naming this setting. Without it, anyone who
+could post into the bound conversation — the correspondent, or anyone able to write into
+the bridge's inbound directory — could approve a pending dangerous tool call (security
+review H6). Ordinary (non-command) messages are unaffected; they still reach the agent,
+and they still hit the normal approval gate.

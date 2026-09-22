@@ -182,7 +182,12 @@ describe("gateway runtime request dispatch", () => {
         expect(result.hiddenMessageCount).toBeGreaterThan(0);
         expect(result.compactedThroughMessageId).toBe(lastMessageId);
         expect(result.summary).toContain("Session Summary");
-        expect(result.summary).toContain("I wrote the plan and finished.");
+        // The agent's narration and its accepted completion summary are
+        // recorded separately: letting the completion message fall out of the
+        // same "latest assistant text" scan would silently replace what the
+        // agent said with how it signed off.
+        expect(result.summary).toContain("Latest assistant summary: I wrote the plan and finished.");
+        expect(result.summary).toContain("Final answer: done");
         expect(result.summaryPath).toBeTruthy();
         expect(result.session.metadata.compactedThroughMessageId).toBe(lastMessageId);
         expect(events).toEqual(expect.arrayContaining(["session.updated", "memory.updated"]));

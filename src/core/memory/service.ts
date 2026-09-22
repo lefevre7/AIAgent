@@ -14,7 +14,8 @@ import {
   type MemoryHit,
   type MemoryQuery,
   type MemoryStore,
-  type SessionRecord
+  type SessionRecord,
+  COMPLETION_SUMMARY_MESSAGE_TAG
 } from "@/core/contracts";
 import { writeJsonAtomic } from "@/core/io/files";
 import type { EmbeddingRuntime } from "@/core/memory/embeddings";
@@ -872,11 +873,22 @@ function buildSessionSummary(
   assistantMessages: SessionSnapshot["messages"],
   toolCalls: SessionSnapshot["toolCalls"]
 ): string {
-  const latestAssistantText = assistantMessages
-    .flatMap((message) => message.parts)
-    .filter((part): part is Extract<(typeof assistantMessages)[number]["parts"][number], { kind: "text" }> => part.kind === "text")
-    .map((part) => part.text)
-    .at(-1);
+  // The accepted `attempt_complete` summary is recorded separately from the
+  // agent's narration. Letting it fall out of the same "latest assistant text"
+  // scan would silently replace what the agent actually said with how it signed
+  // off — a resumed session wants both.
+  const readLatestText = (messages: SessionSnapshot["messages"]): string | undefined =>
+    messages
+      .flatMap((message) => message.parts)
+      .filter((part): part is Extract<(typeof assistantMessages)[number]["parts"][number], { kind: "text" }> => part.kind === "text")
+      .map((part) => part.text)
+      .at(-1);
+
+  const isCompletionSummary = (message: SessionSnapshot["messages"][number]): boolean =>
+    (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG);
+
+  const finalAnswer = readLatestText(assistantMessages.filter(isCompletionSummary));
+  const latestAssistantText = readLatestText(assistantMessages.filter((message) => !isCompletionSummary(message)));
 
   const succeeded = toolCalls.filter((call) => call.status === "succeeded").length;
   const toolCallLines = renderToolCallLines(toolCalls);
@@ -889,7 +901,9 @@ function buildSessionSummary(
     `Successful tool calls: ${succeeded} of ${toolCalls.length}`,
     ...(toolCallLines.length > 0 ? [``, `## Tool Calls`, ``, ...toolCallLines] : []),
     latestAssistantText ? `` : undefined,
-    latestAssistantText ? `Latest assistant summary: ${latestAssistantText}` : undefined
+    latestAssistantText ? `Latest assistant summary: ${latestAssistantText}` : undefined,
+    finalAnswer ? `` : undefined,
+    finalAnswer ? `Final answer: ${finalAnswer}` : undefined
   ]
     .filter((line): line is string => typeof line === "string")
     .join("\n");

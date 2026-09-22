@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   AgentLoop,
   ApprovalCoordinator,
+  COMPLETION_SUMMARY_MESSAGE_TAG,
   FileSessionStore,
   filterModelVisibleMessages,
   type AgentLoopCompletionDecision,
@@ -65,6 +66,77 @@ describe("agent loop", () => {
         (message) => message.role === "assistant"
       )
     ).toBe(true);
+  });
+
+  // `attempt_complete` is a completion gate, not an executed tool, so its
+  // `summary` produces no tool result and never streams. Before this was
+  // persisted, a model that followed the prompt pack exactly (answer in the
+  // argument, no chat message) finished a run with no visible answer anywhere.
+  test("persists the accepted attempt_complete summary as a tagged assistant message", async () => {
+    const { loop, store } = await createLoop([
+      buildModelResponse({
+        sessionId: "session.loop.completion-summary",
+        toolCalls: [
+          {
+            arguments: { status: "success", summary: "17 * 23 = 391." },
+            callId: "tool.complete.summary",
+            toolName: "attempt_complete"
+          }
+        ]
+      })
+    ]);
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+
+    const snapshot = await store.getSessionSnapshot(result.session.id);
+    const summaryMessage = snapshot?.messages.find((message) =>
+      (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG)
+    );
+
+    expect(summaryMessage).toBeDefined();
+    expect(summaryMessage?.role).toBe("assistant");
+    expect(summaryMessage?.visibility).toBe("default");
+    expect(summaryMessage?.parts).toEqual([{ kind: "text", text: "17 * 23 = 391." }]);
+
+    // The resume metadata is what the CLI reads for a stop notice, so the real
+    // answer has to displace the generic "task completed successfully" literal.
+    expect(snapshot?.resumeMetadata?.statusSummary).toBe("17 * 23 = 391.");
+  });
+
+  test("falls back to the generic status when attempt_complete carries no usable summary", async () => {
+    const { loop, store } = await createLoop([
+      buildModelResponse({
+        sessionId: "session.loop.blank-summary",
+        toolCalls: [
+          {
+            arguments: { summary: "   " },
+            callId: "tool.complete.blank",
+            toolName: "attempt_complete"
+          }
+        ]
+      })
+    ]);
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+
+    const snapshot = await store.getSessionSnapshot(result.session.id);
+    expect(
+      snapshot?.messages.some((message) => (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG))
+    ).toBe(false);
+
+    expect(snapshot?.resumeMetadata?.statusSummary).toBe("The task completed successfully.");
   });
 
   test("nudges the model when it replies without attempt_complete, and the model sees the nudge", async () => {
@@ -1392,8 +1464,11 @@ function buildUserMessage(): Message {
   };
 }
 
+// `messageText` is optional because a real provider omits the text part
+// entirely when the model replies with nothing but a tool call — which is
+// exactly what a prompt-compliant `attempt_complete` turn looks like.
 function buildModelResponse(params: {
-  messageText: string;
+  messageText?: string;
   sessionId: string;
   toolCalls: LanguageModelResponse["toolCalls"];
 }): LanguageModelResponse {
@@ -1403,7 +1478,7 @@ function buildModelResponse(params: {
       createdAt: new Date().toISOString(),
       id: `message.assistant.${cryptoId()}`,
       metadata: {},
-      parts: [{ kind: "text", text: params.messageText }],
+      parts: params.messageText === undefined ? [] : [{ kind: "text", text: params.messageText }],
       role: "assistant",
       sessionId: params.sessionId,
       source: "assistant",

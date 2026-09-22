@@ -330,7 +330,22 @@ export class WhatsAppChannelAdapter implements ChannelAdapter {
 
   private async runPollingLoop(context: ChannelAdapterStartContext): Promise<void> {
     while (!this.closed) {
-      await this.pollInboundDirectory(context);
+      // A poll failure must never end the loop or escape as an unhandled
+      // rejection. `pollInboundDirectory` guards each *entry*, but the
+      // `readdir` itself is outside that guard: if the bridge directory is
+      // removed, replaced, or briefly unreadable, the throw propagated out of
+      // a promise nothing awaits until `close()`, which can take the process
+      // down. A channel poller stopping silently is also a real failure mode —
+      // inbound messages would simply stop arriving with no error anywhere.
+      try {
+        await this.pollInboundDirectory(context);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `AIA_CHANNEL_POLL_FAILED: could not read the WhatsApp inbound directory (${reason}); retrying.`
+        );
+      }
+
       if (this.closed) {
         return;
       }

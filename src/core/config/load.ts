@@ -19,6 +19,13 @@ import {
   type ApprovalSettings
 } from "@/core/config/schema";
 import { resolveConfigSecrets } from "@/core/config/secrets";
+import {
+  collectTrustGatedProviderNames,
+  fingerprintConfigFile,
+  isConfigTrusted,
+  readConfigTrustStore,
+  type ConfigFingerprint
+} from "@/core/config/trust";
 
 export class ConfigValidationError extends Error {
   constructor(message: string) {
@@ -27,11 +34,22 @@ export class ConfigValidationError extends Error {
   }
 }
 
+export type WorkspaceConfigTrust = {
+  /** Fingerprint of the workspace config, or null when there is no such file. */
+  fingerprint: ConfigFingerprint | null;
+  /** True when the workspace config declares no trust-gated provider at all. */
+  required: boolean;
+  trusted: boolean;
+  /** Providers held back because this config is not trusted. */
+  untrustedProviderNames: string[];
+};
+
 export type LoadedAIAgentConfig = {
   approvals: ApprovalSettings;
   config: AppConfig;
   paths: ResolvedConfigPaths;
   resolvedConfig: AppConfig;
+  workspaceTrust: WorkspaceConfigTrust;
   sources: {
     approvals: {
       env: boolean;
@@ -95,13 +113,29 @@ export async function loadAIAgentConfig(params: {
   );
   const approvals = parseMerged(approvalSettingsSchema, mergedApprovals, "merged approval settings");
 
-  const resolvedConfig = params.resolveSecrets === false ? config : await resolveConfigSecrets(config, env);
+  // Security review H3: a workspace config discovered by walking up from cwd
+  // can declare `exec`/`file` secret providers, which run a command or read an
+  // arbitrary path on load. Those stay inert until the operator trusts this
+  // exact file and its exact contents.
+  const workspaceTrust = await resolveWorkspaceConfigTrust({
+    fragment: workspaceConfigFragment,
+    workspaceConfigPath: paths.workspaceConfigPath,
+    userStateDirectory: paths.userStateDirectory
+  });
+
+  const resolvedConfig =
+    params.resolveSecrets === false
+      ? config
+      : await resolveConfigSecrets(config, env, {
+          untrustedProviderNames: workspaceTrust.untrustedProviderNames
+        });
 
   return {
     approvals,
     config,
     paths,
     resolvedConfig,
+    workspaceTrust,
     sources: {
       approvals: {
         env: Object.keys(environmentOverrides.approvals).length > 0,
@@ -163,4 +197,66 @@ function normalizeConfigLayer(fragment: AppConfigFragment | null, filePath: stri
 
 function describeUnknownError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Decides whether this workspace's config may use its trust-gated secret
+ * providers (security review H3).
+ *
+ * Fails closed and *continues*: untrusted providers are simply withheld, with
+ * one warning naming them. Nothing breaks unless a config value actually
+ * references one, in which case that resolution raises a
+ * `SecretResolutionError` explaining how to grant trust. Refusing to load
+ * outright would block every headless surface over a provider nothing uses.
+ */
+async function resolveWorkspaceConfigTrust(params: {
+  fragment: AppConfigFragment | null;
+  userStateDirectory: string;
+  workspaceConfigPath: string;
+}): Promise<WorkspaceConfigTrust> {
+  const gatedProviderNames = collectTrustGatedProviderNames(params.fragment);
+  if (gatedProviderNames.length === 0) {
+    return {
+      fingerprint: null,
+      required: false,
+      trusted: true,
+      untrustedProviderNames: []
+    };
+  }
+
+  const fingerprint = await fingerprintConfigFile(params.workspaceConfigPath);
+  if (!fingerprint) {
+    // The fragment came from somewhere we can no longer read; withhold rather
+    // than assume.
+    return {
+      fingerprint: null,
+      required: true,
+      trusted: false,
+      untrustedProviderNames: gatedProviderNames
+    };
+  }
+
+  const store = await readConfigTrustStore(params.userStateDirectory);
+  if (isConfigTrusted(store, fingerprint)) {
+    return {
+      fingerprint,
+      required: true,
+      trusted: true,
+      untrustedProviderNames: []
+    };
+  }
+
+  process.emitWarning(
+    `The workspace config "${fingerprint.path}" declares secret provider(s) that can run commands or read ` +
+      `arbitrary files (${gatedProviderNames.join(", ")}), and this exact file has not been trusted. ` +
+      "They will not be used. Review the file, then run `aia trust` in this workspace to allow them.",
+    { code: "AIA_UNTRUSTED_CONFIG" }
+  );
+
+  return {
+    fingerprint,
+    required: true,
+    trusted: false,
+    untrustedProviderNames: gatedProviderNames
+  };
 }

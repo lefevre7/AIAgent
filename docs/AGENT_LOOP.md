@@ -128,6 +128,39 @@ recovered so downstream behaves identically to native parsing.
 - Adding a no-progress-style tool: give it `annotations.meta.family` of `reasoning`
   or `planning` rather than special-casing it in the loop.
 
+## The completion summary is the final answer (2026-09-22)
+
+`attempt_complete` is a runtime **completion gate**, not an executed tool: the loop
+intercepts it, so it produces no `ToolCall` record, no `tool.updated` event, and no tool
+result. Meanwhile the prompt pack tells the model to put its final answer in the
+`summary` argument and *not* to send it as a chat message. The two facts together meant
+the answer was written to `messages.jsonl` as a tool-call argument and then dropped —
+the CLI (both modes) and the web transcript showed reasoning, tool lines, and no answer.
+The better a model followed the contract, the less the operator saw.
+
+On an accepted completion the loop now persists that summary as an ordinary assistant
+message tagged `COMPLETION_SUMMARY_MESSAGE_TAG` (`"completion-summary"`, defined in
+`src/core/contracts/messages.ts` so the loop, the memory service and the CLI share one
+spelling), and sets the session's `statusSummary` to it instead of the hardcoded
+"The task completed successfully."
+
+One canonical persist, so every surface gets it: the interactive CLI prints it after the
+stream, `--prompt` returns it as `Assistant: …`, the web transcript renders it as text,
+and `chat-session-memory` records it. The tag is what lets a surface tell the final
+answer apart from narration the operator already watched stream by.
+
+`buildSessionSummary` records it on its own `Final answer:` line rather than letting it
+fall out of the same "latest assistant text" scan — otherwise a model that both narrates
+and completes would have its narration silently replaced by its sign-off.
+
+A blank or missing `summary` falls back to the generic status line and persists no
+message; `tests/integration/agent-loop.test.ts` covers both paths.
+
+**Test-fidelity note.** `tests/helpers/fake-language-model-server.ts` used to emit prose
+in `content` plus `attempt_complete` with *empty* arguments — the opposite of what the
+shipped prompt asks for. That is why the CLI and web e2e passed against a product that
+dropped every real answer. The fake is now contract-accurate.
+
 ## Completion-contract emphasis (2026-06-15)
 
 Symptom this addresses: a small local model (observed with Gemma 4 26B on LM Studio

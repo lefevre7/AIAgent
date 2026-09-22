@@ -52,7 +52,7 @@ The interactive session needs a reachable chat model (the configured default pro
 
 ### One-shot prompt mode
 
-Use `--prompt` for a single run that creates a real session, waits for it to finish, and prints the final status plus the latest assistant summary.
+Use `--prompt` for a single run that creates a real session, waits for it to finish, and prints the final status plus the agent's final answer (the `attempt_complete` summary, which the runtime persists as an assistant message).
 
 ```bash
 npm run cli -- --prompt "Summarize this repository" --cwd .

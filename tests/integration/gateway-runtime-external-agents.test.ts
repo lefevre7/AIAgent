@@ -152,3 +152,68 @@ describe("gateway external-agent dispatch", () => {
     expect(Array.isArray((sessions.payload as { sessions: unknown[] }).sessions)).toBe(true);
   });
 });
+
+// The live tool-output path (decision 21) and the run-finalization safety net.
+// Both are load-bearing and were previously uncovered.
+describe("gateway runtime event plumbing", () => {
+  test("emits tool.output.delta to subscribers without persisting it", async () => {
+    const { runtime } = await buildRuntime({ withExternalAgents: false });
+
+    const received: Array<{ payload: Record<string, unknown>; topic: string }> = [];
+    const unsubscribe = runtime.subscribe((event) => {
+      received.push({ payload: event.payload as Record<string, unknown>, topic: event.topic });
+    });
+
+    runtime.emitToolOutputDelta({
+      chunk: "partial output from a running process",
+      sessionId: "session.gw.output.1",
+      sourceId: "command.abc",
+      sourceKind: "command",
+      stream: "combined"
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    unsubscribe();
+
+    const delta = received.find((event) => event.topic === "tool.output.delta");
+    expect(delta?.payload).toMatchObject({
+      chunk: "partial output from a running process",
+      sourceId: "command.abc",
+      sourceKind: "command",
+      stream: "combined"
+    });
+
+    // Persisting a per-chunk event would be pathological for a chatty process;
+    // the combined log on disk is the durable copy. So it must not show up in
+    // the replayable event log.
+    const replayed = await runtime.replayEvents({ limit: 100 });
+    expect(replayed.events.some((event) => event.topic === "tool.output.delta")).toBe(false);
+  });
+
+  test("a subscriber that throws cannot stop other subscribers from seeing the event", async () => {
+    const { runtime } = await buildRuntime({ withExternalAgents: false });
+
+    const seen: string[] = [];
+    const unsubscribeBad = runtime.subscribe(() => {
+      throw new Error("subscriber exploded");
+    });
+    const unsubscribeGood = runtime.subscribe((event) => {
+      seen.push(event.topic);
+    });
+
+    expect(() =>
+      runtime.emitToolOutputDelta({
+        chunk: "still delivered",
+        sourceId: "command.def",
+        sourceKind: "command",
+        stream: "stdout"
+      })
+    ).not.toThrow();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    unsubscribeBad();
+    unsubscribeGood();
+
+    expect(seen).toContain("tool.output.delta");
+  });
+});

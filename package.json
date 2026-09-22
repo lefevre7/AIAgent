@@ -64,7 +64,7 @@
     "test:live:whatsapp": "vitest run --config vitest.live.config.ts tests/live/whatsapp-channel.live.test.ts",
     "test:live:voice": "vitest run --config vitest.live.config.ts tests/live/voice-service.live.test.ts",
     "test:e2e": "playwright test",
-    "validate:penultimate": "npm run typecheck && npm run lint && npm run test:deterministic && npm run test:live"
+    "validate:penultimate": "npm run typecheck && npm run lint && npm run test:deterministic && npm run test:coverage && npm run test:live"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",

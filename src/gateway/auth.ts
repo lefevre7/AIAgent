@@ -21,7 +21,6 @@ export type GatewayAuthorizationResult =
 export function authorizeGatewayHttpRequest(request: Request, options: GatewayAuthOptions = {}): GatewayAuthorizationResult {
   return authorizeGatewayAccess({
     configuredToken: options.token,
-    forwardedFor: firstHeaderValue(request.headers["x-forwarded-for"]),
     remoteAddress: request.socket.remoteAddress,
     presentedToken:
       extractAuthorizationToken(request.headers.authorization) ??
@@ -37,7 +36,6 @@ export function authorizeGatewayUpgradeRequest(
   const url = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`) : null;
   return authorizeGatewayAccess({
     configuredToken: options.token,
-    forwardedFor: firstHeaderValue(request.headers["x-forwarded-for"]),
     remoteAddress: request.socket.remoteAddress,
     presentedToken:
       extractAuthorizationToken(request.headers.authorization) ??
@@ -45,6 +43,58 @@ export function authorizeGatewayUpgradeRequest(
       url?.searchParams.get("token") ??
       undefined
   });
+}
+
+/**
+ * Refuses to start an exposed gateway that has no token.
+ *
+ * Dropping `X-Forwarded-For` (H2) closes header spoofing but not the shape that
+ * actually bites: a tunnel or reverse proxy terminating in front of us forwards
+ * to the loopback socket, so every remote request *is* genuinely loopback and
+ * the loopback allowance hands it full access. The only reliable signal is our
+ * own configuration — if we bind somewhere routable, or a tunnel is enabled,
+ * remote traffic is possible and a token is mandatory.
+ *
+ * Previously this was only a warning (security review M13), which meant the
+ * insecure configuration still came up and served traffic.
+ */
+export function assertGatewayExposureIsAuthenticated(params: {
+  hostname: string;
+  token?: string;
+  tunnelEnabled: boolean;
+}): void {
+  if (params.token) {
+    return;
+  }
+
+  const reasons: string[] = [];
+  if (!isLoopbackAddress(params.hostname) && !isUnspecifiedAddress(params.hostname)) {
+    reasons.push(`the server binds to the routable address "${params.hostname}"`);
+  } else if (isUnspecifiedAddress(params.hostname)) {
+    reasons.push(`the server binds to "${params.hostname}", which accepts connections on every interface`);
+  }
+  if (params.tunnelEnabled) {
+    reasons.push("a tunnel is enabled, so requests can arrive from outside this machine");
+  }
+
+  if (reasons.length === 0) {
+    return;
+  }
+
+  throw new Error(
+    `Refusing to start without "gateway.auth.token": ${reasons.join(" and ")}. ` +
+      "Any client reaching the gateway would get unauthenticated access to sessions, tools, and approvals. " +
+      'Set gateway.auth.token in aia.config.jsonc (or bind to "127.0.0.1" and disable the tunnel).'
+  );
+}
+
+/**
+ * `0.0.0.0` / `::` bind every interface, so they are routable in practice even
+ * though they are not themselves a remote address.
+ */
+function isUnspecifiedAddress(address: string): boolean {
+  const normalized = address.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return normalized === "0.0.0.0" || normalized === "::" || normalized === "*";
 }
 
 export function isLoopbackAddress(address: string | undefined): boolean {
@@ -61,7 +111,6 @@ export function isLoopbackAddress(address: string | undefined): boolean {
 
 function authorizeGatewayAccess(params: {
   configuredToken?: string;
-  forwardedFor?: string;
   presentedToken?: string;
   remoteAddress?: string;
 }): GatewayAuthorizationResult {
@@ -87,8 +136,13 @@ function authorizeGatewayAccess(params: {
     };
   }
 
-  const requestAddress = params.forwardedFor?.split(",")[0]?.trim() || params.remoteAddress;
-  if (isLoopbackAddress(requestAddress)) {
+  // The peer address comes from the socket only. `X-Forwarded-For` is
+  // client-supplied: honouring it let any remote caller present
+  // `X-Forwarded-For: 127.0.0.1` and be treated as loopback (security review
+  // H2). A real reverse-proxy deployment is not loopback and must configure
+  // `gateway.auth.token`, which `assertGatewayExposureIsAuthenticated`
+  // now requires up front.
+  if (isLoopbackAddress(params.remoteAddress)) {
     return {
       ok: true
     };

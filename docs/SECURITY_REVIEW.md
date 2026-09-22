@@ -1,6 +1,6 @@
 # Security Review — 2026-07-09
 
-Status: **partially remediated (2026-09-14)** — see "Remediation status" below for what
+Status: **partially remediated (2026-09-14, extended 2026-09-22)** — see "Remediation status" below for what
 landed; the rest of this document is the original audit record. This document is the
 shared record of a full-repo defensive security audit. It exists so the remediation work (and any future
 audit) starts from a written baseline instead of re-deriving everything.
@@ -24,9 +24,28 @@ Fixed in this repo, each with regression tests:
 | H9 | Path targets are canonicalized with the same `resolveLocalPath` the file tools use (`file://`, `~`, relative, `..`) against the session cwd before matching, `file://` values are included, and path rules match case-insensitively on macOS/Windows. | `src/core/approvals/policy.ts` (`extractApprovalTargets` + `cwd` option), `tests/unit/approval-policy.test.ts` |
 | M6 | `exec_command` argv is appended to the `command` target (`git push --force 'my branch'`) so command allow/deny rules see the whole command line. | `src/core/approvals/policy.ts` (`stringifyArgv`) |
 
-Still open (unchanged from the audit): H2, H3, H4, H6, M1–M5, M7–M13, and the low-severity
-items. The Kotlin port (`AIAgentCompact-Kotlin`) drops the gateway/web/channel/browser
-surfaces, which removes H2, H6, M1–M3, M7–M10, and M13 from that codebase by construction.
+Fixed in the 2026-09-22 pass, each with regression tests:
+
+| # | Fix | Where |
+|---|-----|-------|
+| H2 | `X-Forwarded-For` is no longer consulted at all; the peer address comes from the socket only, on both the gateway and the control-plane/web path. The header is client-supplied, so trusting it let any remote caller present `X-Forwarded-For: 127.0.0.1` and be treated as loopback. | `src/gateway/auth.ts`, `src/server/web-access.ts`, `tests/unit/gateway-auth.test.ts` |
+| M13 | `assertGatewayExposureIsAuthenticated` now **refuses to start** an untokened gateway whenever the bind host is routable or unspecified (`0.0.0.0`/`::`), or a tunnel is enabled. This was previously only a warning, so the insecure configuration still came up and served traffic. It also closes the case header handling cannot: a tunnel terminating in front of us forwards to the loopback socket, so remote traffic *is* genuinely loopback by the time we see it. | `src/gateway/auth.ts`, `src/server/start.ts` |
+| H3 | Workspace configs must be explicitly trusted before their `exec`/`file` secret providers are honoured. Trust is keyed on the config file's path **and** the SHA-256 of its exact contents, recorded in `~/.aia/trust.json` (never in the workspace — a record stored there could be shipped pre-populated). Editing a trusted file revokes trust. Untrusted providers are withheld with an `AIA_UNTRUSTED_CONFIG` warning and the load continues; only a config value that actually *references* one fails. `aia trust` grants or revokes. | `src/core/config/trust.ts`, `src/core/config/load.ts`, `src/core/config/secrets.ts`, `src/cli.ts`, `tests/unit/config-trust.test.ts`, `tests/integration/config-loader.test.ts` |
+| H4 | The `command` approval target now renders the **full resolved argv**, including the model-supplied `args`, using the same `stringifyArgv` the M6 fix introduced. A model could previously pass `--dangerously-bypass-approvals-and-sandbox` while the operator saw only "run codex", and no deny rule written against the command line could match. | `src/core/external-agents/service.ts`, `src/core/approvals/policy.ts`, `tests/integration/external-agent-tool.test.ts` |
+| H6 | Channel control commands (`/approve`, `/deny`, `/cancel`, `/steer`) are refused unless the sender is listed in `channels.<kind>.operatorIdentities`. **Fails closed**: an empty allowlist authorizes nobody. The refusal names the setting, because the likeliest reader is an operator who has not configured it yet. Parsing and authorization were extracted into `src/gateway/channel-commands.ts` so the rule lives next to the parser it guards. | `src/gateway/channel-commands.ts`, `src/gateway/runtime.ts`, `src/core/config/schema.ts`, `tests/unit/channel-commands.test.ts`, `tests/integration/whatsapp-channel.test.ts` |
+
+Still open: M1–M5, M7–M12, and the low-severity items. The Kotlin port
+(`AIAgentCompact-Kotlin`) drops the gateway/web/channel/browser surfaces, which removes
+M1–M3, M7–M10 from that codebase by construction.
+
+**Behaviour changes an operator will notice:**
+
+- An untokened gateway bound to anything but loopback, or with a tunnel enabled, now
+  refuses to start instead of warning.
+- A workspace config that declares an `exec` or `file` secret provider needs `aia trust`
+  once before those providers work.
+- Channel `/approve` and friends stop working until `operatorIdentities` is configured
+  for that channel.
 
 ## Threat model (assumed, pending confirmation)
 

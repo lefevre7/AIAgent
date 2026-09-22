@@ -251,6 +251,69 @@ describe("WhatsApp channel integration", () => {
     expect(outboundTexts.some((text) => text.includes("Steering applied."))).toBe(true);
   });
 
+  // Security review H6. Any message starting with /approve used to resolve the
+  // latest pending approval with no identity check at all, so the
+  // correspondent — or anyone able to write into the bridge's inbound
+  // directory — could approve the dangerous tool call the gate existed to stop.
+  test("refuses a control command from a sender who is not an allowlisted operator", async () => {
+    const harness = await createWhatsAppHarness(
+      async (request) =>
+        buildAssistantResponse({
+          sessionId: requireSessionId(request.sessionId),
+          text: "unused for command turns",
+          toolCalls: [buildAttemptCompleteCall("tool.complete.whatsapp.unauthorized")]
+        }),
+      // Somebody else is the operator.
+      ["user-operator"]
+    );
+
+    const session = sessionRecordSchema.parse({
+      createdAt: "2026-03-31T14:00:00.000Z",
+      cwd: "/workspace",
+      goal: "Respond to the WhatsApp thread",
+      id: "session.whatsapp.unauthorized.1",
+      lastActiveAt: "2026-03-31T14:00:00.000Z",
+      metadata: {},
+      status: "idle",
+      tags: ["channel:whatsapp"],
+      title: "WhatsApp Unauthorized Session",
+      updatedAt: "2026-03-31T14:00:00.000Z"
+    });
+    await harness.sessions.saveSession(session);
+    await harness.channelService.ensureRoute({
+      identity: {
+        accountId: "whatsapp-account",
+        channel: "whatsapp",
+        displayName: "Mallory",
+        userId: "user-intruder"
+      },
+      sessionId: session.id
+    });
+
+    await writeInboundEntry(harness.sessionDirectory, {
+      accountId: "whatsapp-account",
+      createdAt: "2026-03-31T14:01:00.000Z",
+      displayName: "Mallory",
+      id: "channel-message.whatsapp.inbound.unauthorized",
+      media: [],
+      metadata: {},
+      text: "/approve",
+      userId: "user-intruder"
+    });
+
+    await waitFor(async () => {
+      const entries = await readOutboundEntries(harness.sessionDirectory);
+      return entries.some((entry) => entry.text?.includes("not available from this conversation"));
+    });
+
+    const outboundTexts = (await readOutboundEntries(harness.sessionDirectory)).map((entry) => entry.text ?? "");
+    // The refusal names the setting, because the likeliest reader is an
+    // operator who simply has not configured the allowlist yet.
+    expect(outboundTexts.some((text) => text.includes("channels.whatsapp.operatorIdentities"))).toBe(true);
+    // And it must not have been treated as a normal prompt for the agent.
+    expect(outboundTexts.some((text) => text.includes("Approval"))).toBe(false);
+  });
+
   test("answers /help and reports when there are no pending approvals", async () => {
     const harness = await createWhatsAppHarness(async (request) =>
       buildAssistantResponse({
@@ -311,7 +374,10 @@ describe("WhatsApp channel integration", () => {
 });
 
 async function createWhatsAppHarness(
-  modelHandler: (request: Omit<LanguageModelRequest, "modelId" | "provider"> & { modelId?: string; provider?: LanguageModelRequest["provider"] }) => Promise<LanguageModelResponse>
+  modelHandler: (request: Omit<LanguageModelRequest, "modelId" | "provider"> & { modelId?: string; provider?: LanguageModelRequest["provider"] }) => Promise<LanguageModelResponse>,
+  // Security review H6: control commands are refused unless the sender is an
+  // allowlisted operator, so tests that drive /approve must say who that is.
+  operatorIdentities: string[] = ["user-42", "user-help"]
 ) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aia-whatsapp-channel-"));
   tempRoots.push(root);
@@ -321,6 +387,7 @@ async function createWhatsAppHarness(
     userStateDirectory: path.join(root, "home", ".aia")
   });
   config.channels.whatsapp.enabled = true;
+  config.channels.whatsapp.operatorIdentities = operatorIdentities;
   config.channels.whatsapp.sessionDirectory = sessionDirectory;
   config.memory.stateRoot = path.join(root, ".aia");
 

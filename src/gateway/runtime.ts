@@ -95,6 +95,14 @@ import {
   type ToolDefinition
 } from "@/core/contracts";
 import {
+  buildChannelHelpText,
+  buildUnauthorizedChannelCommandText,
+  isAuthorizedChannelOperator,
+  parseChannelCommand,
+  resolveChannelOperatorIdentities,
+  type ChannelCommand
+} from "@/gateway/channel-commands";
+import {
   createGatewayError as gatewayError,
   normalizeGatewayError
 } from "@/gateway/errors";
@@ -108,21 +116,6 @@ type ActiveGatewayRun = {
   cancelRequested: boolean;
   run: GatewayRunRecord;
 };
-
-type ChannelCommand =
-  | {
-      decision: "approved" | "cancelled" | "denied";
-      kind: "approval";
-      requestId?: string;
-      comment?: string;
-    }
-  | {
-      kind: "help";
-    }
-  | {
-      kind: "steering";
-      message: string;
-    };
 
 type MaterializedApprovalResume = {
   messageIds: string[];
@@ -2017,6 +2010,24 @@ export class GatewayRuntime
       };
     }
 
+    // Security review H6: control commands act on the operator's behalf —
+    // `/approve` resolves a pending approval and resumes the run — so the
+    // sender must be an allowlisted operator. Checked once here, before the
+    // dispatch, so no future command kind can be added past the gate. Note the
+    // command is still *handled* (not passed through to the model as a chat
+    // message): a refused `/approve` must not become a prompt.
+    const operatorIdentities = resolveChannelOperatorIdentities(
+      this.options.config.channels,
+      message.identity.channel
+    );
+    if (!isAuthorizedChannelOperator(message.identity, operatorIdentities)) {
+      await this.sendChannelTextReply(message, buildUnauthorizedChannelCommandText(message.identity));
+      return {
+        handled: true,
+        run: null
+      };
+    }
+
     switch (command.kind) {
       case "approval":
         return {
@@ -3246,15 +3257,6 @@ function buildChannelApprovalPrompt(request: ApprovalRequest): string {
   ].join("\n");
 }
 
-function buildChannelHelpText(): string {
-  return [
-    "Channel commands:",
-    "/approve <requestId> to approve the latest pending action.",
-    "/deny <requestId> <reason> to reject an action.",
-    "/steer <message> to inject steering into the current session."
-  ].join("\n");
-}
-
 function buildChannelSessionGoal(message: ChannelMessage): string {
   const target = message.identity.displayName ?? message.identity.userId;
   return `Respond helpfully to ${describeChannel(message.identity.channel)} messages from ${target}.`;
@@ -3315,76 +3317,6 @@ function collectArtifactsFromMessage(message: Message): ArtifactReference[] {
     }
   }
   return Array.from(artifacts.values());
-}
-
-function extractCommandText(message: ChannelMessage): string | null {
-  const text = message.parts
-    .flatMap((part) => {
-      switch (part.kind) {
-        case "markdown":
-          return [part.markdown];
-        case "text":
-          return [part.text];
-        default:
-          return [];
-      }
-    })
-    .join("\n")
-    .trim();
-
-  return text.length > 0 ? text : null;
-}
-
-function parseChannelCommand(message: ChannelMessage): ChannelCommand | null {
-  const text = extractCommandText(message);
-  if (!text?.startsWith("/")) {
-    return null;
-  }
-
-  const [rawCommand, ...rest] = text.split(/\s+/u);
-  const command = rawCommand.slice(1).toLowerCase();
-  switch (command) {
-    case "approve":
-    case "cancel":
-    case "deny": {
-      const [maybeRequestId, ...commentTokens] = rest;
-      const hasRequestId =
-        typeof maybeRequestId === "string" &&
-        maybeRequestId.length > 0 &&
-        maybeRequestId.includes(".");
-      const comment =
-        (hasRequestId ? commentTokens : rest).join(" ").trim() || undefined;
-      return {
-        comment,
-        decision:
-          command === "approve"
-            ? "approved"
-            : command === "deny"
-              ? "denied"
-              : "cancelled",
-        kind: "approval",
-        requestId: hasRequestId ? maybeRequestId : undefined
-      };
-    }
-    case "help":
-      return {
-        kind: "help"
-      };
-    case "steer": {
-      const messageText = rest.join(" ").trim();
-      if (!messageText) {
-        return {
-          kind: "help"
-        };
-      }
-      return {
-        kind: "steering",
-        message: messageText
-      };
-    }
-    default:
-      return null;
-  }
 }
 
 function shouldRelayMessageToChannel(message: Message): boolean {

@@ -10,6 +10,7 @@ import type {
   LanguageModelStreamEvent,
   Message,
   MessagePart,
+  ModelToolCallProposal,
   SessionRecord,
   SteeringInjection,
   StructuredError,
@@ -18,6 +19,7 @@ import type {
   ToolDefinition,
   TurnRecord
 } from "@/core/contracts";
+import { COMPLETION_SUMMARY_MESSAGE_TAG } from "@/core/contracts";
 import type { MemoryContextProvider } from "@/core/memory";
 import type { SessionMemoryLifecycle } from "@/core/memory";
 import type { TaskStateProvider } from "@/core/plans";
@@ -593,13 +595,32 @@ export class AgentLoop {
           response
         );
         if (completionDecision.accepted) {
+          // The prompt pack tells the model to put its final answer in the
+          // `summary` argument rather than in a chat message, and
+          // `attempt_complete` is a runtime gate rather than an executed tool —
+          // so nothing else in the system ever carries that text to a surface.
+          // Persisting it as an ordinary assistant message is what makes the
+          // answer visible to the CLI, the web transcript, channels, and the
+          // session summary, from one place.
+          const completionSummary = readCompletionSummary(completionCalls[0]);
+          if (completionSummary) {
+            const summaryMessage = createCompletionSummaryMessage(
+              session.id,
+              turn.id,
+              completionSummary
+            );
+            await this.options.sessions.appendMessages([summaryMessage]);
+            appendedMessages.push(summaryMessage);
+            turn.outputMessageIds.push(summaryMessage.id);
+          }
+
           turn.completedAt = new Date().toISOString();
           turn.status = "completed";
           turn.summary = "The runtime accepted `attempt_complete`.";
           await this.options.sessions.appendTurn(turn);
           appendedTurns.push(turn);
           session = await this.persistSession(session, "completed", {
-            statusSummary: "The task completed successfully."
+            statusSummary: completionSummary ?? "The task completed successfully."
           });
           await this.options.memoryLifecycle?.compactSession({
             sessionId: session.id,
@@ -1357,6 +1378,51 @@ function createSystemMessage(
     tags: [],
     turnId,
     visibility
+  };
+}
+
+/**
+ * Pulls the operator-facing answer out of an accepted `attempt_complete` call.
+ *
+ * `summary` is required by the tool schema, but a model can still send an empty
+ * or whitespace-only string, and a malformed call reaches here as an arbitrary
+ * JSON value. Anything that is not real text yields null so the caller falls
+ * back to the generic status line instead of persisting an empty message.
+ */
+function readCompletionSummary(
+  completionCall: ModelToolCallProposal | undefined
+): string | null {
+  const raw = completionCall?.arguments?.summary;
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * The final answer, persisted as an ordinary assistant message.
+ *
+ * Tagged so a surface can tell the completion summary apart from streamed
+ * narration on the same turn (the CLI prints it after the stream; without the
+ * tag it could not know whether it had already shown this text).
+ */
+function createCompletionSummaryMessage(
+  sessionId: string,
+  turnId: string,
+  summary: string
+): Message {
+  return {
+    createdAt: new Date().toISOString(),
+    id: createMessageId("completion", `${turnId}.${crypto.randomUUID()}`),
+    metadata: {},
+    parts: [{ kind: "text", text: summary }],
+    role: "assistant",
+    sessionId,
+    source: "assistant",
+    tags: [COMPLETION_SUMMARY_MESSAGE_TAG],
+    turnId,
+    visibility: "default"
   };
 }
 

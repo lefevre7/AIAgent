@@ -3,7 +3,12 @@ import type { IncomingMessage } from "node:http";
 import httpMocks from "node-mocks-http";
 import { describe, expect, test } from "vitest";
 
-import { authorizeGatewayHttpRequest, authorizeGatewayUpgradeRequest, isLoopbackAddress } from "@/gateway";
+import {
+  assertGatewayExposureIsAuthenticated,
+  authorizeGatewayHttpRequest,
+  authorizeGatewayUpgradeRequest,
+  isLoopbackAddress
+} from "@/gateway";
 
 function upgradeRequest(params: {
   headers?: Record<string, string | string[]>;
@@ -107,14 +112,71 @@ describe("gateway auth", () => {
     expect(authorizeGatewayHttpRequest(queryRequest, { token: "secret" }).ok).toBe(true);
   });
 
-  test("honors the first x-forwarded-for hop for loopback detection", () => {
+  // Security review H2. This previously asserted the opposite ("honors the
+  // first x-forwarded-for hop"), which is exactly the bypass: the header is
+  // client-supplied, so trusting it let any remote caller claim to be loopback.
+  test("ignores a spoofed x-forwarded-for and refuses the real remote address", () => {
     const request = httpMocks.createRequest({
       headers: { "x-forwarded-for": "127.0.0.1, 10.0.0.9" },
       method: "GET",
       url: "/x"
     });
     Object.defineProperty(request.socket, "remoteAddress", { value: "10.0.0.9" });
-    expect(authorizeGatewayHttpRequest(request).ok).toBe(true);
+
+    const result = authorizeGatewayHttpRequest(request);
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.statusCode).toBe(401);
+  });
+
+  test("ignores a spoofed x-forwarded-for on WebSocket upgrades too", () => {
+    const result = authorizeGatewayUpgradeRequest(
+      upgradeRequest({
+        headers: { host: "localhost", "x-forwarded-for": "127.0.0.1" },
+        remoteAddress: "10.0.0.9",
+        url: "/ws"
+      })
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  // Security review M13: this used to be a warning, so the insecure
+  // configuration still came up and served traffic.
+  describe("assertGatewayExposureIsAuthenticated", () => {
+    test("allows an untokened gateway only on loopback with no tunnel", () => {
+      expect(() =>
+        assertGatewayExposureIsAuthenticated({ hostname: "127.0.0.1", tunnelEnabled: false })
+      ).not.toThrow();
+    });
+
+    test("refuses an untokened gateway bound to a routable address", () => {
+      expect(() =>
+        assertGatewayExposureIsAuthenticated({ hostname: "192.168.1.20", tunnelEnabled: false })
+      ).toThrow(/gateway\.auth\.token/u);
+    });
+
+    test("refuses an untokened gateway bound to every interface", () => {
+      expect(() => assertGatewayExposureIsAuthenticated({ hostname: "0.0.0.0", tunnelEnabled: false })).toThrow(
+        /every interface/u
+      );
+      expect(() => assertGatewayExposureIsAuthenticated({ hostname: "::", tunnelEnabled: false })).toThrow(
+        /every interface/u
+      );
+    });
+
+    // The case header handling cannot catch: the tunnel terminates in front of
+    // us and forwards to the loopback socket, so remote traffic is genuinely
+    // loopback by the time we see it.
+    test("refuses an untokened loopback gateway when a tunnel is enabled", () => {
+      expect(() => assertGatewayExposureIsAuthenticated({ hostname: "127.0.0.1", tunnelEnabled: true })).toThrow(
+        /tunnel is enabled/u
+      );
+    });
+
+    test("allows any exposure once a token is configured", () => {
+      expect(() =>
+        assertGatewayExposureIsAuthenticated({ hostname: "0.0.0.0", token: "secret", tunnelEnabled: true })
+      ).not.toThrow();
+    });
   });
 
   test("authorizes WebSocket upgrades by token query, loopback, and rejects others", () => {

@@ -48,6 +48,15 @@ export async function openTerminalWindow(params: {
   });
 }
 
-function quoteAppleScript(value: string): string {
+/**
+ * Quotes a value for an AppleScript string literal, which escapes only
+ * backslash and double quote.
+ *
+ * This is the injection boundary: `do script` hands its argument to a shell,
+ * so anything that escapes the literal becomes a command. Exported so it can
+ * be tested directly — the function around it spawns a real window, which a
+ * test cannot do.
+ */
+export function quoteAppleScript(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }

@@ -41,6 +41,11 @@ type ChannelServiceOptions = {
 
 const supportedChannelKinds = ["discord", "whatsapp", "teams", "imessage"] as const;
 
+// Size at which the delivery ledger rotates. Deliveries are small records and
+// `listDeliveries` re-reads the whole file, so this bounds both disk use and
+// that read; with one retained generation the ceiling is ~32MB.
+const MAX_DELIVERY_LOG_BYTES = 16 * 1024 * 1024;
+
 const routesIndexSchema = z
   .object({
     routes: z.array(channelRouteSchema).default([]),
@@ -390,9 +395,47 @@ export class ChannelService {
       .filter((endpoint): endpoint is ChannelWebhookEndpoint => endpoint !== null);
   }
 
+  /**
+   * Appends one delivery record, rotating the ledger once it grows past
+   * `MAX_DELIVERY_LOG_BYTES`.
+   *
+   * The same unbounded-append problem the global event ledger had: every
+   * send writes three records (sending, then sent or failed), `listDeliveries`
+   * reads and Zod-parses the *whole* file on every call, and nothing ever
+   * pruned it. One retained generation bounds it without losing recent history.
+   */
   private async appendDelivery(record: ChannelDeliveryRecord): Promise<void> {
-    await fs.mkdir(path.dirname(this.deliveriesFile()), { recursive: true });
-    await fs.appendFile(this.deliveriesFile(), `${JSON.stringify(channelDeliveryRecordSchema.parse(record))}\n`, "utf8");
+    const filePath = this.deliveriesFile();
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    // Best-effort, exactly as the session store does it: failing to rotate
+    // must never cost us the delivery record.
+    await this.rotateDeliveryLog(filePath).catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`AIA_DELIVERY_LOG_ROTATE_FAILED: could not rotate ${filePath} (${reason}); it will keep growing.`);
+    });
+
+    await fs.appendFile(filePath, `${JSON.stringify(channelDeliveryRecordSchema.parse(record))}\n`, "utf8");
+  }
+
+  /** Moves the delivery ledger aside once it crosses the size limit. */
+  private async rotateDeliveryLog(filePath: string): Promise<void> {
+    let size = 0;
+    try {
+      size = (await fs.stat(filePath)).size;
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+
+    if (size < MAX_DELIVERY_LOG_BYTES) {
+      return;
+    }
+
+    // `rename` is atomic within a filesystem, so a concurrent reader sees
+    // either the rotated file or the fresh one, never a partial state.
+    await fs.rename(filePath, `${filePath}.1`);
   }
 
   private async bindRouteToSession(route: ChannelRoute): Promise<void> {

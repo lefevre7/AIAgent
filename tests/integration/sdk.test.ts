@@ -199,6 +199,12 @@ describe("node sdk", () => {
     const loaded: LoadedAIAgentConfig = {
       approvals: DEFAULT_APPROVAL_SETTINGS,
       config,
+      workspaceTrust: {
+        fingerprint: null,
+        required: false,
+        trusted: true,
+        untrustedProviderNames: []
+      },
       paths: {
         globalApprovalsPath: path.join(root, "approvals.global.json"),
         globalConfigPath: path.join(root, "config.global.json"),

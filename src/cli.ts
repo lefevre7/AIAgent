@@ -11,7 +11,10 @@ import {
   createBootstrapInfo,
   createVoiceServiceFromConfig,
   loadAIAgentConfig,
+  grantConfigTrust,
+  revokeConfigTrust,
   APP_CONFIG_FILE_NAME,
+  COMPLETION_SUMMARY_MESSAGE_TAG,
   DEFAULT_LM_STUDIO_MODEL,
   type ArtifactReference,
   type LoadedAIAgentConfig,
@@ -93,6 +96,8 @@ function formatHelp(): string {
     "  aia                  Start an interactive session (stays open until /exit or /quit)",
     "  aia info             Print runtime surfaces and providers",
     "  aia attach <id>      Join a live interactive external-agent terminal (Ctrl-] to detach)",
+    "  aia trust [--revoke] [--cwd <path>]",
+    "                       Show or change trust for this workspace's config file",
     "  aia --help",
     "  aia --prompt <text> [--cwd <path>] [--goal <text>] [--title <text>]",
     "  aia voice --help",
@@ -137,6 +142,10 @@ export async function runCli(
 
   if (argv[0] === "attach") {
     return runAttachCli(argv.slice(1), streams, deps);
+  }
+
+  if (argv[0] === "trust") {
+    return runTrustCli(argv.slice(1), streams);
   }
 
   const { values } = parseArgs({
@@ -674,6 +683,16 @@ async function runChatTurn(
       )) ?? finalRun;
 
     const snapshot = (await handle.snapshot()).snapshot;
+
+    // The final answer arrives as the `attempt_complete` summary, which the
+    // loop persists as a tagged assistant message. It never streams (it is a
+    // tool argument, not generated text), so without this the operator sees
+    // reasoning and status lines and no answer at all.
+    const completionSummary = extractCompletionSummary(snapshot);
+    if (completionSummary) {
+      writeLine(streams.stdout, completionSummary);
+    }
+
     const errorMessage = snapshot.session.lastError?.message;
     if (errorMessage) {
       writeLine(streams.stderr, `Error: ${errorMessage}`);
@@ -1657,6 +1676,27 @@ function writeLine(stream: CliStream, value: string): void {
   stream.write(`${value}\n`);
 }
 
+/**
+ * The run's final answer: the newest message tagged as an accepted
+ * `attempt_complete` summary. Matching on the tag rather than "last assistant
+ * message" keeps this from re-printing streamed narration that the operator
+ * already watched arrive.
+ */
+function extractCompletionSummary(snapshot: SessionSnapshot): string | null {
+  const summaryMessage = snapshot.messages
+    .slice()
+    .reverse()
+    // `tags` is schema-defaulted, but snapshots reach the CLI from fakes and
+    // older persisted records too; an absent array must not throw here.
+    .find((message) => (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG));
+
+  if (!summaryMessage) {
+    return null;
+  }
+
+  return extractMessageText(summaryMessage) || null;
+}
+
 function extractLatestAssistantSummary(
   snapshot: GatewaySessionSnapshot
 ): string | null {
@@ -1708,4 +1748,95 @@ function isDirectlyInvoked(): boolean {
 
 if (isDirectlyInvoked()) {
   void mainCli();
+}
+
+/**
+ * Shows or changes trust for this workspace's config file (security review H3).
+ *
+ * Trust is per exact file *contents*, so the command always prints the
+ * fingerprint it is acting on: an operator granting trust should be able to see
+ * that it matches the file they just reviewed, and a later edit will show up
+ * here as "not trusted" again rather than silently keeping the old grant.
+ */
+async function runTrustCli(args: string[], streams: CliStreams): Promise<number> {
+  let parsed: { values: { cwd?: string; help?: boolean; revoke?: boolean } };
+  try {
+    parsed = parseArgs({
+      args,
+      allowPositionals: false,
+      options: {
+        cwd: { type: "string" },
+        help: { short: "h", type: "boolean" },
+        revoke: { type: "boolean" }
+      }
+    });
+  } catch (error) {
+    writeLine(streams.stderr, renderCliError(error));
+    return 1;
+  }
+
+  if (parsed.values.help) {
+    writeLine(
+      streams.stdout,
+      [
+        "aia trust — allow this workspace's config to use secret providers that run commands or read files.",
+        "",
+        "  aia trust                 Show the current trust state",
+        "  aia trust --revoke        Remove trust for this workspace's config",
+        "  aia trust --cwd <path>    Act on a different workspace"
+      ].join("\n")
+    );
+    return 0;
+  }
+
+  const cwd = parsed.values.cwd ? path.resolve(parsed.values.cwd) : process.cwd();
+
+  try {
+    // Skip secret resolution: the whole point is that we may not be allowed to
+    // run these providers yet, and resolving would raise the very error the
+    // operator is here to fix.
+    const loaded = await loadAIAgentConfig({ cwd, resolveSecrets: false });
+    const { paths, workspaceTrust } = loaded;
+    const configPath = loaded.sources.config.workspace ?? paths.workspaceConfigPath;
+
+    if (parsed.values.revoke) {
+      await revokeConfigTrust(paths.userStateDirectory, configPath);
+      writeLine(streams.stdout, `Revoked trust for ${configPath}.`);
+      return 0;
+    }
+
+    if (!workspaceTrust.required) {
+      writeLine(
+        streams.stdout,
+        `No trust needed: ${configPath} declares no secret provider that can run commands or read arbitrary files.`
+      );
+      return 0;
+    }
+
+    const fingerprint = workspaceTrust.fingerprint;
+    if (!fingerprint) {
+      writeLine(streams.stderr, `Cannot read the workspace config at ${configPath}.`);
+      return 1;
+    }
+
+    if (workspaceTrust.trusted) {
+      writeLine(streams.stdout, [`Already trusted: ${fingerprint.path}`, `sha256: ${fingerprint.sha256}`].join("\n"));
+      return 0;
+    }
+
+    await grantConfigTrust(paths.userStateDirectory, fingerprint);
+    writeLine(
+      streams.stdout,
+      [
+        `Trusted ${fingerprint.path}`,
+        `sha256: ${fingerprint.sha256}`,
+        `Now allowed: ${workspaceTrust.untrustedProviderNames.join(", ")}`,
+        "Editing this file revokes trust until you run `aia trust` again."
+      ].join("\n")
+    );
+    return 0;
+  } catch (error) {
+    writeLine(streams.stderr, renderCliError(error));
+    return 1;
+  }
 }

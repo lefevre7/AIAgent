@@ -68,8 +68,9 @@ export function authorizeWebAccessRequest(
     return result;
   }
 
-  const requestAddress = firstHeaderValue(request.headers["x-forwarded-for"])?.split(",")[0]?.trim() || request.socket.remoteAddress;
-  if (isLoopbackAddress(requestAddress)) {
+  // Socket address only — see the matching note in `@/gateway/auth`. A
+  // client-supplied `X-Forwarded-For: 127.0.0.1` must never read as loopback.
+  if (isLoopbackAddress(request.socket.remoteAddress)) {
     return {
       ok: true
     };

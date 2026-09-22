@@ -279,6 +279,12 @@ function createExampleLoadedConfig(params: {
   return {
     approvals: DEFAULT_APPROVAL_SETTINGS,
     config,
+    workspaceTrust: {
+      fingerprint: null,
+      required: false,
+      trusted: true,
+      untrustedProviderNames: []
+    },
     paths: {
       globalApprovalsPath: path.join(params.userStateDirectory, "approvals.global.jsonc"),
       globalConfigPath: path.join(params.userStateDirectory, "config.global.jsonc"),

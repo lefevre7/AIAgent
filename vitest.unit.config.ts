@@ -18,7 +18,13 @@ export default defineConfig({
     globals: true,
     include: ["tests/unit/**/*.test.ts", "tests/unit/**/*.test.tsx"],
     name: "unit",
-    setupFiles: ["tests/setup/unit.ts"]
+    setupFiles: ["tests/setup/unit.ts"],
+    // Matches the integration project. A few unit tests spawn real macOS
+    // helpers (`say`, the native voice helper); under V8 coverage
+    // instrumentation those exceed vitest's 5s default, which made
+    // `npm run test:coverage` fail intermittently while `npm run test:unit`
+    // passed. The product's own timeouts still bound every wait.
+    testTimeout: 30_000
   }
 });
 

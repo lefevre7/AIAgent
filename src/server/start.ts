@@ -3,7 +3,7 @@ import process from "node:process";
 
 import next from "next";
 
-import { attachGatewayWebSocketServer } from "@/gateway";
+import { assertGatewayExposureIsAuthenticated, attachGatewayWebSocketServer } from "@/gateway";
 import { ControlPlaneService } from "@/server/control-plane/service";
 import { closeServerRuntimeContext, createServerRuntimeContext, primeServerRuntimeContext } from "@/server/runtime-context";
 import { createHttpApp } from "@/server/create-http-app";
@@ -15,6 +15,25 @@ export async function startServer(argv: string[] = process.argv.slice(2)) {
     cwd: process.cwd()
   });
   primeServerRuntimeContext(context);
+
+  // Fail closed before anything binds. An exposed gateway with no token grants
+  // unauthenticated access to sessions, tools, and approvals, and a tunnel in
+  // front of loopback makes every remote request look local.
+  //
+  // The context is already up by this point (the token comes from it), and it
+  // owns pollers and MCP child processes that keep the event loop alive — so
+  // it has to be torn down explicitly, or the refusal hangs instead of exiting.
+  try {
+    assertGatewayExposureIsAuthenticated({
+      hostname: runtime.hostname,
+      token: context.gatewayAuthToken,
+      tunnelEnabled: context.loaded.resolvedConfig.tunnel.enabled
+    });
+  } catch (error) {
+    await closeServerRuntimeContext().catch(() => undefined);
+    throw error;
+  }
+
   const nextApp = next({
     dev: runtime.dev,
     dir: process.cwd(),
@@ -86,5 +105,11 @@ const isDirectExecution =
   import.meta.url === new URL(`file://${process.argv[1]}`).href;
 
 if (isDirectExecution) {
-  void startServer();
+  // A refusal to start (an exposed gateway with no token) is a deliberate
+  // decision, not a crash. Printing the message alone keeps it readable and
+  // actionable; a raw stack trace reads as a bug in AIAgent.
+  void startServer().catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
 }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { createStreamGuard } from "@/core/lm/shared";
+import { buildStreamAbortError, createStreamGuard } from "@/core/lm/shared";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -94,5 +94,29 @@ describe("createStreamGuard", () => {
     vi.advanceTimersByTime(1100);
     expect(guard.abortReason()).toBe("idle");
     guard.dispose();
+  });
+});
+
+// The two ways a stream guard kills a generation. These messages are what the
+// operator sees when a run fails, so they have to name the cause rather than
+// surfacing a bare AbortError.
+describe("buildStreamAbortError", () => {
+  test("explains an idle stall as a stall, not a generic abort", () => {
+    const error = buildStreamAbortError("lm_studio", "idle");
+
+    expect(error.code).toBe("provider_stream_idle");
+    expect(error.message).toContain("stalled");
+    expect(error.message).toContain("lm_studio");
+    expect(error.details).toEqual({ provider: "lm_studio", reason: "idle" });
+    // Retrying an idle stall automatically would just stall again.
+    expect(error.retriable).toBe(false);
+  });
+
+  test("explains a repetition abort as a likely model loop", () => {
+    const error = buildStreamAbortError("ollama", "repetition");
+
+    expect(error.code).toBe("provider_stream_repetition");
+    expect(error.message).toContain("model loop");
+    expect(error.details).toEqual({ provider: "ollama", reason: "repetition" });
   });
 });

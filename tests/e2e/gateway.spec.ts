@@ -48,13 +48,24 @@ test("completes session-create and session-message flows through gateway HTTP", 
         };
       };
 
+      // Assert the answer actually reached the client rather than counting
+      // messages: the accepted `attempt_complete` summary is persisted as its
+      // own assistant message, so a bare count says nothing about whether the
+      // operator can see what the agent concluded.
+      const assistantText = snapshot.snapshot.messages
+        .filter((message) => message.role === "assistant")
+        .flatMap((message) => message.parts)
+        .filter((part) => part.kind === "text")
+        .map((part) => part.text ?? "")
+        .join("\n");
+
       return {
-        assistantMessages: snapshot.snapshot.messages.filter((message) => message.role === "assistant").length,
+        hasCompletionSummary: assistantText.includes("Completed fake task"),
         status: snapshot.snapshot.session.status
       };
     })
     .toEqual({
-      assistantMessages: 1,
+      hasCompletionSummary: true,
       status: "completed"
     });
 

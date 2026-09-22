@@ -702,3 +702,115 @@ prettier is in no gate.
 **Channels 25/27/28 (Discord, Teams, iMessage) remain unchecked, by operator decision.** The Done
 Criteria above — "the four required messaging channels are live behind adapters" — is therefore **not
 met**; only WhatsApp (26) ships. Do not read the checked state of items 29–33 as covering them.
+
+## Addendum (2026-09-22): the invisible answer, four open High findings, and a gate that wasn't
+
+A review pass that ran the gates, ran the product against a real LM Studio model, and
+read the security audit against the code. The deterministic gate was green before any of
+this — the most important defect was invisible to `typecheck`, `lint`, and every test,
+and only showed up by using the product and looking at what reached the terminal.
+
+### The defect that mattered most: nothing ever showed the agent's answer
+
+Asked "What is 17 * 23?", the model reasoned correctly, called `attempt_complete` with
+`summary: "17 * 23 = 391."`, and the operator saw the dimmed reasoning, a status metrics
+line, and **no answer**. The same on `--prompt` and in the web transcript.
+
+The chain, all three links necessary:
+
+1. `attempt_complete` is a runtime **completion gate**, not an executed tool. The loop
+   intercepts it, so there is no `ToolCall` record, no `tool.updated` event, no result.
+2. The loop read the accepted call only for the accept/reject decision and **discarded
+   `summary`**, hardcoding `statusSummary: "The task completed successfully."`
+3. Every surface then had nothing to render: `formatTurnStopNotice` returns `null` on a
+   clean completion, `extractLatestAssistantSummary` reads text parts only, and the web's
+   `summarizeMessage` renders a `tool_call` part as `[tool] attempt_complete`.
+
+And the prompt pack (`pack.tsx`, `attempt-complete.ts`) explicitly instructs the model to
+put the answer in the argument and *not* send a chat message — so **the better a model
+followed the contract, the less the operator saw.** The README meanwhile promised
+`--prompt` printed "the latest assistant summary."
+
+Fixed at the single canonical point: the loop persists the summary as an assistant
+message tagged `COMPLETION_SUMMARY_MESSAGE_TAG` (in `contracts/messages.ts`, so the loop,
+memory service and CLI share one spelling), and `statusSummary` carries the real text.
+Every surface gets it for free. See `docs/AGENT_LOOP.md`.
+
+**Why no test caught it, which is the durable lesson.** The fake provider
+(`tests/helpers/fake-language-model-server.ts`) emitted prose in `content` *plus*
+`attempt_complete` with **empty arguments** — the exact opposite of the shipped contract.
+The e2e asserted on the prose and passed. A fake that contradicts your own prompt pack
+tests a product you do not ship. It is now contract-accurate, and the gateway e2e asserts
+the answer *content* reaches the client rather than counting assistant messages.
+
+### Security: H2, M13, H3, H4, H6 closed
+
+Threat model and per-finding detail in `docs/SECURITY_REVIEW.md`; config surfaces in
+`docs/CONFIG.md`. Rules worth carrying forward:
+
+- **Never derive a peer address from a header.** `X-Forwarded-For` is client-supplied.
+  Socket address only (H2).
+- **Header handling alone cannot close tunnel exposure**, because a tunnel terminating in
+  front of us forwards to the loopback socket — remote traffic *is* loopback by then. The
+  only reliable signal is our own config, so `assertGatewayExposureIsAuthenticated` now
+  **refuses to start** an untokened routable/unspecified/tunnelled gateway (M13). A
+  warning is not a control: the insecure configuration still came up and served traffic.
+- **Workspace config trust** (H3) is keyed on path **and content hash**, stored in
+  `~/.aia/trust.json` — never in the workspace, which an attacker also controls. Editing a
+  trusted file revokes trust. Untrusted `exec`/`file` providers are withheld with an
+  `AIA_UNTRUSTED_CONFIG` warning and the load *continues*; only an actual reference fails.
+  `aia trust` grants/revokes.
+- **An approval target must render what will actually run.** The external-agent `command`
+  target now includes the model-supplied `args` (H4) via the same `stringifyArgv` the M6
+  fix introduced — now exported, rather than written a second time. A model could
+  otherwise pass `--dangerously-bypass-approvals-and-sandbox` while the operator saw
+  "run codex."
+- **Channel control commands need an operator identity** (H6): `operatorIdentities` per
+  channel, failing closed on an empty list, checked once before the dispatch so a future
+  command kind cannot be added past the gate. Parsing + authorization extracted to
+  `src/gateway/channel-commands.ts`.
+
+Still open: M1–M5, M7–M12 and the low-severity items.
+
+### The coverage gate was not a gate
+
+`npm run test:coverage` was in **no** gate (`validate:penultimate` omitted it), and had
+drifted *below its own floor* — 91.2% lines against a 92.1 threshold, 95.9% functions
+against 97 — with nothing failing. It was also flaky: two macOS voice tests spawn real
+helpers and exceeded vitest's 5s default under V8 instrumentation, because
+`vitest.unit.config.ts` set no `testTimeout` while the integration config set 30s.
+`docs/TESTING.md` meanwhile claimed "~77% lines", matching neither.
+
+Timeout aligned, coverage added to `validate:penultimate`, docs corrected, and the floor
+**reached by writing real tests rather than lowered**: 92.22% statements / 82.64%
+branches / 97.18% functions over 716 tests. The new tests went to things that were
+genuinely untested rather than whatever was cheapest — the `attach-client` relay
+(including the cross-session output filter the 2026-09-21 addendum *claimed* was safe but
+never tested), the AppleScript quoting that is the `do script` injection boundary, the
+WhatsApp adapter's media and attachment paths, `aia trust`, `/mcp`, `/agents`, and
+`attempt_complete`'s own execute path.
+
+### Two more defects found by running things, not reading them
+
+- **`aia trust --revoke` reported success and removed nothing.** The grant keyed on the
+  realpath (`/private/tmp/…`) while the revoke resolved the symlinked spelling
+  (`/tmp/…`); `path.resolve` does not resolve symlinks. A revoke that silently does
+  nothing is the dangerous direction for a trust store. Both sides canonicalize with
+  `fs.realpath` now. Caught only by running the command for real.
+- **The WhatsApp poll loop could take the process down.** `pollInboundDirectory` guards
+  each *entry*, but the `readdir` itself sat outside that guard, so a removed or briefly
+  unreadable bridge directory threw out of a promise nothing awaits until `close()`. Same
+  family as "a dead process's bookkeeping must never be fatal" — it now warns
+  (`AIA_CHANNEL_POLL_FAILED`) and keeps polling.
+
+### Still open after this pass
+
+- **Channels 25/27/28 (Discord, Teams, iMessage) remain unimplemented**, so the Done
+  Criteria is still **not met**. Only WhatsApp ships. The framework is ready — config
+  schemas, capability tables, `isChannelConfigured` and an honest `not_implemented`
+  health state exist for all four; what is missing is three adapters plus wiring and
+  tests.
+- `src/gateway/runtime.ts` is still ~3,500 lines. Only the channel-command handling was
+  extracted (the part this pass had to modify anyway); the rest is its own commit.
+- Prettier drift was handled as a separate mechanical commit; `prettier --check` is now
+  in the gate, so it stays clean.

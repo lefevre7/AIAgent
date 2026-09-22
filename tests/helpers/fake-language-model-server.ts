@@ -133,17 +133,29 @@ function buildDefaultPlan(request: FakeLanguageModelRequest): FakeLanguageModelP
     return name === "attempt_complete";
   });
 
+  const summary = `Completed fake task for ${extractLastUserText(request.body) ?? "the shared runtime request"}.`;
+
+  // Mirror what the shipped prompt pack actually tells a model to do: put the
+  // final answer in `attempt_complete`'s `summary` argument and send no
+  // separate chat message. The earlier version did the opposite (prose in
+  // `content`, empty tool arguments), which made the CLI/web e2e pass while the
+  // real product dropped every answer on the floor.
+  if (hasAttemptComplete) {
+    return {
+      content: "",
+      toolCalls: [
+        {
+          arguments: { status: "success", summary },
+          id: `fake-tool.attempt-complete.${Math.random().toString(16).slice(2, 10)}`,
+          name: "attempt_complete"
+        }
+      ]
+    };
+  }
+
   return {
-    content: `Completed fake task for ${extractLastUserText(request.body) ?? "the shared runtime request"}.`,
-    toolCalls: hasAttemptComplete
-      ? [
-          {
-            arguments: {},
-            id: `fake-tool.attempt-complete.${Math.random().toString(16).slice(2, 10)}`,
-            name: "attempt_complete"
-          }
-        ]
-      : []
+    content: summary,
+    toolCalls: []
   };
 }
 

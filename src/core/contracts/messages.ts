@@ -10,6 +10,19 @@ import {
 } from "@/core/contracts/common";
 
 export const messageIdSchema = entityIdSchema;
+/**
+ * Marks the assistant message carrying an accepted `attempt_complete` summary —
+ * the run's final answer.
+ *
+ * `attempt_complete` is a runtime completion gate rather than an executed tool,
+ * so its `summary` argument produces no tool result and never streams. The loop
+ * persists it as an ordinary assistant message instead, and surfaces use this
+ * tag to render it distinctly from streamed narration on the same turn. Lives
+ * in contracts so the agent loop, the memory service, and the CLI can all
+ * reference one spelling without importing each other.
+ */
+export const COMPLETION_SUMMARY_MESSAGE_TAG = "completion-summary";
+
 export const messageRoleSchema = z.enum(["approval", "assistant", "status", "system", "tool", "user"]);
 export const messageVisibilitySchema = z.enum(["compact", "default", "hidden"]);
 export const messageSourceSchema = z.enum([

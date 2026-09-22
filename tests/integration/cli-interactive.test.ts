@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { runCli } from "@/cli";
 import type { AIAgentSdk } from "@/sdk";
+import { COMPLETION_SUMMARY_MESSAGE_TAG } from "@/core/contracts";
 import type { ArtifactReference, GatewaySessionSnapshot, SessionRecord, VoiceService } from "@/core/contracts";
 import type { FileSessionStore } from "@/core";
 
@@ -43,14 +44,25 @@ async function* lineSource(items: string[]): AsyncIterable<string> {
   }
 }
 
-function buildSnapshot(text: string, lastError?: string): GatewaySessionSnapshot {
+function buildSnapshot(text: string, lastError?: string, completionSummary?: string): GatewaySessionSnapshot {
   return {
     snapshot: {
       messages: [
         {
+          // Deliberately no `tags` key: real snapshots default it, but fakes
+          // and older persisted records omit it, and the CLI must tolerate that.
           parts: [{ kind: "text", text }],
           role: "assistant"
-        }
+        },
+        ...(completionSummary
+          ? [
+              {
+                parts: [{ kind: "text", text: completionSummary }],
+                role: "assistant",
+                tags: [COMPLETION_SUMMARY_MESSAGE_TAG]
+              }
+            ]
+          : [])
       ],
       session: {
         lastError: lastError ? { message: lastError } : undefined,
@@ -78,6 +90,7 @@ function createFakeSdk(
   options: {
     compactResult?: { hiddenMessageCount: number; summaryPath?: string };
     compactError?: string;
+    completionSummary?: string;
     lastError?: string;
     modelStatus?: string;
     pendingApprovals?: PendingApprovalSpec[];
@@ -163,7 +176,7 @@ function createFakeSdk(
       return { async wait() {} };
     },
     async snapshot() {
-      return buildSnapshot(`echo: ${sent[sent.length - 1] ?? ""}`, options.lastError);
+      return buildSnapshot(`echo: ${sent[sent.length - 1] ?? ""}`, options.lastError, options.completionSummary);
     },
     subscribe(handler: (event: unknown) => void) {
       listener = handler;
@@ -592,6 +605,22 @@ describe("interactive CLI loop", () => {
     expect(capture.getStderr()).toContain("Error: model exploded");
     expect(capture.getStdout()).toContain("Goodbye.");
   });
+
+  // A prompt-compliant model puts its answer in `attempt_complete`'s `summary`
+  // and sends no chat message, so nothing streams. Without this the operator
+  // watched a turn produce reasoning, a status line, and no answer at all.
+  test("prints the accepted completion summary so the answer reaches the operator", async () => {
+    const fake = createFakeSdk({ completionSummary: "17 * 23 = 391." });
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCli([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: lineSource(["what is 17 * 23?", "/exit"])
+    });
+
+    expect(exitCode).toBe(0);
+    expect(capture.getStdout()).toContain("17 * 23 = 391.");
+  });
 });
 
 function createPromptSdk(options: { assistant?: string; lastError?: string; status?: string; throwOnCreate?: boolean } = {}): {
@@ -831,5 +860,271 @@ describe("CLI voice subcommands", () => {
     );
     expect(exitCode).toBe(1);
     expect(cap.getStderr().length).toBeGreaterThan(0);
+  });
+});
+
+// Security review H3. `aia trust` is the only way to enable a workspace
+// config's exec/file secret providers, so its state reporting has to be
+// accurate — an operator granting trust is consenting to arbitrary execution.
+describe("CLI trust subcommand", () => {
+  const trustRoots: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(trustRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
+  });
+
+  async function createTrustWorkspace(configBody: string): Promise<{ home: string; workspace: string }> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-cli-trust-"));
+    trustRoots.push(root);
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(path.join(workspace, "aia.config.jsonc"), configBody, "utf8");
+    return { home, workspace };
+  }
+
+  test("prints help without touching any trust state", async () => {
+    const capture = createCaptureStreams();
+    const exitCode = await runCli(["trust", "--help"], capture.streams, {});
+    expect(exitCode).toBe(0);
+    expect(capture.getStdout()).toContain("aia trust");
+    expect(capture.getStdout()).toContain("--revoke");
+  });
+
+  test("reports that no trust is needed for a config with only env providers", async () => {
+    const { home, workspace } = await createTrustWorkspace(
+      '{ "configVersion": 1, "secrets": { "providers": { "env": { "source": "env" } } } }'
+    );
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCli(["trust", "--cwd", workspace], capture.streams, {});
+
+    expect(exitCode).toBe(0);
+    expect(capture.getStdout()).toContain("No trust needed");
+    // Nothing should have been written.
+    await expect(fs.access(path.join(home, ".aia", "trust.json"))).rejects.toThrow();
+  });
+
+  test("grants trust, reports it as already trusted, then revokes it", async () => {
+    const { workspace } = await createTrustWorkspace(
+      '{ "configVersion": 1, "secrets": { "providers": { "payload": { "source": "exec", "command": "/bin/sh" } } } }'
+    );
+
+    const granting = createCaptureStreams();
+    expect(await runCli(["trust", "--cwd", workspace], granting.streams, {})).toBe(0);
+    expect(granting.getStdout()).toContain("Trusted ");
+    expect(granting.getStdout()).toContain("Now allowed: payload");
+    // The operator is shown the hash they are consenting to.
+    expect(granting.getStdout()).toMatch(/sha256: [0-9a-f]{64}/u);
+
+    const repeat = createCaptureStreams();
+    expect(await runCli(["trust", "--cwd", workspace], repeat.streams, {})).toBe(0);
+    expect(repeat.getStdout()).toContain("Already trusted");
+
+    const revoking = createCaptureStreams();
+    expect(await runCli(["trust", "--revoke", "--cwd", workspace], revoking.streams, {})).toBe(0);
+    expect(revoking.getStdout()).toContain("Revoked trust");
+
+    const afterRevoke = createCaptureStreams();
+    expect(await runCli(["trust", "--cwd", workspace], afterRevoke.streams, {})).toBe(0);
+    expect(afterRevoke.getStdout()).toContain("Trusted ");
+  });
+
+  test("reports an unknown flag instead of silently ignoring it", async () => {
+    const capture = createCaptureStreams();
+    const exitCode = await runCli(["trust", "--nope"], capture.streams, {});
+    expect(exitCode).toBe(1);
+    expect(capture.getStderr().length).toBeGreaterThan(0);
+  });
+});
+
+// `/mcp` and `/agents` are how an operator answers "what do you actually have
+// connected?", and `aia attach` is how they join a live external-agent
+// terminal. All three were previously uncovered.
+describe("CLI inspection commands and attach", () => {
+  function createRequestSdk(handlers: Record<string, () => unknown>): AIAgentSdk {
+    const handle = {
+      async listPendingApprovals() {
+        return [];
+      },
+      async sendMessage() {
+        return { async wait() {} };
+      },
+      async snapshot() {
+        return buildSnapshot("ok");
+      },
+      subscribe() {
+        return () => undefined;
+      }
+    };
+
+    return {
+      async close() {},
+      async request(topic: string) {
+        if (topic === "model.health") {
+          return { checkedAt: "2026-06-10T12:00:00.000Z", details: {}, providerId: "fake", status: "healthy" };
+        }
+        const handler = handlers[topic];
+        if (!handler) {
+          throw new Error(`unexpected request topic ${topic}`);
+        }
+        return handler();
+      },
+      sessions: {
+        async create() {
+          return { handle, session: { id: "session.test.cli.inspect" } };
+        }
+      }
+    } as unknown as AIAgentSdk;
+  }
+
+  test("/mcp renders configured servers, their state, errors, and tools", async () => {
+    const sdk = createRequestSdk({
+      "mcp.list": () => ({
+        servers: [
+          {
+            capabilities: { tools: 1 },
+            serverName: "docs",
+            state: "connected",
+            tools: [{ description: "Search the docs", invocationName: "docs_search" }],
+            transport: "stdio"
+          },
+          {
+            // A server that never connected must still be listed with its
+            // captured error — that is the whole point of the command.
+            capabilities: { tools: 0 },
+            error: "spawn npx ENOENT",
+            serverName: "context7",
+            state: "failed",
+            tools: [],
+            transport: "stdio"
+          }
+        ]
+      })
+    });
+    const capture = createCaptureStreams();
+
+    await runCli([], capture.streams, {
+      createSdk: async () => sdk,
+      interactiveInput: lineSource(["/mcp", "/exit"])
+    });
+
+    const stdout = capture.getStdout();
+    expect(stdout).toContain("docs  [connected, stdio]");
+    expect(stdout).toContain("- docs_search: Search the docs");
+    expect(stdout).toContain("context7  [failed, stdio]");
+    expect(stdout).toContain("error: spawn npx ENOENT");
+  });
+
+  test("/mcp and /agents report an empty configuration rather than nothing at all", async () => {
+    const sdk = createRequestSdk({
+      "external_agent.session.list": () => ({ sessions: [] }),
+      "mcp.list": () => ({ servers: [] })
+    });
+    const capture = createCaptureStreams();
+
+    await runCli([], capture.streams, {
+      createSdk: async () => sdk,
+      interactiveInput: lineSource(["/mcp", "/agents", "/exit"])
+    });
+
+    expect(capture.getStdout()).toContain("No MCP servers are configured.");
+    expect(capture.getStdout()).toContain("No interactive external-agent sessions.");
+  });
+
+  test("/agents lists live interactive sessions", async () => {
+    const sdk = createRequestSdk({
+      "external_agent.session.list": () => ({
+        sessions: [
+          {
+            agentId: "codex",
+            cwd: "/workspace",
+            id: "external-agent-session.abc",
+            status: "running",
+            turnCount: 3
+          }
+        ]
+      })
+    });
+    const capture = createCaptureStreams();
+
+    await runCli([], capture.streams, {
+      createSdk: async () => sdk,
+      interactiveInput: lineSource(["/agents", "/exit"])
+    });
+
+    expect(capture.getStdout()).toContain("external-agent-session.abc  running  codex  3 turn(s)  /workspace");
+  });
+
+  test("/mcp surfaces a failure instead of going quiet", async () => {
+    const sdk = createRequestSdk({
+      "mcp.list": () => {
+        throw new Error("gateway unreachable");
+      }
+    });
+    const capture = createCaptureStreams();
+
+    await runCli([], capture.streams, {
+      createSdk: async () => sdk,
+      interactiveInput: lineSource(["/mcp", "/exit"])
+    });
+
+    expect(capture.getStderr()).toContain("Failed to list MCP servers");
+    expect(capture.getStderr()).toContain("gateway unreachable");
+  });
+
+  test("aia attach requires a session id and otherwise relays through the gateway", async () => {
+    const missing = createCaptureStreams();
+    expect(await runCli(["attach"], missing.streams, {})).toBe(1);
+    expect(missing.getStderr()).toContain("Usage: aia attach");
+
+    const calls: Array<{ externalSessionId: string; url: string }> = [];
+    const capture = createCaptureStreams();
+    const exitCode = await runCli(["attach", "external-agent-session.abc"], capture.streams, {
+      attachToExternalAgentSession: async (options) => {
+        calls.push({ externalSessionId: options.externalSessionId, url: options.url });
+        return 0;
+      }
+    });
+
+    expect(exitCode).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.externalSessionId).toBe("external-agent-session.abc");
+    // Defaults to the configured gateway websocket rather than inventing one.
+    expect(calls[0]?.url).toMatch(/^ws:\/\/.+\/api\/gateway\/ws$/u);
+    // The operator has to be told how to get back out.
+    expect(capture.getStderr()).toContain("Ctrl-] to detach");
+  });
+
+  test("aia attach honors an explicit --url", async () => {
+    const calls: string[] = [];
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCli(
+      ["attach", "external-agent-session.abc", "--url", "ws://tunnel.example.com/api/gateway/ws"],
+      capture.streams,
+      {
+        attachToExternalAgentSession: async (options) => {
+          calls.push(options.url);
+          return 0;
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(calls).toEqual(["ws://tunnel.example.com/api/gateway/ws"]);
+  });
+
+  test("aia attach reports a relay failure rather than throwing", async () => {
+    const capture = createCaptureStreams();
+    const exitCode = await runCli(["attach", "external-agent-session.abc"], capture.streams, {
+      attachToExternalAgentSession: async () => {
+        throw new Error("socket refused");
+      }
+    });
+
+    expect(exitCode).toBe(1);
+    expect(capture.getStderr()).toContain("socket refused");
   });
 });

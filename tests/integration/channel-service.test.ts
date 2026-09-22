@@ -83,6 +83,7 @@ describe("ChannelService", () => {
           appId: "teams-app-id",
           appPassword: "teams-app-password",
           enabled: true,
+          operatorIdentities: [],
           publicBaseUrl: "https://agent.example.ts.net",
           tenantId: "tenant-1"
         }
@@ -173,6 +174,7 @@ describe("ChannelService", () => {
         appId: "id",
         appPassword: "pw",
         enabled: true,
+        operatorIdentities: [],
         publicBaseUrl: "https://x.example.com",
         tenantId: "tenant-1"
       }

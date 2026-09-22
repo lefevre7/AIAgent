@@ -35,7 +35,7 @@ import {
 import { buildExternalAgentEnvironment } from "@/core/external-agents/environment";
 import { writeJsonAtomic, sleep } from "@/core/io/files";
 import type { FileSessionStore } from "@/core/sessions";
-import type { ApprovalEvaluationTarget } from "@/core/approvals/policy";
+import { stringifyArgv, type ApprovalEvaluationTarget } from "@/core/approvals/policy";
 import type { ToolApprovalDeciderParams } from "@/core/tools/runtime";
 
 const externalAgentRuntimeMetadataSchema = z
@@ -1024,10 +1024,18 @@ export function createExternalAgentApprovalTargetResolver(params: {
         action === "start"
           ? [...definition.defaultArgs, ...definition.interactiveArgs]
           : definition.defaultArgs;
+      // Security review H4: the model fully controls `args`, and every preset
+      // splices them into the child argv. Leaving them out meant a model could
+      // pass `--dangerously-bypass-approvals-and-sandbox` (or
+      // `--allowedTools Bash`) while the operator was shown only "run codex",
+      // and no deny rule written against the command line could ever match.
+      // The rendered value is what actually gets spawned.
       targets.push({
         kind: "command",
         label: "command",
-        value: [definition.command, ...spawnArgs].join(" ").trim()
+        value:
+          stringifyArgv([definition.command, ...spawnArgs, ...readModelSuppliedArgs(input.call)]) ??
+          definition.command
       });
     }
 
@@ -1042,6 +1050,20 @@ export function createExternalAgentApprovalTargetResolver(params: {
 
     return targets;
   };
+}
+
+/**
+ * The `args` the model asked for, which every preset splices into the child
+ * argv. Non-string entries are dropped rather than coerced: the schema already
+ * rejects them, and a coerced value in an approval prompt would misrepresent
+ * what runs.
+ */
+function readModelSuppliedArgs(call: ToolCallRecord): string[] {
+  const raw = call.arguments.args;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter((entry): entry is string => typeof entry === "string");
 }
 
 export async function buildExternalAgentArtifacts(job: ExternalAgentJobRecord): Promise<ArtifactReference[]> {

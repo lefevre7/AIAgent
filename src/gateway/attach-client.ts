@@ -5,7 +5,7 @@ import { gatewayEventSchema, gatewayResponseSchema } from "@/core/contracts";
 
 const require = createRequire(import.meta.url);
 
-type WebSocketClient = {
+export type AttachWebSocketClient = {
   close(code?: number, reason?: string): void;
   on(event: "close", listener: () => void): void;
   on(event: "error", listener: (error: Error) => void): void;
@@ -21,6 +21,13 @@ export type AttachStreams = {
 };
 
 export type AttachOptions = {
+  /**
+   * Opens the transport. Injected so tests can drive the relay without a real
+   * server, and because `ws` is loaded through `createRequire` (webpack's
+   * interop hands back an undefined default for a static import) and so cannot
+   * be module-mocked.
+   */
+  createWebSocket?: (url: string) => AttachWebSocketClient;
   externalSessionId: string;
   streams: AttachStreams;
   token?: string;
@@ -39,16 +46,18 @@ export type AttachOptions = {
  * pressed Ctrl-] to detach).
  */
 export async function attachToExternalAgentSession(options: AttachOptions): Promise<number> {
-  const { WebSocket } = require("ws") as {
-    WebSocket: new (url: string) => WebSocketClient;
-  };
-
   const url = new URL(options.url);
   if (options.token) {
     url.searchParams.set("token", options.token);
   }
 
-  const socket = new WebSocket(url.toString());
+  const socket = options.createWebSocket
+    ? options.createWebSocket(url.toString())
+    : new (
+        require("ws") as {
+          WebSocket: new (target: string) => AttachWebSocketClient;
+        }
+      ).WebSocket(url.toString());
   const restoreStdin = configureRawStdin(options.streams.stdin);
 
   return new Promise<number>((resolve, reject) => {
@@ -151,7 +160,7 @@ export async function attachToExternalAgentSession(options: AttachOptions): Prom
   });
 }
 
-function sendRequest(socket: WebSocketClient, topic: string, payload: unknown): void {
+function sendRequest(socket: AttachWebSocketClient, topic: string, payload: unknown): void {
   if (socket.readyState !== 1) {
     return;
   }

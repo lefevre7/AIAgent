@@ -15,42 +15,55 @@ export class SecretResolutionError extends Error {
   }
 }
 
+/**
+ * Providers the caller has decided may not run — currently workspace-declared
+ * `exec`/`file` providers in a config the operator has not trusted (H3).
+ */
+export type SecretResolutionOptions = {
+  untrustedProviderNames?: string[];
+};
+
 export async function resolveConfigSecrets(
   config: AppConfig,
-  environment: Record<string, string | undefined> = process.env
+  environment: Record<string, string | undefined> = process.env,
+  options: SecretResolutionOptions = {}
 ): Promise<AppConfig> {
-  return (await resolveUnknownValue(config, config, environment)) as AppConfig;
+  return (await resolveUnknownValue(config, config, environment, options)) as AppConfig;
 }
 
 export async function resolveSecretInput(
   value: SecretInput,
   config: AppConfig,
-  environment: Record<string, string | undefined> = process.env
+  environment: Record<string, string | undefined> = process.env,
+  options: SecretResolutionOptions = {}
 ): Promise<string> {
   const ref = coerceSecretRef(value, config);
   if (!ref) {
     return value as string;
   }
-  return resolveSecretReference(ref, config, environment);
+  return resolveSecretReference(ref, config, environment, options);
 }
 
 async function resolveUnknownValue(
   value: unknown,
   config: AppConfig,
-  environment: Record<string, string | undefined>
+  environment: Record<string, string | undefined>,
+  options: SecretResolutionOptions
 ): Promise<unknown> {
   const ref = coerceSecretRef(value, config);
   if (ref) {
-    return resolveSecretReference(ref, config, environment);
+    return resolveSecretReference(ref, config, environment, options);
   }
 
   if (Array.isArray(value)) {
-    return Promise.all(value.map((entry) => resolveUnknownValue(entry, config, environment)));
+    return Promise.all(value.map((entry) => resolveUnknownValue(entry, config, environment, options)));
   }
 
   if (isPlainObject(value)) {
     const entries = await Promise.all(
-      Object.entries(value).map(async ([key, entry]) => [key, await resolveUnknownValue(entry, config, environment)] as const)
+      Object.entries(value).map(
+        async ([key, entry]) => [key, await resolveUnknownValue(entry, config, environment, options)] as const
+      )
     );
     return Object.fromEntries(entries);
   }
@@ -97,11 +110,22 @@ function fillDefaultProvider(ref: SecretRef, config: AppConfig): SecretRef {
 async function resolveSecretReference(
   ref: SecretRef,
   config: AppConfig,
-  environment: Record<string, string | undefined>
+  environment: Record<string, string | undefined>,
+  options: SecretResolutionOptions = {}
 ): Promise<string> {
   const provider = config.secrets.providers[ref.provider ?? ""];
   if (!provider) {
     throw new SecretResolutionError(`Secret provider "${ref.provider}" is not configured for ${ref.source}:${ref.id}.`);
+  }
+  // H3: the provider exists but comes from a workspace config the operator has
+  // not trusted, and it can run a command or read an arbitrary path. Refuse
+  // here rather than at load, so a declared-but-unused provider costs nothing.
+  if (ref.provider && options.untrustedProviderNames?.includes(ref.provider)) {
+    throw new SecretResolutionError(
+      `Secret provider "${ref.provider}" is declared by an untrusted workspace config and can run commands or ` +
+        `read arbitrary files, so it was not used for ${ref.source}:${ref.id}. ` +
+        "Review the config file, then run `aia trust` in this workspace to allow it."
+    );
   }
   if (provider.source !== ref.source) {
     throw new SecretResolutionError(
