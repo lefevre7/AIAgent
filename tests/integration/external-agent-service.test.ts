@@ -144,6 +144,36 @@ describe("external-agent service", () => {
     );
   });
 
+  test("an agent that reports its own failure is failed, not offered for resume", async () => {
+    const root = await createTempRoot();
+    const service = new FileExternalAgentService({
+      agents: {
+        claude: createMockClaudeConfig()
+      },
+      stateRoot: path.join(root, ".aia", "external-agents")
+    });
+
+    const job = await service.run({
+      agentId: "claude",
+      args: [],
+      cwd: root,
+      id: "external-job.service.agent-error",
+      instructions: "[agent-error] do the thing",
+      metadata: {},
+      mode: "blocking"
+    });
+
+    // The CLI still printed a session id and `subtype: "success"`, which is what
+    // used to get this classified as resumable. Resuming a revoked token just
+    // fails again; the honest answer is that the job failed, with the agent's
+    // own message rather than a generic one.
+    expect(job.status).toBe("failed");
+    expect(job.nativeSessionId).toBeTruthy();
+    expect(job.error?.code).toBe("external_agent_reported_failure");
+    expect(job.error?.message).toContain("401");
+    expect(job.error?.retriable).toBe(false);
+  });
+
   test("resumes interrupted Codex jobs using the captured native session id", async () => {
     const root = await createTempRoot();
     const service = new FileExternalAgentService({

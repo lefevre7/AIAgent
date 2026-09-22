@@ -93,6 +93,22 @@ export const statusPartSchema = z
   })
   .strict();
 
+/**
+ * Model "thinking" kept out of the answer.
+ *
+ * Reasoning is useful to a human reading the transcript and to the model within
+ * the turn that produced it, but replaying older turns' indecision back into the
+ * context both wastes the window and reinforces loops. Keeping it in its own
+ * part (rather than inline in a text part) is what lets the serializer drop it
+ * by age without touching the answer.
+ */
+export const reasoningPartSchema = z
+  .object({
+    kind: z.literal("reasoning"),
+    text: z.string().min(1)
+  })
+  .strict();
+
 export const toolCallPartSchema = z
   .object({
     arguments: z.record(z.string(), jsonValueSchema).default({}),
@@ -110,6 +126,7 @@ export const messagePartSchema = z.discriminatedUnion("kind", [
   imagePartSchema,
   jsonPartSchema,
   markdownPartSchema,
+  reasoningPartSchema,
   statusPartSchema,
   textPartSchema,
   toolCallPartSchema

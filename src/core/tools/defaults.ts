@@ -17,7 +17,10 @@ import { createBrowserTools } from "@/core/tools/builtins/browser";
 import { createChannelSendTool } from "@/core/tools/builtins/channel-send";
 import { CommandRuntime } from "@/core/tools/builtins/command-runtime";
 import { createCommandTools } from "@/core/tools/builtins/commands";
-import { createExternalAgentTool } from "@/core/tools/builtins/external-agent";
+import {
+  createExternalAgentTool,
+  type ExternalAgentSessionHost
+} from "@/core/tools/builtins/external-agent";
 import { createImageGenerateTool } from "@/core/tools/builtins/image";
 import { createMemoryGetTool } from "@/core/tools/builtins/memory-get";
 import { createMemoryIndexTool } from "@/core/tools/builtins/memory-index";
@@ -59,7 +62,6 @@ export const LEAN_TOOL_PROFILE_INVOCATION_NAMES: readonly string[] = [
   "apply_patch",
   "ask_user_question",
   "attempt_complete",
-  "create_file",
   "edit_file",
   "grep_files",
   "list_files",
@@ -71,7 +73,11 @@ export const LEAN_TOOL_PROFILE_INVOCATION_NAMES: readonly string[] = [
   "tool_search",
   "update_plan",
   "web_fetch",
-  "web_search"
+  "web_search",
+  // This list matches on invocation names, not aliases. "create_file" is only
+  // an alias of "write_file", so listing it left the lean profile with no
+  // model-visible way to create a file at all.
+  "write_file"
 ];
 
 export function resolveVisibleToolDefinitions(params: {
@@ -111,6 +117,7 @@ export function createDefaultToolRegistry(
     channelService?: ChannelService;
     commandRuntime?: CommandRuntime;
     externalAgentService?: ExternalAgentService;
+    externalAgentSessionHost?: ExternalAgentSessionHost;
     fetchImpl?: typeof fetch;
     imageService?: ImageService;
     mcpArtifactRoot?: string;
@@ -187,7 +194,8 @@ export function createDefaultToolRegistry(
   if (options.externalAgentService) {
     builder.register(
       createExternalAgentTool({
-        externalAgentService: options.externalAgentService
+        externalAgentService: options.externalAgentService,
+        ...(options.externalAgentSessionHost ? { sessionHost: options.externalAgentSessionHost } : {})
       })
     );
   }
@@ -294,6 +302,7 @@ export function createDefaultToolRuntime(
     channelService?: ChannelService;
     commandRuntime?: CommandRuntime;
     externalAgentService?: ExternalAgentService;
+    externalAgentSessionHost?: ExternalAgentSessionHost;
     fetchImpl?: typeof fetch;
     imageService?: ImageService;
     mcpArtifactRoot?: string;

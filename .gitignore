@@ -8,4 +8,5 @@ test-results/
 .aia-debug/
 chat-session-memory/
 npm-debug.log*
-
+*.tsbuildinfo
+.tsbuildinfo

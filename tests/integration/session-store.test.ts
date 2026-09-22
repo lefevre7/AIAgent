@@ -199,6 +199,44 @@ describe("file session store", () => {
     expect(globalLog).toContain('"kind":"approval_resolution_appended"');
     expect(globalLog).toContain('"kind":"voice_capture_appended"');
   });
+  test("rotates the global event ledger instead of growing it forever", async () => {
+    const root = await createTempRoot();
+    const stateRoot = path.join(root, ".aia");
+    const store = new FileSessionStore(stateRoot);
+    const logPath = path.join(stateRoot, "logs", "session-events.jsonl");
+    const now = "2026-03-27T14:20:00.000Z";
+    const session: SessionRecord = {
+      createdAt: now,
+      cwd: "/workspace",
+      goal: "Exercise ledger rotation",
+      id: "session.store.rotate",
+      lastActiveAt: now,
+      metadata: {},
+      status: "awaiting_user",
+      tags: [],
+      title: "Rotation",
+      updatedAt: now
+    };
+
+    // Nothing in the product reads this ledger back, so before rotation it
+    // simply grew forever — a real workspace reached 236MB.
+    await store.saveSession(session);
+    await fs.writeFile(logPath, "x".repeat(64 * 1024 * 1024 + 1), "utf8");
+
+    await store.saveSession({ ...session, updatedAt: "2026-03-27T14:21:00.000Z" });
+
+    // The oversized ledger moved aside and the live one restarted small.
+    const rotated = await fs.stat(`${logPath}.1`);
+    expect(rotated.size).toBeGreaterThan(64 * 1024 * 1024);
+    const current = await fs.readFile(logPath, "utf8");
+    expect(current.length).toBeLessThan(10_000);
+    expect(current).toContain('"kind":"session_saved"');
+
+    // The per-session file is read back to reconstruct a session, so it must
+    // never be rotated out from under a reader.
+    const snapshot = await store.getSessionSnapshot(session.id);
+    expect(snapshot?.session.id).toBe(session.id);
+  });
 });
 
 async function createTempRoot(): Promise<string> {

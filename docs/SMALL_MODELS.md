@@ -90,7 +90,10 @@ When the last model request's real `usage.inputTokens` reaches the threshold, th
   "promptBudgets": {
     "instructionDocChars": 12000,  // per AGENTS.md document; truncated with a read_file pointer
     "memorySummaryChars": 4000     // per memory summary block
-  }
+  },
+  "reasoningContextTurns": 1       // turns of <think> reasoning replayed to the model;
+                                   // 1 = current turn only, 0 = none. The transcript on
+                                   // disk always keeps every reasoning part.
 },
 "providers": {
   "lmStudio": {
@@ -149,5 +152,5 @@ General guidance that holds regardless of family:
 - `src/core/lm/shared.ts` — native tool-call serialization (OpenAI-compatible + Ollama), malformed-call reporting, compact JSON rendering
 - `src/core/lm/ollama.ts` — `num_ctx` / `keep_alive`
 - `src/core/prompts/pack.tsx` — Working With Tools section, instruction/memory budgets
-- `src/core/config/schema.ts` — `tools`, `runtime.modelSettings`, `runtime.promptBudgets`, `runtime.maxTurnsPerRun`, `runtime.maxConsecutiveNudges`, `runtime.maxIdenticalToolCalls`, `memory.autoCompactThresholdTokens`, `providers.ollama.contextLength`/`keepAlive`
+- `src/core/config/schema.ts` — `tools`, `runtime.modelSettings`, `runtime.promptBudgets`, `runtime.maxTurnsPerRun`, `runtime.maxConsecutiveNudges`, `runtime.maxIdenticalToolCalls`, `runtime.reasoningContextTurns`, `memory.autoCompactThresholdTokens`, `providers.ollama.contextLength`/`keepAlive`
 - `tests/integration/prompt-payload.test.ts` — payload budget regression tests

@@ -313,6 +313,12 @@ const runtimeConfigSchema = z
     ]),
     modelSettings: runtimeModelSettingsSchema,
     promptBudgets: runtimePromptBudgetsSchema,
+    // How many of the most recent turns keep their reasoning (<think> blocks) in
+    // the model request. 1 keeps only the current turn, so reasoning survives
+    // across this turn's tool results while older deliberation stops consuming
+    // the context window and stops reinforcing plan/re-plan loops. 0 drops it
+    // entirely. The transcript on disk always keeps every reasoning part.
+    reasoningContextTurns: z.number().int().min(0).max(100),
     statusUpdates: z.boolean(),
     verboseEvents: z.boolean()
   })
@@ -327,6 +333,36 @@ const toolsConfigSchema = z
     // "lean" exposes a small high-value core set and relies on tool_search
     // activation for the rest; "full" exposes every registered tool.
     profile: z.enum(["full", "lean"])
+  })
+  .strict();
+
+/**
+ * Per-agent settings for long-lived interactive sessions.
+ *
+ * `args` are appended when the agent is started interactively instead of as a
+ * one-shot job. The shipped defaults include each vendor's approval-bypass flag
+ * because an interactive agent that stops to ask its own permission question
+ * deadlocks behind our approval gate. Keeping those flags as visible config
+ * values (rather than hardcoding them in the spawn path) is deliberate: an
+ * operator who disagrees can delete them without patching code.
+ * See docs/EXTERNAL_AGENTS.md for the risk this accepts.
+ */
+const externalAgentInteractiveConfigSchema = z
+  .object({
+    args: z.array(z.string().min(1)).max(64),
+    /** Milliseconds of byte silence before a turn is considered finished. */
+    idleMs: z.number().int().positive().max(600_000),
+    /** Regex (source form) matched against the rendered screen to detect the input prompt. */
+    readyPattern: z.string().min(1).max(512).optional(),
+    /** Milliseconds the rendered screen must stay unchanged before the turn ends. */
+    stabilityMs: z.number().int().positive().max(600_000),
+    /**
+     * How long `start` waits for the CLI to boot and settle at its prompt before
+     * returning. Keystrokes sent to a TUI that has not painted yet are lost.
+     */
+    startupTimeoutMs: positiveTimeoutSchema.optional(),
+    /** Hard ceiling on a single turn, so a never-settling TUI cannot hang a run. */
+    turnTimeoutMs: positiveTimeoutSchema
   })
   .strict();
 
@@ -346,6 +382,7 @@ const externalAgentBaseConfigSchema = z
     enabled: z.boolean(),
     env: z.record(z.string(), secretInputSchema),
     instructionMode: externalAgentInstructionModeSchema,
+    interactive: externalAgentInteractiveConfigSchema.optional(),
     passEnv: z.array(envSecretIdSchema).max(128),
     timeoutMs: positiveTimeoutSchema.optional()
   })
@@ -384,7 +421,7 @@ const externalAgentMistralVibeConfigSchema = externalAgentBaseConfigSchema
   })
   .strict();
 
-const externalAgentConfigSchema = z.discriminatedUnion("kind", [
+export const externalAgentConfigSchema = z.discriminatedUnion("kind", [
   externalAgentClaudeConfigSchema,
   externalAgentCodexConfigSchema,
   externalAgentMistralVibeConfigSchema
@@ -394,6 +431,22 @@ const externalAgentsConfigSchema = z
   .object({
     agents: z.record(z.string().min(1), externalAgentConfigSchema),
     enabled: z.boolean(),
+    /** Defaults for every interactive session; each agent may override them. */
+    interactive: z
+      .object({
+        cols: z.number().int().min(20).max(500),
+        /** Milliseconds after a human keystroke during which agent writes are refused. */
+        humanLockMs: z.number().int().min(0).max(600_000),
+        idleMs: z.number().int().positive().max(600_000),
+        rows: z.number().int().min(5).max(200),
+        /** Warn (never block) once this many interactive sessions are live at once. */
+        sessionWarningThreshold: z.number().int().positive().max(1_000),
+        stabilityMs: z.number().int().positive().max(600_000),
+        /** macOS application used to open a shared terminal window on request. */
+        terminalApp: z.string().min(1).max(128),
+        turnTimeoutMs: positiveTimeoutSchema
+      })
+      .strict(),
     pollIntervalMs: z.number().int().positive().max(60_000),
     stateRoot: z.string().min(1)
   })
@@ -713,6 +766,14 @@ export function createDefaultAppConfig(params: {
           enabled: true,
           env: {},
           instructionMode: "arg",
+          interactive: {
+            // Claude has no inline-mode flag on current builds, so it runs in the
+            // alternate screen and relies on terminal-screen reconstruction.
+            args: ["--dangerously-skip-permissions"],
+            idleMs: 2_000,
+            stabilityMs: 1_000,
+            turnTimeoutMs: 600_000
+          },
           kind: "claude",
           outputFormatFlag: "--output-format",
           outputFormatValue: "json",
@@ -727,6 +788,15 @@ export function createDefaultAppConfig(params: {
           enabled: true,
           env: {},
           instructionMode: "arg",
+          interactive: {
+            // `--no-alt-screen` keeps Codex in inline mode, preserving scrollback;
+            // the alternate screen is the single biggest obstacle to reliable
+            // capture, so avoiding it helps both the model and the human window.
+            args: ["--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"],
+            idleMs: 2_000,
+            stabilityMs: 1_000,
+            turnTimeoutMs: 600_000
+          },
           jsonFlag: "--json",
           kind: "codex",
           outputLastMessageFlag: "--output-last-message",
@@ -753,6 +823,16 @@ export function createDefaultAppConfig(params: {
         }
       },
       enabled: true,
+      interactive: {
+        cols: 120,
+        humanLockMs: 10_000,
+        idleMs: 2_000,
+        rows: 40,
+        sessionWarningThreshold: 4,
+        stabilityMs: 1_000,
+        terminalApp: "Terminal",
+        turnTimeoutMs: 600_000
+      },
       pollIntervalMs: 500,
       stateRoot: "./.aia/external-agents"
     },
@@ -849,6 +929,7 @@ export function createDefaultAppConfig(params: {
         instructionDocChars: 12_000,
         memorySummaryChars: 4_000
       },
+      reasoningContextTurns: 1,
       statusUpdates: true,
       verboseEvents: true
     },

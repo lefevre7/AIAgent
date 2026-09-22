@@ -26,7 +26,13 @@ import {
   externalAgentJobListQuerySchema,
   externalAgentJobRecordSchema,
   externalAgentJobRequestSchema,
-  externalAgentJobResumeRequestSchema
+  externalAgentJobResumeRequestSchema,
+  externalAgentSessionReadRequestSchema,
+  externalAgentSessionRecordSchema,
+  externalAgentSessionSendRequestSchema,
+  externalAgentSessionStartRequestSchema,
+  externalAgentSessionStopRequestSchema,
+  externalAgentSessionTurnSchema
 } from "@/core/contracts/external-agents";
 import { mcpServerSummarySchema } from "@/core/contracts/mcp";
 import { memoryHitSchema, memoryQuerySchema } from "@/core/contracts/memory";
@@ -145,6 +151,7 @@ export const gatewayEventTopicSchema = z.enum([
   "message.reasoning",
   "run.updated",
   "session.updated",
+  "tool.output.delta",
   "tool.updated",
   "turn.updated"
 ]);
@@ -246,6 +253,23 @@ export const gatewayEventSchema = z.discriminatedUnion("topic", [
       topic: z.literal("tool.updated")
     })
     .strict(),
+  // Live output from a long-lived process, emitted while it is still running.
+  // `tool.updated` only fires once a tool call settles, which is far too late
+  // for a command session that stays alive across many turns.
+  gatewayEventBaseSchema
+    .extend({
+      payload: z
+        .object({
+          chunk: z.string(),
+          sessionId: entityIdSchema.optional(),
+          sourceId: z.string().min(1).max(256),
+          sourceKind: z.enum(["command", "external_agent"]),
+          stream: z.enum(["combined", "stderr", "stdout"])
+        })
+        .strict(),
+      topic: z.literal("tool.output.delta")
+    })
+    .strict(),
   gatewayEventBaseSchema
     .extend({
       payload: sessionRecordSchema,
@@ -281,6 +305,11 @@ export const gatewayEventSchema = z.discriminatedUnion("topic", [
       payload: z
         .object({
           delta: z.string(),
+          // True on the single persisted, aggregated event emitted when a turn
+          // ends; the live per-token deltas are unpersisted and omit it. Live
+          // consumers render deltas and ignore the aggregate; readers of the
+          // events log see only the aggregate.
+          final: z.boolean().optional(),
           sessionId: entityIdSchema,
           turnId: entityIdSchema
         })
@@ -425,6 +454,13 @@ export const gatewayRequestTopicSchema = z.enum([
   "external_agent.list",
   "external_agent.resume",
   "external_agent.run",
+  "external_agent.session.attach",
+  "external_agent.session.list",
+  "external_agent.session.read",
+  "external_agent.session.send",
+  "external_agent.session.start",
+  "external_agent.session.stop",
+  "external_agent.session.write",
   "gateway.health",
   "gateway.subscribe",
   "mcp.list",
@@ -483,6 +519,16 @@ export const gatewayRequestPayloadSchemas = {
   "external_agent.list": externalAgentJobListQuerySchema,
   "external_agent.resume": externalAgentJobResumeRequestSchema,
   "external_agent.run": externalAgentJobRequestSchema,
+  "external_agent.session.attach": z.object({ externalSessionId: entityIdSchema }).strict(),
+  "external_agent.session.list": z.object({}).strict(),
+  "external_agent.session.read": externalAgentSessionReadRequestSchema,
+  "external_agent.session.send": externalAgentSessionSendRequestSchema,
+  "external_agent.session.start": externalAgentSessionStartRequestSchema,
+  "external_agent.session.stop": externalAgentSessionStopRequestSchema,
+  // The terminal relay: raw keystrokes from an attached human terminal.
+  "external_agent.session.write": z
+    .object({ externalSessionId: entityIdSchema, text: z.string().max(10_000) })
+    .strict(),
   "gateway.health": z.object({}).strict(),
   "gateway.subscribe": gatewaySubscriptionSchema,
   "mcp.list": z
@@ -532,6 +578,17 @@ export const gatewayResponsePayloadSchemas = {
     .strict(),
   "external_agent.resume": externalAgentJobRecordSchema,
   "external_agent.run": externalAgentJobRecordSchema,
+  "external_agent.session.attach": z
+    .object({ command: z.string().min(1), session: externalAgentSessionRecordSchema })
+    .strict(),
+  "external_agent.session.list": z
+    .object({ sessions: z.array(externalAgentSessionRecordSchema) })
+    .strict(),
+  "external_agent.session.read": externalAgentSessionTurnSchema,
+  "external_agent.session.send": externalAgentSessionTurnSchema,
+  "external_agent.session.start": externalAgentSessionRecordSchema,
+  "external_agent.session.stop": externalAgentSessionRecordSchema,
+  "external_agent.session.write": z.object({ ok: z.boolean() }).strict(),
   "gateway.health": z
     .object({ ok: z.boolean(), status: z.string().min(1) })
     .strict(),

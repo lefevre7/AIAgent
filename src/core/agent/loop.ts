@@ -9,6 +9,7 @@ import type {
   LanguageModelResponse,
   LanguageModelStreamEvent,
   Message,
+  MessagePart,
   SessionRecord,
   SteeringInjection,
   StructuredError,
@@ -60,6 +61,7 @@ export type AgentLoopRunParams = {
   maxConsecutiveNudges?: number;
   maxIdenticalToolCalls?: number;
   maxTurns?: number | "unlimited";
+  reasoningContextTurns?: number;
   session: SessionRecord;
   steeringInjections?: SteeringInjection[];
   taskSummary?: string;
@@ -163,6 +165,10 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768;
 const AUTO_COMPACT_CONTEXT_WINDOW_FRACTION = 0.8;
 const DEFAULT_MAX_CONSECUTIVE_NUDGES = 3;
 const DEFAULT_MAX_IDENTICAL_TOOL_CALLS = 3;
+// How many of the most recent turns keep their reasoning in the model request.
+// 1 = the current turn only, so reasoning survives across this turn's tool
+// results but older deliberation stops consuming the context window.
+const DEFAULT_REASONING_CONTEXT_TURNS = 1;
 const ACTIVATED_TOOLS_METADATA_KEY = "activatedToolNames";
 // Session metadata key holding the id of the last message that has been folded
 // into the compacted summary. Messages up to and including it are no longer
@@ -297,6 +303,9 @@ export class AgentLoop {
           : "resume";
 
     let consecutiveNudges = 0;
+    // Tracked separately from consecutiveNudges so a single "think, then act"
+    // turn stays legitimate while a think -> plan -> think chain does not.
+    let consecutivePlanningTurns = 0;
     // Running total of generated tokens across every turn in this run, so the
     // status metric reports cumulative work (like context, which accumulates
     // until compaction) rather than just the latest turn.
@@ -336,7 +345,8 @@ export class AgentLoop {
       );
       const visibleMessages = filterModelVisibleMessages(
         snapshot?.messages ?? [],
-        session
+        session,
+        { reasoningContextTurns: params.reasoningContextTurns }
       );
       const effectiveTools = this.resolveEffectiveTools(
         params.availableTools,
@@ -641,22 +651,31 @@ export class AgentLoop {
       }
 
       // A turn whose only tool calls are planning/reasoning (think, update_plan)
-      // changes no task state, so it must not reset the no-progress guard — that
-      // reset is what let a model loop "think -> plan -> think -> plan" forever.
+      // changes no task state. One such turn between substantive turns is
+      // legitimate — models think before acting — so only a second consecutive
+      // planning turn counts toward the no-progress guard. Mixed turns (think
+      // plus a real tool) are productive and reset both counters.
       const noProgressTurn = nonCompletionCalls.every((call) =>
         isNoProgressToolName(call.toolName, params.availableTools)
       );
       if (noProgressTurn) {
-        consecutiveNudges += 1;
-        if (consecutiveNudges > maxConsecutiveNudges) {
-          return failNoProgressGuard(
-            "The runtime stopped after repeated planning or reasoning turns without taking action.",
-            `The model produced ${consecutiveNudges} consecutive turns that only planned or reasoned without acting.`
-          );
+        consecutivePlanningTurns += 1;
+        if (consecutivePlanningTurns > 1) {
+          consecutiveNudges += 1;
+          if (consecutiveNudges > maxConsecutiveNudges) {
+            return failNoProgressGuard(
+              "The runtime stopped after repeated planning or reasoning turns without taking action.",
+              `The model produced ${consecutivePlanningTurns} consecutive turns that only planned or reasoned without acting.`
+            );
+          }
         }
       } else {
+        consecutivePlanningTurns = 0;
         consecutiveNudges = 0;
       }
+      // The first planning turn is allowed silently; nudging it would punish
+      // the normal "think, then act" pattern the prompt asks for.
+      const nudgeForNoProgress = noProgressTurn && consecutivePlanningTurns > 1;
 
       session = await this.persistSession(session, "awaiting_tool_execution", {
         activeTurnId: turn.id,
@@ -779,7 +798,7 @@ export class AgentLoop {
       turn.status = "completed";
       turn.summary = `Executed ${toolOutcomes.length} tool call(s).`;
 
-      if (noProgressTurn) {
+      if (nudgeForNoProgress) {
         const noProgressMessage = createSystemMessage(
           session.id,
           turn.id,
@@ -1098,7 +1117,8 @@ function readActivatedToolNames(session: SessionRecord): string[] {
 
 export function filterModelVisibleMessages(
   messages: Message[],
-  session: SessionRecord
+  session: SessionRecord,
+  options: { reasoningContextTurns?: number } = {}
 ): Message[] {
   const watermarkId = session.metadata[COMPACTION_WATERMARK_METADATA_KEY];
   let scoped = messages;
@@ -1108,7 +1128,46 @@ export function filterModelVisibleMessages(
       scoped = messages.slice(index + 1);
     }
   }
-  return scoped.filter((message) => message.visibility !== "hidden");
+  return dropStaleReasoningParts(
+    scoped.filter((message) => message.visibility !== "hidden"),
+    options.reasoningContextTurns ?? DEFAULT_REASONING_CONTEXT_TURNS
+  );
+}
+
+/**
+ * Keeps reasoning for the most recent `retainedTurns` turns and drops the rest.
+ *
+ * Reasoning is expensive context and replaying an older turn's deliberation
+ * reinforces "plan -> re-plan" loops, but the model still needs this turn's
+ * reasoning to survive across tool results. Filtering by turn (rather than by
+ * message) is what makes those two requirements compatible.
+ */
+function dropStaleReasoningParts(
+  messages: Message[],
+  retainedTurns: number
+): Message[] {
+  const turnIds: string[] = [];
+  for (const message of messages) {
+    if (message.turnId !== undefined && !turnIds.includes(message.turnId)) {
+      turnIds.push(message.turnId);
+    }
+  }
+  const retained = new Set(
+    retainedTurns > 0 ? turnIds.slice(-retainedTurns) : []
+  );
+
+  return messages.flatMap((message) => {
+    // A message with no turn cannot be aged, so its reasoning is kept.
+    if (message.turnId === undefined || retained.has(message.turnId)) {
+      return [message];
+    }
+    if (!message.parts.some((part) => part.kind === "reasoning")) {
+      return [message];
+    }
+    const parts = message.parts.filter((part) => part.kind !== "reasoning");
+    // A message that was nothing but reasoning carries no remaining signal.
+    return parts.length > 0 ? [{ ...message, parts }] : [];
+  });
 }
 
 function buildAssistantTurnMessage(
@@ -1126,21 +1185,32 @@ function buildAssistantTurnMessage(
     toolName: toolCall.toolName
   }));
 
-  // When the turn produced a tool call, the model has already decided to act, so
-  // drop its <think>/analysis reasoning from the persisted transcript. Replaying
-  // that indecision on later turns is what reinforces "plan -> re-plan" loops.
-  const textParts =
-    toolCallParts.length > 0
-      ? rawTextParts
-          .map((part) =>
-            part.kind === "text"
-              ? { ...part, text: stripReasoningMarkup(part.text) }
-              : part
-          )
-          .filter((part) => part.kind !== "text" || part.text.trim().length > 0)
-      : rawTextParts;
+  // Inline <think>/analysis markup is moved into first-class reasoning parts
+  // instead of being deleted. Deleting it lost detail the operator wanted in the
+  // transcript; leaving it inline meant every later turn replayed the model's
+  // indecision back at it. Splitting lets the transcript keep it while
+  // filterModelVisibleMessages drops it by age.
+  const reasoningParts: MessagePart[] = [];
+  const textParts: MessagePart[] = [];
+  for (const part of rawTextParts) {
+    if (part.kind !== "text") {
+      textParts.push(part);
+      continue;
+    }
+    const split = splitReasoningMarkup(part.text);
+    if (split.reasoning.length > 0) {
+      reasoningParts.push({ kind: "reasoning", text: split.reasoning });
+    }
+    if (split.text.length > 0) {
+      textParts.push({ ...part, text: split.text });
+    }
+  }
 
-  if (textParts.length === 0 && toolCallParts.length === 0) {
+  if (
+    reasoningParts.length === 0 &&
+    textParts.length === 0 &&
+    toolCallParts.length === 0
+  ) {
     return null;
   }
 
@@ -1148,7 +1218,7 @@ function buildAssistantTurnMessage(
     createdAt: new Date().toISOString(),
     id: response.message?.id ?? `message.assistant.${response.id}`,
     metadata: response.message?.metadata ?? {},
-    parts: [...textParts, ...toolCallParts],
+    parts: [...reasoningParts, ...textParts, ...toolCallParts],
     role: "assistant",
     sessionId,
     source: "assistant",
@@ -1158,12 +1228,31 @@ function buildAssistantTurnMessage(
   };
 }
 
-function stripReasoningMarkup(text: string): string {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/giu, "")
-    .replace(/<\|channel\|>analysis[\s\S]*?(?:<\|end\|>|<\|message\|>)/giu, "")
-    .replace(/\n{3,}/gu, "\n\n")
-    .trim();
+const REASONING_MARKUP_PATTERNS = [
+  /<think>([\s\S]*?)<\/think>/giu,
+  /<\|channel\|>analysis([\s\S]*?)(?:<\|end\|>|<\|message\|>)/giu
+];
+
+function splitReasoningMarkup(text: string): {
+  reasoning: string;
+  text: string;
+} {
+  const reasoning: string[] = [];
+  let remaining = text;
+  for (const pattern of REASONING_MARKUP_PATTERNS) {
+    remaining = remaining.replace(pattern, (_match, captured: string) => {
+      const trimmed = captured.trim();
+      if (trimmed.length > 0) {
+        reasoning.push(trimmed);
+      }
+      return "";
+    });
+  }
+
+  return {
+    reasoning: reasoning.join("\n\n"),
+    text: remaining.replace(/\n{3,}/gu, "\n\n").trim()
+  };
 }
 
 function isNoProgressToolName(

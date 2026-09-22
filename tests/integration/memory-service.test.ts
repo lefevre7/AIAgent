@@ -137,6 +137,17 @@ describe("file-backed memory service", () => {
         status: "succeeded",
         toolName: "update_plan",
         turnId: "turn.memory.1"
+      },
+      {
+        arguments: { command: "npm run build" },
+        error: { code: "command_failed", details: {}, message: "exit code 1", retriable: false },
+        id: "tool-call.memory.2",
+        metadata: {},
+        sessionId: session.id,
+        startedAt: "2026-03-27T17:10:03.000Z",
+        status: "failed",
+        toolName: "shell_command",
+        turnId: "turn.memory.1"
       }
     ]);
 
@@ -160,6 +171,14 @@ describe("file-backed memory service", () => {
 
     expect(sessionSummary).toContain("Session Summary");
     expect(sessionSummary).toContain("Implemented the durable memory service");
+
+    // A bare count told a resumed session that work happened but not what it
+    // was, so it re-ran commands it had already run. Failed calls must survive
+    // too: "don't try that again" is the single most useful line in the log.
+    expect(sessionSummary).toContain("Successful tool calls: 1 of 2");
+    expect(sessionSummary).toContain("## Tool Calls");
+    expect(sessionSummary).toContain('- update_plan({}) -> succeeded: {"ok":true}');
+    expect(sessionSummary).toContain('- shell_command({"command":"npm run build"}) -> failed: exit code 1');
     expect(compactionHistory).toContain('"phase":"startup_phase_1"');
     expect(compactionHistory).toContain('"phase":"startup_phase_2"');
     expect(compactionHistory).toContain('"phase":"session_completion"');

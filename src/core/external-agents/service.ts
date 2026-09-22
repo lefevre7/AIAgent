@@ -32,6 +32,7 @@ import {
   externalAgentJobResumeRequestSchema,
   jsonValueSchema
 } from "@/core/contracts";
+import { buildExternalAgentEnvironment } from "@/core/external-agents/environment";
 import { writeJsonAtomic, sleep } from "@/core/io/files";
 import type { FileSessionStore } from "@/core/sessions";
 import type { ApprovalEvaluationTarget } from "@/core/approvals/policy";
@@ -443,12 +444,12 @@ export class FileExternalAgentService implements ExternalAgentService {
     child.once("error", (error) => {
       stdoutStream.end();
       stderrStream.end();
-      void this.handleChildError(job.id, error);
+      this.trackBackground(this.handleChildError(job.id, error), "handleChildError", job.id);
     });
     child.once("exit", (code, signal) => {
       stdoutStream.end();
       stderrStream.end();
-      void this.handleChildExit(job.id, code, signal);
+      this.trackBackground(this.handleChildExit(job.id, code, signal), "handleChildExit", job.id);
     });
 
     if (prepared.stdinText) {
@@ -497,10 +498,10 @@ export class FileExternalAgentService implements ExternalAgentService {
       // Attach listeners synchronously, before any await, so an async spawn
       // failure always has a handler instead of escaping as an uncaught event.
       child.once("error", (error) => {
-        void this.handleChildError(job.id, error);
+        this.trackBackground(this.handleChildError(job.id, error), "handleChildError", job.id);
       });
       child.once("exit", (code, signal) => {
-        void this.handleChildExit(job.id, code, signal);
+        this.trackBackground(this.handleChildExit(job.id, code, signal), "handleChildExit", job.id);
       });
 
       const running = externalAgentJobRecordSchema.parse({
@@ -525,14 +526,26 @@ export class FileExternalAgentService implements ExternalAgentService {
     }
   }
 
-  private configureTimeout(job: ExternalAgentJobRecord, monitor: RunningJobMonitor): void {
-    const timeoutMs = job.request.timeoutMs ?? this.requireRuntime(job.request.agentId).config.timeoutMs;
+  /**
+   * Process lifecycle callbacks (`error`, `exit`, timeout, poll) are fire-and-forget by
+   * necessity: nothing is awaiting them. `void promise` does *not* handle a rejection, so
+   * a handler that throws after its job's state root has gone away (a finished run, a
+   * cleaned-up temp dir) surfaces as an unhandled rejection that can take down the host.
+   * Log it and move on instead — a dead process's bookkeeping must never be fatal.
+   */
+  private trackBackground(promise: Promise<unknown>, operation: string, jobId: string): void {
+    promise.catch((error: unknown) => {
+      console.warn(`external-agent ${operation} failed for job "${jobId}"`, error);
+    });
+  }
+
+  private configureTimeout(job: ExternalAgentJobRecord, monitor: RunningJobMonitor): void {    const timeoutMs = job.request.timeoutMs ?? this.requireRuntime(job.request.agentId).config.timeoutMs;
     if (!timeoutMs) {
       return;
     }
 
     monitor.timeout = setTimeout(() => {
-      void this.markTimedOut(job.id);
+      this.trackBackground(this.markTimedOut(job.id), "markTimedOut", job.id);
     }, timeoutMs);
     monitor.timeout.unref?.();
   }
@@ -545,7 +558,7 @@ export class FileExternalAgentService implements ExternalAgentService {
 
     const monitor = existing ?? {};
     monitor.poller = setInterval(() => {
-      void this.pollRecoveredJob(jobId);
+      this.trackBackground(this.pollRecoveredJob(jobId), "pollRecoveredJob", jobId);
     }, this.options.pollIntervalMs ?? 500);
     monitor.poller.unref?.();
     this.runningJobs.set(jobId, monitor);
@@ -968,16 +981,22 @@ export function createExternalAgentServiceFromConfig(params: {
   });
 }
 
+const UNGATED_EXTERNAL_AGENT_ACTIONS = new Set(["attach", "get", "list", "read", "send", "stop"]);
+
 export function createExternalAgentApprovalTargetResolver(params: {
   service: Pick<ExternalAgentService, "getDefinition" | "getJob">;
-}) {
-  return async (input: ToolApprovalDeciderParams): Promise<ApprovalEvaluationTarget[]> => {
+}) {  return async (input: ToolApprovalDeciderParams): Promise<ApprovalEvaluationTarget[]> => {
     if (input.definition.kind !== "external_agent") {
       return [];
     }
 
     const action = typeof input.call.arguments.action === "string" ? input.call.arguments.action : undefined;
-    if (action === "get" || action === "list") {
+    // Approval is gated on *opening* a channel to an external agent, not on
+    // every message through one. `run` and `start` are the moments a process is
+    // spawned; afterwards the operator has already consented to this agent in
+    // this directory, and re-asking on each turn would make an interactive
+    // session unusable. Read-only inspection is never gated.
+    if (action && UNGATED_EXTERNAL_AGENT_ACTIONS.has(action)) {
       return [];
     }
 
@@ -996,10 +1015,19 @@ export function createExternalAgentApprovalTargetResolver(params: {
     ];
 
     if (definition) {
+      // `start` spawns defaultArgs *plus* the preset's interactive args, which
+      // is where the bypass flags live. Approving a command string that hid
+      // them asked the operator to consent to something safer than what runs,
+      // and an approval-policy regex written against the command could never
+      // match `--dangerously-skip-permissions`.
+      const spawnArgs =
+        action === "start"
+          ? [...definition.defaultArgs, ...definition.interactiveArgs]
+          : definition.defaultArgs;
       targets.push({
         kind: "command",
         label: "command",
-        value: [definition.command, ...definition.defaultArgs].join(" ").trim()
+        value: [definition.command, ...spawnArgs].join(" ").trim()
       });
     }
 
@@ -1048,6 +1076,63 @@ export async function buildExternalAgentArtifacts(job: ExternalAgentJobRecord): 
   }
 
   return dedupeArtifacts(artifacts);
+}
+
+export type ExternalAgentJobOutput = {
+  stderr: string;
+  stderrPath: string | null;
+  stdout: string;
+  stdoutPath: string | null;
+  truncated: boolean;
+};
+
+/**
+ * Reads the tail of a job's captured streams.
+ *
+ * The job record alone only says whether the external agent exited cleanly.
+ * Callers reporting the job to a model or an operator need what it actually
+ * printed, which lives in the persisted logs rather than in the record.
+ */
+export async function readExternalAgentJobOutput(
+  job: ExternalAgentJobRecord,
+  options: { maxChars?: number } = {}
+): Promise<ExternalAgentJobOutput> {
+  const maxChars = options.maxChars ?? 8_000;
+  const [stdout, stderr] = await Promise.all([
+    readFileTail(job.logPaths.stdout, maxChars),
+    readFileTail(job.logPaths.stderr, maxChars)
+  ]);
+
+  return {
+    stderr: stderr.text,
+    stderrPath: job.logPaths.stderr ?? null,
+    stdout: stdout.text,
+    stdoutPath: job.logPaths.stdout ?? null,
+    truncated: stdout.truncated || stderr.truncated
+  };
+}
+
+async function readFileTail(
+  filePath: string | undefined,
+  maxChars: number
+): Promise<{ text: string; truncated: boolean }> {
+  if (!filePath) {
+    return { text: "", truncated: false };
+  }
+
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    if (raw.length <= maxChars) {
+      return { text: raw, truncated: false };
+    }
+
+    return {
+      text: `[earlier output omitted: showing the last ${maxChars.toLocaleString("en-US")} of ${raw.length.toLocaleString("en-US")} characters; full output: ${filePath}]\n\n${raw.slice(raw.length - maxChars)}`,
+      truncated: true
+    };
+  } catch {
+    return { text: "", truncated: false };
+  }
 }
 
 const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
@@ -1121,6 +1206,11 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
       }
 
       return {
+        // The CLI told us it failed. Without this the classifier sees a non-zero
+        // exit plus a session id and calls it "awaiting_resume" — inviting a
+        // resume that will fail exactly the same way, because an auth error or
+        // a refused prompt is not an interruption.
+        ...(parsed.isError ? { metadata: { agentReportedError: true } } : {}),
         nativeSessionId: parsed.sessionId ?? params.job.nativeSessionId,
         resultArtifact,
         summary: summary ? clipSummary(summary) : undefined
@@ -1377,6 +1467,7 @@ function buildExternalAgentDefinition(agentId: string, config: ExternalAgentRunt
     defaultArgs: config.args,
     displayName: config.displayName,
     id: agentId,
+    interactiveArgs: config.interactive?.args ?? [],
     kind: config.kind,
     metadata: {},
     resumeSupported: adapter.resumeSupported,
@@ -1384,23 +1475,22 @@ function buildExternalAgentDefinition(agentId: string, config: ExternalAgentRunt
   };
 }
 
+/**
+ * One-shot job environment.
+ *
+ * This used to seed from `{ ...process.env }` and then re-copy each `passEnv`
+ * key out of `process.env` into it — a provable no-op, so `passEnv` restricted
+ * nothing while the docs called it an allowlist. It now shares
+ * `buildExternalAgentEnvironment` with the interactive session path.
+ */
 function buildProcessEnvironment(
   config: ExternalAgentRuntimeConfig,
   overrides: Record<string, string> = {}
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env
-  };
-  for (const key of config.passEnv ?? []) {
-    if (process.env[key] !== undefined) {
-      env[key] = process.env[key];
-    }
-  }
-  for (const [key, value] of Object.entries(config.env ?? {})) {
-    env[key] = typeof value === "string" ? value : JSON.stringify(value);
-  }
-  Object.assign(env, overrides);
-  return env;
+  // Next.js augments ProcessEnv with required keys, so the plain record has to
+  // be widened back to the spawn signature's expectation (same cast as
+  // `src/core/process/session.ts`).
+  return buildExternalAgentEnvironment({ config, overrides }) as NodeJS.ProcessEnv;
 }
 
 function appendInstructions(args: string[], instructions: string, mode: "arg" | "stdin", promptFlag?: string): void {
@@ -1446,7 +1536,9 @@ function resolveTerminalStatus(
   if ((job.resultArtifact || job.structuredResult !== undefined) && exit.exitCode === undefined && !exit.signal) {
     return "succeeded";
   }
-  if (job.nativeSessionId) {
+  // An agent that reported its own failure is finished, not interrupted: it ran
+  // to completion and the answer is "I could not do this".
+  if (job.nativeSessionId && job.metadata.agentReportedError !== true) {
     return "awaiting_resume";
   }
   return "failed";
@@ -1480,6 +1572,17 @@ function buildTerminalError(
         signal: exit.signal ?? null
       },
       true
+    );
+  }
+  if (job.metadata.agentReportedError === true) {
+    return externalAgentError(
+      "external_agent_reported_failure",
+      job.summary ?? `The external agent reported that job "${job.id}" failed.`,
+      {
+        exitCode: exit.exitCode ?? null,
+        signal: exit.signal ?? null
+      },
+      false
     );
   }
   return externalAgentError(
@@ -1609,7 +1712,7 @@ async function writeTextFile(filePath: string, value: string): Promise<void> {
   await fs.writeFile(filePath, `${value}\n`, "utf8");
 }
 
-function parseClaudeStdout(stdout: string): { result?: string; sessionId?: string } {
+function parseClaudeStdout(stdout: string): { isError?: boolean; result?: string; sessionId?: string } {
   const trimmed = stdout.trim();
   if (trimmed.length === 0) {
     return {};
@@ -1623,6 +1726,7 @@ function parseClaudeStdout(stdout: string): { result?: string; sessionId?: strin
   // the final assistant text and session id.
   let result: string | undefined;
   let sessionId: string | undefined;
+  let isError = false;
   for (const line of trimmed
     .split("\n")
     .map((entry) => entry.trim())
@@ -1634,14 +1738,20 @@ function parseClaudeStdout(stdout: string): { result?: string; sessionId?: strin
     if (parsed.result !== undefined) {
       result = parsed.result;
     }
+    if (parsed.isError) {
+      isError = true;
+    }
   }
-  return { result, sessionId };
+  return { isError, result, sessionId };
 }
 
-function tryParseClaudeRecord(text: string): { result?: string; sessionId?: string } {
+function tryParseClaudeRecord(text: string): { isError?: boolean; result?: string; sessionId?: string } {
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
     return {
+      // `subtype` still says "success" when the CLI itself failed (a 401, a
+      // refused prompt); `is_error` is the field that actually reports it.
+      isError: parsed.is_error === true ? true : undefined,
       result: typeof parsed.result === "string" ? parsed.result : undefined,
       sessionId: typeof parsed.session_id === "string" && parsed.session_id.length > 0 ? parsed.session_id : undefined
     };

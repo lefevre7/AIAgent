@@ -135,6 +135,25 @@ describe("control-plane router", () => {
     });
   });
 
+  test("falls back to the free-text answer when the Other radio wins", async () => {
+    // The browser form models "Other" as a radio with an empty value, so the
+    // empty `comment` must not shadow the typed `commentOther` value.
+    const service = createServiceStub();
+    const router = createControlPlaneRouter({ service });
+    const request = httpMocks.createRequest({
+      body: { comment: "", commentOther: "use duckdb", decision: "approved", redirectTo: "/" },
+      method: "POST",
+      url: "/approvals/approval.2/resolve"
+    });
+    request.originalUrl = "/approvals/approval.2/resolve";
+    await invoke(router, request);
+    expect(service.resolveApproval).toHaveBeenCalledWith({
+      comment: "use duckdb",
+      decision: "approved",
+      requestId: "approval.2"
+    });
+  });
+
   test("reports a missing required field through the JSON error path", async () => {
     const service = createServiceStub();
     const router = createControlPlaneRouter({ service });

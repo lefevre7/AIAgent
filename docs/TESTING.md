@@ -92,6 +92,10 @@ Current live commands and flags:
   `AIA_RUN_LIVE_BROWSER_TESTS=1 npm run test:live:browser`
 - Codex external-agent flow:
   `AIA_RUN_LIVE_CODEX_TEST=1 npm run test:live:external-agents`
+- Interactive external-agent terminal (real PTY against a real CLI):
+  `AIA_LIVE_EXTERNAL_AGENT_INTERACTIVE=1 npm run test:live:external-agents-interactive`
+  Optional: `AIA_LIVE_EXTERNAL_AGENT_COMMAND` (default `codex`), `AIA_LIVE_EXTERNAL_AGENT_READY`
+  Note: this starts the CLI with its approval-bypass flag — see `docs/EXTERNAL_AGENTS.md`.
 - LM Studio:
   `AIA_RUN_LIVE_LM_STUDIO_TESTS=1 npm run test:live:lm-studio`
   Optional: `AIA_LIVE_LM_STUDIO_BASE_URL`, `AIA_LIVE_LM_STUDIO_MODEL`

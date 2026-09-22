@@ -8,6 +8,7 @@ import {
   AgentLoop,
   ApprovalCoordinator,
   FileSessionStore,
+  filterModelVisibleMessages,
   type AgentLoopCompletionDecision,
   type AgentLoopModel,
   type AgentLoopStatusMetrics,
@@ -839,9 +840,104 @@ describe("agent loop", () => {
     expect(snapshot?.session.status).toBe("failed");
   });
 
+  test("allows a single planning turn between substantive turns without nudging", async () => {
+    // "think, then act" is the pattern the prompt asks for, so one planning
+    // turn must stay silent. Only a second consecutive one is a loop.
+    const { loop, store } = await createLoop(
+      [
+        buildModelResponse({
+          messageText: "Let me plan.",
+          sessionId: "session.loop.1",
+          toolCalls: [
+            {
+              arguments: { thought: "plan first" },
+              callId: "tool.think.single",
+              toolName: "think"
+            }
+          ]
+        }),
+        buildModelResponse({
+          messageText: "Acting on the plan.",
+          sessionId: "session.loop.1",
+          toolCalls: [
+            {
+              arguments: { path: "AGENTS.md" },
+              callId: "tool.read.single",
+              toolName: "read_file"
+            }
+          ]
+        }),
+        buildModelResponse({
+          messageText: "Done.",
+          sessionId: "session.loop.1",
+          toolCalls: [
+            {
+              arguments: {},
+              callId: "tool.complete.single",
+              toolName: "attempt_complete"
+            }
+          ]
+        })
+      ],
+      {
+        toolExecutor: {
+          async execute(call): Promise<AgentLoopToolExecutionResult> {
+            const completedCall: ToolCallRecord = {
+              ...call,
+              completedAt: new Date().toISOString(),
+              result: { acknowledged: true },
+              status: "succeeded"
+            };
+            return {
+              resultMessage: {
+                createdAt: new Date().toISOString(),
+                id: `message.tool.${call.id}`,
+                metadata: {},
+                parts: [{ kind: "json", value: { acknowledged: true } }],
+                role: "tool",
+                sessionId: call.sessionId,
+                source: "tool_runtime",
+                tags: [],
+                turnId: call.turnId,
+                visibility: "default"
+              },
+              toolCall: completedCall
+            };
+          }
+        }
+      }
+    );
+
+    const result = await loop.run({
+      availableTools: [
+        buildAttemptCompleteTool(),
+        buildThinkTool(),
+        buildReadFileTool()
+      ],
+      maxTurns: 6,
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+    const snapshot = await store.getSessionSnapshot("session.loop.1");
+    expect(
+      snapshot?.messages.some(
+        (message) =>
+          message.source === "system" &&
+          message.parts.some(
+            (part) =>
+              part.kind === "text" && part.text.includes("Stop planning now")
+          )
+      )
+    ).toBe(false);
+  });
+
   test("stops with completion_blocked when the model only plans or reasons without acting", async () => {
     const { loop, store } = await createLoop(
-      Array.from({ length: 4 }, (_unused, index) =>
+      // The first planning turn is deliberately free ("think, then act"), so it
+      // takes maxConsecutiveNudges + 2 planning turns to trip the guard.
+      Array.from({ length: 6 }, (_unused, index) =>
         buildModelResponse({
           messageText: `Planning iteration ${index + 1}.`,
           sessionId: "session.loop.1",
@@ -911,7 +1007,7 @@ describe("agent loop", () => {
     ).toBe(true);
   });
 
-  test("strips <think> reasoning from the persisted assistant message on tool-call turns", async () => {
+  test("moves <think> reasoning into a reasoning part and ages it out of later model requests", async () => {
     const { loop, store } = await createLoop(
       [
         buildModelResponse({
@@ -989,6 +1085,43 @@ describe("agent loop", () => {
     expect(text).not.toContain("internal deliberation");
     expect(text).not.toContain("<think>");
     expect(text).toContain("Reading the file now.");
+
+    // The transcript keeps the reasoning as its own part rather than deleting
+    // it: the operator wanted it readable, and the model still needs it within
+    // the turn that produced it.
+    const reasoning = (assistantWithTool?.parts ?? []).filter(
+      (part) => part.kind === "reasoning"
+    );
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]).toMatchObject({
+      text: "internal deliberation that should not persist"
+    });
+
+    // By the time a later turn runs, that reasoning is outside the retained
+    // window and must not be replayed into the model's context.
+    const laterVisible = filterModelVisibleMessages(
+      snapshot?.messages ?? [],
+      snapshot?.session ?? buildSession(),
+      { reasoningContextTurns: 1 }
+    );
+    expect(
+      laterVisible.some((message) =>
+        message.parts.some(
+          (part) =>
+            part.kind === "reasoning" &&
+            part.text.includes("internal deliberation")
+        )
+      )
+    ).toBe(false);
+    // The answer itself survives the filter.
+    expect(
+      laterVisible.some((message) =>
+        message.parts.some(
+          (part) =>
+            part.kind === "text" && part.text.includes("Reading the file now.")
+        )
+      )
+    ).toBe(true);
   });
 
   test("emits status metrics (tokens, context %, elapsed) after each model response", async () => {

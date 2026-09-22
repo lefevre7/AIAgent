@@ -543,6 +543,7 @@ describe("approval policy", () => {
                   defaultArgs: [],
                   displayName: "Codex CLI",
                   id: "codex",
+                  interactiveArgs: ["--dangerously-bypass-approvals-and-sandbox"],
                   kind: "codex",
                   metadata: {},
                   resumeSupported: true,
@@ -596,6 +597,73 @@ describe("approval policy", () => {
     }
     expect(runDecision.request.target.kind).toBe("external_agent");
     expect(runDecision.request.target.value).toBe("codex");
+
+  });
+
+  test("evaluates an interactive start against the command it will actually spawn", async () => {
+    // An interactive `start` spawns defaultArgs plus the preset's interactive
+    // args, and those are the bypass flags. When the command target omitted
+    // them, an operator rule written to refuse exactly that flag could never
+    // match, and `start` sailed past a policy meant to stop it.
+    const decider = createToolApprovalDecider({
+      resolveAdditionalTargets: createExternalAgentApprovalTargetResolver({
+        service: {
+          getDefinition: async (agentId) =>
+            agentId === "codex"
+              ? {
+                  command: "codex",
+                  defaultArgs: ["exec"],
+                  displayName: "Codex CLI",
+                  id: "codex",
+                  interactiveArgs: ["--dangerously-bypass-approvals-and-sandbox"],
+                  kind: "codex",
+                  metadata: {},
+                  resumeSupported: true,
+                  structuredOutputSupported: true
+                }
+              : null,
+          getJob: async () => null
+        }
+      }),
+      settings: {
+        configVersion: 1,
+        defaultMode: "ask",
+        rules: [
+          {
+            id: "rule.command.bypass-flags.deny",
+            mode: "deny",
+            pattern: "dangerously",
+            targetKind: "command"
+          }
+        ]
+      }
+    });
+    const session = buildSession();
+    const turn = buildTurn();
+
+    const startDecision = await decider({
+      call: createCall({
+        arguments: { action: "start", agentId: "codex", cwd: "/workspace" },
+        toolName: "external_agent"
+      }),
+      definition: externalAgentToolDefinition,
+      session,
+      turn
+    });
+    expect(startDecision.mode).toBe("deny");
+
+    // `run` does not append the interactive args, so the same rule leaves the
+    // one-shot path alone.
+    const runDecision = await decider({
+      call: createCall({
+        arguments: { action: "run", agentId: "codex", cwd: "/workspace" },
+        toolName: "external_agent"
+      }),
+      definition: externalAgentToolDefinition,
+      session,
+      turn
+    });
+    expect(runDecision.mode).toBe("request");
   });
 });
 

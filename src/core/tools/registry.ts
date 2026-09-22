@@ -443,6 +443,17 @@ function scoreTool(
   };
 }
 
+/**
+ * Query terms worth matching on their own.
+ *
+ * Two characters and under are dropped: they are the connective tissue of a
+ * phrase ("of", "to", "a") and match almost any prose field, which would turn
+ * a partial score into noise.
+ */
+function tokenizeQuery(normalizedQuery: string): string[] {
+  return normalizedQuery.split(/[^a-z0-9]+/u).filter((token) => token.length > 2);
+}
+
 function matchText(
   value: string,
   normalizedQuery: string,
@@ -464,6 +475,22 @@ function matchText(
     increment = options.prefix;
   } else if (options.contains > 0 && normalizedValue.includes(normalizedQuery)) {
     increment = options.contains;
+  } else if (options.contains > 0) {
+    // Whole-query containment alone makes a phrased query invisible: a model
+    // that asks for "external agent CLI jobs list" matches nothing, because no
+    // field contains that exact string. Under the lean tool profile
+    // `tool_search` is the only route to most tools, so a miss costs a whole
+    // turn — observed live, six searches before the model found a tool whose
+    // tags it had already named. Fall back to per-token containment scored by
+    // the share of tokens that hit, which keeps an exact match ranked above a
+    // partial one instead of treating them alike.
+    const tokens = tokenizeQuery(normalizedQuery);
+    if (tokens.length > 1) {
+      const matched = tokens.filter((token) => normalizedValue.includes(token)).length;
+      if (matched > 0) {
+        increment = Math.round((options.contains * matched) / tokens.length);
+      }
+    }
   }
 
   if (increment === 0) {

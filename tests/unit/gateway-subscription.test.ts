@@ -43,6 +43,30 @@ describe("gateway event subscription matching", () => {
     expect(eventMatchesGatewaySubscription(event, { sessionId: "session.other", topics: ["message.reasoning"] })).toBe(false);
   });
 
+  test("routes live tool output deltas to the owning session only", () => {
+    // Command output from a session-owned process must not leak into another
+    // session's stream; unowned output (a detached process) has no session id
+    // and is only visible to unfiltered subscribers.
+    const event = gatewayEventSchema.parse({
+      createdAt: "2026-06-10T12:00:00.000Z",
+      id: "tool-output.command.1.abc",
+      metadata: {},
+      payload: {
+        chunk: "build ok\n",
+        sessionId: "session.abc",
+        sourceId: "command.1",
+        sourceKind: "command",
+        stream: "combined"
+      },
+      topic: "tool.output.delta"
+    });
+
+    expect(deriveGatewayEventSessionId(event)).toBe("session.abc");
+    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.abc", topics: ["tool.output.delta"] })).toBe(true);
+    expect(eventMatchesGatewaySubscription(event, { sessionId: "session.other", topics: ["tool.output.delta"] })).toBe(false);
+    expect(eventMatchesGatewaySubscription(event, { topics: ["tool.updated"] })).toBe(false);
+  });
+
   test("derives the session id from the payload or metadata for every event topic", () => {
     type Derivable = Parameters<typeof deriveGatewayEventSessionId>[0];
     const event = (topic: string, payload: unknown, metadata: unknown = {}): Derivable =>
@@ -61,6 +85,8 @@ describe("gateway event subscription matching", () => {
       { event: event("message.created", { sessionId: "s.msg" }), expected: "s.msg" },
       { event: event("run.updated", { sessionId: "s.run" }), expected: "s.run" },
       { event: event("session.updated", { id: "s.session" }), expected: "s.session" },
+      { event: event("tool.output.delta", { sessionId: "s.tool-output" }), expected: "s.tool-output" },
+      { event: event("tool.output.delta", {}), expected: undefined },
       { event: event("tool.updated", { sessionId: "s.tool" }), expected: "s.tool" },
       { event: event("turn.updated", { sessionId: "s.turn" }), expected: "s.turn" }
     ];

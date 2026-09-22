@@ -20,6 +20,11 @@ describe("HomePage", () => {
     expect(screen.getByText("Web Control Plane")).toBeVisible();
     expect(screen.getByRole("heading", { level: 2, name: "Gateway" })).toBeVisible();
     expect(screen.getByRole("heading", { level: 2, name: "Create Session" })).toBeVisible();
+
+    // A new session must default to the workspace root, not the memory
+    // document root — otherwise every relative path the agent touches lands
+    // inside `memory/`.
+    expect(screen.getByLabelText("Working directory")).toHaveValue("/tmp/workspace");
   });
 
   it("renders placeholders, flash messages, and token/tunnel badges for an empty dashboard", () => {
@@ -55,6 +60,12 @@ describe("HomePage", () => {
     // approvals: open one has an Approve button; resolved shows its decision
     expect(html).toContain("Approve");
     expect(html).toContain("approved");
+    // question approvals offer each option as a radio plus a free-text "Other"
+    expect(html).toContain("sqlite — Local dev database");
+    expect(html).toContain("postgres");
+    expect(html).toContain("Other");
+    expect(html).toContain("commentOther");
+    expect(html).toContain(">Answer</button>");
     // tunnel warning + exposure
     expect(html).toContain("exposed publicly");
     // describeEvent output across many topics
@@ -164,6 +175,17 @@ function populatedDashboard(): ControlPlaneDashboard {
   dashboard.approvals = [
     {
       request: { id: "approval.open", justification: "needs approval", sessionId: "session.populated", status: "pending", target: { label: "shell_command" } },
+      resolution: null
+    },
+    {
+      request: {
+        id: "approval.question",
+        justification: "Which database should I target?",
+        metadata: { options: [{ description: "Local dev database", label: "sqlite" }, { label: "postgres" }] },
+        sessionId: "session.populated",
+        status: "pending",
+        target: { kind: "question", label: "ask_user_question" }
+      },
       resolution: null
     },
     {
@@ -350,14 +372,17 @@ function createDashboardFixture(): ControlPlaneDashboard {
         retrievalLimit: 8,
         stateRoot: "/tmp/state",
         userGlobalRoot: "/tmp/user",
-        workspaceRoot: "/tmp/workspace"
+        // Deliberately different from runtime.workspaceRoot below: the two are
+        // easy to confuse, and the session form once defaulted to this one.
+        workspaceRoot: "/tmp/workspace/memory"
       },
       runtime: {
         defaultModel: "gpt-5.4",
         defaultProvider: "lm_studio",
         logLevel: "info",
         statusUpdates: true,
-        verboseEvents: false
+        verboseEvents: false,
+        workspaceRoot: "/tmp/workspace"
       },
       tunnel: {
         enabled: false,

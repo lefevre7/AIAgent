@@ -22,6 +22,7 @@ import {
   type AIAgentSdk,
   type AIAgentSessionHandle
 } from "@/sdk";
+import { attachToExternalAgentSession } from "@/gateway/attach-client";
 import type {
   GatewayApprovalRecord,
   GatewayEvent,
@@ -43,6 +44,9 @@ type CliStreams = {
 };
 
 type CliDependencies = {
+  // Overrides the terminal relay used by `aia attach`, so tests never need a
+  // real gateway socket.
+  attachToExternalAgentSession?: typeof attachToExternalAgentSession;
   // Overrides how the SDK is created. Lets tests drive the loop without a full
   // runtime; defaults to createAIAgentSdkFromConfig.
   createSdk?: (options: { cwd: string }) => Promise<AIAgentSdk>;
@@ -85,6 +89,7 @@ function formatHelp(): string {
     "Available commands:",
     "  aia                  Start an interactive session (stays open until /exit or /quit)",
     "  aia info             Print runtime surfaces and providers",
+    "  aia attach <id>      Join a live interactive external-agent terminal (Ctrl-] to detach)",
     "  aia --help",
     "  aia --prompt <text> [--cwd <path>] [--goal <text>] [--title <text>]",
     "  aia voice --help",
@@ -125,6 +130,10 @@ export async function runCli(
   if (argv[0] === "info") {
     writeLine(streams.stdout, formatBootstrapInfo());
     return 0;
+  }
+
+  if (argv[0] === "attach") {
+    return runAttachCli(argv.slice(1), streams, deps);
   }
 
   const { values } = parseArgs({
@@ -279,6 +288,40 @@ async function runChatCli(
           await runCompactCommand(created.handle, streams);
           continue;
         }
+        if (command === "agents") {
+          try {
+            const { sessions } = await sdk.request("external_agent.session.list", {});
+            writeLine(streams.stdout, formatExternalAgentSessions(sessions));
+          } catch (error) {
+            writeLine(
+              streams.stderr,
+              `Failed to list interactive external-agent sessions: ${renderCliError(error)}`
+            );
+          }
+          continue;
+        }
+        if (command === "attach") {
+          const externalSessionId = line.slice(1).trim().split(/\s+/u)[1];
+          if (!externalSessionId) {
+            writeLine(streams.stderr, "Usage: /attach <external-session-id> (see /agents)");
+            continue;
+          }
+          try {
+            const result = await sdk.request("external_agent.session.attach", {
+              externalSessionId
+            });
+            writeLine(
+              streams.stdout,
+              `Opened a terminal window running: ${result.command}`
+            );
+          } catch (error) {
+            writeLine(
+              streams.stderr,
+              `Failed to attach to ${externalSessionId}: ${renderCliError(error)}`
+            );
+          }
+          continue;
+        }
         if (command === "unknown") {
           writeLine(
             streams.stderr,
@@ -380,6 +423,39 @@ function formatArgumentValue(value: JsonValue): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
+// Output-bearing tools agree on a small set of result keys, so the operator
+// sees what a command actually printed rather than only that it succeeded.
+// Keying on the result shape rather than on a tool-name table means a new
+// output-producing tool is rendered correctly the day it is added.
+function extractToolOutput(result: JsonValue | undefined): string | null {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
+    return null;
+  }
+
+  const record = result as Record<string, JsonValue>;
+  for (const key of ["combinedOutput", "output"]) {
+    const value = record[key];
+    if (typeof value === "string") {
+      return value.trim().length > 0 ? value : null;
+    }
+
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const streams = value as Record<string, JsonValue>;
+      const sections = [
+        typeof streams.stdout === "string" && streams.stdout.trim().length > 0
+          ? streams.stdout
+          : undefined,
+        typeof streams.stderr === "string" && streams.stderr.trim().length > 0
+          ? `stderr:\n${streams.stderr}`
+          : undefined
+      ].filter((section): section is string => section !== undefined);
+      return sections.length > 0 ? sections.join("\n") : null;
+    }
+  }
+
+  return null;
+}
+
 function truncateForDisplay(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
 }
@@ -442,6 +518,11 @@ async function runChatTurn(
   };
   const onEvent = (event: GatewayEvent): void => {
     if (event.topic === "message.reasoning") {
+      // The aggregated end-of-turn event repeats what already streamed; it
+      // exists for the events log, not the live view.
+      if (event.payload.final === true) {
+        return;
+      }
       // Stream the model's reasoning dimmed, above the answer.
       if (!reasoningOpen) {
         streams.stdout.write(DIM);
@@ -456,6 +537,15 @@ async function runChatTurn(
       // Tool activity goes to stderr so it never corrupts streamed stdout text.
       closeReasoning();
       writeLine(streams.stderr, formatToolActivity(event.payload));
+      const output = extractToolOutput(event.payload.result);
+      if (output) {
+        writeLine(streams.stderr, `${DIM}${output.replace(/\n$/u, "")}${RESET}`);
+      }
+    } else if (event.topic === "tool.output.delta") {
+      // Live output from a still-running process. Written raw (no newline) so a
+      // PTY's own line breaks and progress rewrites survive intact.
+      closeReasoning();
+      streams.stderr.write(event.payload.chunk);
     } else if (event.topic === "approval.requested") {
       // Announce the pause the moment it happens. The prompt itself only
       // appears once the run yields, which can be a while on a long turn, and
@@ -483,6 +573,7 @@ async function runChatTurn(
       "approval.requested",
       "message.delta",
       "message.reasoning",
+      "tool.output.delta",
       "tool.updated",
       "gateway.status"
     ]
@@ -528,12 +619,13 @@ async function runChatTurn(
 }
 
 // Interactive approval loop. Answers: `y` approves once, `a` approves and
-// auto-approves the same target for the rest of this CLI session, anything
-// else denies. A denial then offers an optional free-text note; when given,
-// it is sent as the resolution comment, which the gateway queues as steering
-// so the agent hears "no, but do this instead" on the resumed turn.
+// auto-approves the same target for the rest of this CLI session, `e` denies
+// and prompts for what to do instead, anything else denies silently. An `e`
+// explanation is sent as the resolution comment, which the gateway queues as
+// steering so the agent hears "no, but do this instead" on the resumed turn.
 // `question`-kind approvals (ask_user_question) are answered directly: the
-// typed reply is the resolution comment the tool returns to the model.
+// typed reply (or the chosen option's label) is the resolution comment the
+// tool returns to the model.
 async function resolvePendingApprovals(
   handle: AIAgentSessionHandle,
   streams: CliStreams,
@@ -576,7 +668,7 @@ async function resolvePendingApprovals(
         `${ANSI_DIM}  ${approval.request.justification}${ANSI_RESET}`
       );
       streams.stdout.write(
-        `Approve ${target.label} → ${target.value}? [y/N/a] (y = yes, N = no, a = always for this session) `
+        `Approve ${target.label} → ${target.value}? [y/N/a/e] (y = yes, N = no, a = always for this session, e = no + explain what to do instead) `
       );
       const answer = (await nextLine())?.trim().toLowerCase() ?? "";
 
@@ -602,10 +694,11 @@ async function resolvePendingApprovals(
         continue;
       }
 
-      streams.stdout.write(
-        "Optional note or alternative instruction for the agent (Enter to skip): "
-      );
-      const note = (await nextLine())?.trim() ?? "";
+      let note = "";
+      if (answer === "e" || answer === "explain") {
+        streams.stdout.write("What should the agent do instead? ");
+        note = (await nextLine())?.trim() ?? "";
+      }
       await handle.resolveApproval({
         ...(note.length > 0 ? { comment: note } : {}),
         decision: "denied",
@@ -637,24 +730,27 @@ async function answerAgentQuestion(
   nextLine: () => Promise<string | null>
 ): Promise<void> {
   writeLine(streams.stdout, `The agent asks: ${approval.request.justification}`);
-  const options = approval.request.metadata.options;
-  if (Array.isArray(options)) {
-    for (const option of options) {
-      if (typeof option === "object" && option !== null && !Array.isArray(option)) {
-        const label = typeof option.label === "string" ? option.label : null;
-        const description =
-          typeof option.description === "string" ? option.description : null;
-        if (label) {
-          writeLine(
-            streams.stdout,
-            `  - ${label}${description ? `: ${description}` : ""}`
-          );
-        }
-      }
-    }
+  const options = readQuestionOptions(approval.request.metadata?.options);
+  for (const [index, option] of options.entries()) {
+    writeLine(
+      streams.stdout,
+      `  ${index + 1}) ${option.label}${option.description ? ` — ${option.description}` : ""}`
+    );
   }
-  streams.stdout.write("Your answer (Enter to skip): ");
-  const answer = (await nextLine())?.trim() ?? "";
+
+  streams.stdout.write(
+    options.length > 0
+      ? "Your answer (number, or type your own answer; Enter to skip): "
+      : "Your answer (Enter to skip): "
+  );
+  const typed = (await nextLine())?.trim() ?? "";
+  // A bare number is shorthand for the option at that position; the tool only
+  // ever sees the label, so option numbering stays a CLI presentation detail.
+  const chosen = /^\d+$/u.test(typed)
+    ? options[Number.parseInt(typed, 10) - 1]
+    : undefined;
+  const answer = chosen?.label ?? typed;
+
   await handle.resolveApproval({
     ...(answer.length > 0 ? { comment: answer } : {}),
     decision: "approved",
@@ -664,6 +760,27 @@ async function answerAgentQuestion(
     streams.stdout,
     answer.length > 0 ? "Answer sent to the agent." : "Continued without an answer."
   );
+}
+
+function readQuestionOptions(
+  raw: JsonValue | undefined
+): Array<{ description?: string; label: string }> {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.flatMap((option) => {
+    if (typeof option !== "object" || option === null || Array.isArray(option)) {
+      return [];
+    }
+    const label = typeof option.label === "string" ? option.label : null;
+    if (!label) {
+      return [];
+    }
+    const description =
+      typeof option.description === "string" ? option.description : undefined;
+    return [{ ...(description ? { description } : {}), label }];
+  });
 }
 
 async function runPromptCli(
@@ -728,6 +845,56 @@ async function mainCli(): Promise<void> {
   } catch (error) {
     process.stderr.write(`${renderCliError(error)}\n`);
     process.exitCode = 1;
+  }
+}
+
+/**
+ * Joins a live interactive external-agent terminal.
+ *
+ * The session itself lives in whichever process hosts the gateway, so this is a
+ * client: it dials the configured gateway WebSocket instead of starting its own
+ * runtime. That is what lets a desktop window, the agent, and the operator all
+ * drive the same PTY.
+ */
+async function runAttachCli(
+  args: string[],
+  streams: CliStreams,
+  deps: CliDependencies = {}
+): Promise<number> {
+  const { positionals, values } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      cwd: { type: "string" },
+      url: { type: "string" }
+    }
+  });
+
+  const externalSessionId = positionals[0];
+  if (!externalSessionId) {
+    writeLine(streams.stderr, "Usage: aia attach <external-session-id> [--url <ws url>]");
+    return 1;
+  }
+
+  try {
+    const loaded = await loadAIAgentConfig({
+      cwd: values.cwd ? path.resolve(values.cwd) : process.cwd()
+    });
+    const gateway = loaded.resolvedConfig.gateway;
+    const url = values.url ?? `ws://${gateway.hostname}:${gateway.port}${gateway.websocketPath}`;
+    const token = typeof gateway.auth.token === "string" ? gateway.auth.token : undefined;
+
+    writeLine(streams.stderr, `Attached to ${externalSessionId}. Press Ctrl-] to detach.`);
+    const attach = deps.attachToExternalAgentSession ?? attachToExternalAgentSession;
+    return await attach({
+      externalSessionId,
+      streams: { stdin: process.stdin, stdout: streams.stdout as NodeJS.WritableStream },
+      ...(token ? { token } : {}),
+      url
+    });
+  } catch (error) {
+    writeLine(streams.stderr, renderCliError(error));
+    return 1;
   }
 }
 
@@ -1111,12 +1278,16 @@ async function resolveSdk(
 
 function parseChatCommand(
   line: string
-): "compact" | "exit" | "help" | "mcp" | "message" | "unknown" {
+): "agents" | "attach" | "compact" | "exit" | "help" | "mcp" | "message" | "unknown" {
   if (!line.startsWith("/")) {
     return "message";
   }
   const name = line.slice(1).trim().toLowerCase().split(/\s+/u)[0];
   switch (name) {
+    case "agents":
+      return "agents";
+    case "attach":
+      return "attach";
     case "compact":
       return "compact";
     case "exit":
@@ -1143,6 +1314,8 @@ function formatChatHelp(): string {
   return [
     "Interactive commands:",
     "  /help          Show this help",
+    "  /agents        List interactive external-agent terminal sessions",
+    "  /attach <id>   Open a desktop terminal window on a live external-agent session",
     "  /compact       Summarize the transcript so far into session memory and free the model's context",
     "  /mcp           List configured MCP servers, their state, and their tools",
     "  /exit, /quit   End the session and return to the shell",
@@ -1152,6 +1325,27 @@ function formatChatHelp(): string {
     "rest of the session), or anything else to deny. A denial can carry an optional note that is",
     "sent to the agent as steering, e.g. \"use ls instead\"."
   ].join("\n");
+}
+
+function formatExternalAgentSessions(
+  sessions: Array<{
+    agentId: string;
+    cwd: string;
+    id: string;
+    status: string;
+    turnCount: number;
+  }>
+): string {
+  if (sessions.length === 0) {
+    return "No interactive external-agent sessions.";
+  }
+
+  return sessions
+    .map(
+      (session) =>
+        `${session.id}  ${session.status}  ${session.agentId}  ${session.turnCount} turn(s)  ${session.cwd}`
+    )
+    .join("\n");
 }
 
 function formatMcpServers(

@@ -10,9 +10,53 @@ if (mode === "codex") {
   await runVibe(args);
 } else if (mode === "claude") {
   await runClaude(args);
+} else if (mode === "interactive") {
+  await runInteractive(args);
 } else {
   console.error(`Unsupported mock external-agent mode: ${mode}`);
   process.exit(1);
+}
+
+/**
+ * A minimal stand-in for an agent TUI: it prints a banner and a prompt, then
+ * answers each submitted line and reprints the prompt.
+ *
+ * It deliberately rewrites a spinner on the same line before answering, so the
+ * tests prove that the service reports the *rendered screen* rather than the
+ * raw byte stream.
+ */
+async function runInteractive(args) {
+  const ready = "\r\n> ";
+  process.stdout.write(`mock interactive agent ready (${args.join(" ")})${ready}`);
+
+  let buffer = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) {
+    buffer += chunk;
+    let newline = buffer.search(/[\r\n]/u);
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      newline = buffer.search(/[\r\n]/u);
+
+      if (line.length === 0) {
+        continue;
+      }
+      if (line === "/quit") {
+        process.stdout.write("\r\nbye\r\n");
+        process.exit(0);
+      }
+
+      // Rewrite the spinner in place (carriage return, no newline) so the
+      // frames overwrite each other exactly as a real TUI's would.
+      process.stdout.write("\r\n");
+      for (const frame of ["-", "\\", "|"]) {
+        process.stdout.write(`working ${frame}\r`);
+        await sleep(10);
+      }
+      process.stdout.write(`\r\nanswer: ${line}${ready}`);
+    }
+  }
 }
 
 async function runClaude(args) {
@@ -22,6 +66,10 @@ async function runClaude(args) {
   const normalizedPrompt = stripControlTags(prompt);
   const sleepMs = readSleepMs(prompt);
   const shouldInterrupt = prompt.includes("[interrupt]") && !isResume;
+  // Claude reports its own failures (auth, refusals) in the JSON body with
+  // `is_error: true` while still printing `subtype: "success"` and a session id,
+  // then exiting non-zero.
+  const shouldReportError = prompt.includes("[agent-error]");
   const sessionId = resumeSessionId ?? buildSessionId("claude", normalizedPrompt);
 
   if (sleepMs > 0) {
@@ -30,6 +78,20 @@ async function runClaude(args) {
 
   if (shouldInterrupt) {
     process.exit(2);
+  }
+
+  if (shouldReportError) {
+    process.stdout.write(
+      `${JSON.stringify({
+        api_error_status: 401,
+        is_error: true,
+        result: "Failed to authenticate. API Error: 401 OAuth access token has been revoked.",
+        session_id: sessionId,
+        subtype: "success",
+        type: "result"
+      })}\n`
+    );
+    process.exit(1);
   }
 
   const result = isResume ? `mock claude resumed: ${normalizedPrompt}` : `mock claude result: ${normalizedPrompt}`;

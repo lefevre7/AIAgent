@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { ArtifactReference, JsonSchemaDocument, ToolDefinition } from "@/core/contracts";
 import { createArtifactReferenceFromFile } from "@/core/io/artifacts";
 import { type CommandRuntime, type CommandSessionRecord } from "@/core/tools/builtins/command-runtime";
+import { truncateToolOutput } from "@/core/tools/output";
 import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
 
 const localPathSchema = z.string().min(1).max(4096);
@@ -176,7 +177,12 @@ export function createShellCommandTool(params: { commandRuntime: CommandRuntime 
         cwd: input.cwd,
         timeoutMs: input.timeoutMs
       });
-      const combinedPreview = truncateForDisplay(result.combinedOutput, 12_000);
+      const combinedPreview = truncateToolOutput({
+        artifactPath: result.record.logPaths.combined,
+        content: result.combinedOutput,
+        followUp: `read_command_output(sessionId: "${result.record.id}", offset: 12000)`,
+        maxChars: 12_000
+      });
       const artifacts = await createCommandArtifacts(result.record);
 
       return {
@@ -196,11 +202,14 @@ export function createShellCommandTool(params: { commandRuntime: CommandRuntime 
               ]
             : [])
         ],
+        displayedResultKeys: ["combinedOutput"],
         result: {
           combinedOutput: combinedPreview.text,
           commandLine: result.record.commandLine,
           cwd: result.record.cwd,
           exitCode: result.record.exitCode ?? null,
+          logPath: result.record.logPaths.combined,
+          outputChars: combinedPreview.totalChars,
           sessionId: result.record.id,
           signal: result.record.signal ?? null,
           status: result.record.status,
@@ -222,8 +231,10 @@ export function createExecCommandTool(params: { commandRuntime: CommandRuntime }
         cols: input.cols,
         command: input.command,
         cwd: input.cwd,
+        ownerSessionId: call.sessionId,
         rows: input.rows
       });
+      const tail = await readTail(params.commandRuntime, record);
 
       return {
         artifacts: await createCommandArtifacts(record),
@@ -232,9 +243,14 @@ export function createExecCommandTool(params: { commandRuntime: CommandRuntime }
             kind: "status",
             state: "running",
             summary: summarizeCommandRecord(record)
-          }
+          },
+          ...tailDisplay(tail)
         ],
-        result: summarizeRecordForJson(record)
+        displayedResultKeys: ["output"],
+        result: {
+          ...summarizeRecordForJson(record),
+          ...tail
+        }
       };
     }
   };
@@ -265,12 +281,16 @@ export function createReadCommandOutputTool(params: { commandRuntime: CommandRun
             ? [
                 {
                   kind: "text" as const,
-                  text: result.output
+                  text: result.truncated
+                    ? `${result.output}\n\n[output truncated: ${(result.totalChars - result.offset - result.output.length).toLocaleString("en-US")} of ${result.totalChars.toLocaleString("en-US")} characters omitted; read the rest with read_command_output(sessionId: "${result.record.id}", offset: ${result.nextOffset ?? result.offset + result.output.length}); full output: ${result.record.logPaths.combined}]`
+                    : result.output
                 }
               ]
             : [])
         ],
+        displayedResultKeys: ["output"],
         result: {
+          logPath: result.record.logPaths.combined,
           matchCount: result.matchCount,
           nextOffset: result.nextOffset,
           offset: result.offset,
@@ -296,6 +316,7 @@ export function createWriteStdinTool(params: { commandRuntime: CommandRuntime })
         submit: input.submit,
         text: input.text
       });
+      const tail = await readTail(params.commandRuntime, record);
 
       return {
         display: [
@@ -303,9 +324,14 @@ export function createWriteStdinTool(params: { commandRuntime: CommandRuntime })
             kind: "status",
             state: record.status,
             summary: `Wrote stdin to ${record.id}.`
-          }
+          },
+          ...tailDisplay(tail)
         ],
-        result: summarizeRecordForJson(record)
+        displayedResultKeys: ["output"],
+        result: {
+          ...summarizeRecordForJson(record),
+          ...tail
+        }
       };
     }
   };
@@ -320,6 +346,7 @@ export function createWaitCommandTool(params: { commandRuntime: CommandRuntime }
         sessionId: input.sessionId,
         timeoutMs: input.timeoutMs
       });
+      const tail = await readTail(params.commandRuntime, result.record);
 
       return {
         artifacts: result.timedOut ? [] : await createCommandArtifacts(result.record),
@@ -330,10 +357,13 @@ export function createWaitCommandTool(params: { commandRuntime: CommandRuntime }
             summary: result.timedOut
               ? `Command session ${result.record.id} is still running.`
               : summarizeCommandRecord(result.record)
-          }
+          },
+          ...tailDisplay(tail)
         ],
+        displayedResultKeys: ["output"],
         result: {
           ...summarizeRecordForJson(result.record),
+          ...tail,
           timedOut: result.timedOut
         }
       };
@@ -351,6 +381,7 @@ export function createKillCommandTool(params: { commandRuntime: CommandRuntime }
         signal: input.signal,
         timeoutMs: input.timeoutMs
       });
+      const tail = await readTail(params.commandRuntime, result.record);
 
       return {
         artifacts: result.timedOut ? [] : await createCommandArtifacts(result.record),
@@ -361,10 +392,13 @@ export function createKillCommandTool(params: { commandRuntime: CommandRuntime }
             summary: result.timedOut
               ? `Kill signal sent to ${result.record.id}; the process is still running.`
               : summarizeCommandRecord(result.record)
-          }
+          },
+          ...tailDisplay(tail)
         ],
+        displayedResultKeys: ["output"],
         result: {
           ...summarizeRecordForJson(result.record),
+          ...tail,
           timedOut: result.timedOut
         }
       };
@@ -702,19 +736,54 @@ function renderSessionList(sessions: CommandSessionRecord[]): string {
     .join("\n");
 }
 
-function truncateForDisplay(content: string, maxChars: number): {
-  text: string;
+/**
+ * Reads the recent output of a session so lifecycle tools report what the
+ * process actually said instead of only that it succeeded.
+ */
+async function readTail(
+  commandRuntime: CommandRuntime,
+  record: CommandSessionRecord
+): Promise<{
+  logPath: string | null;
+  output: string;
+  outputBytes: number;
   truncated: boolean;
-} {
-  if (content.length <= maxChars) {
+}> {
+  let tail: Awaited<ReturnType<CommandRuntime["readCommandTail"]>> = null;
+  try {
+    tail = await commandRuntime.readCommandTail({ sessionId: record.id });
+  } catch {
+    tail = null;
+  }
+
+  if (!tail) {
     return {
-      text: content,
+      logPath: record.logPaths.combined ?? null,
+      output: "",
+      outputBytes: 0,
       truncated: false
     };
   }
 
+  const prefix = tail.truncated
+    ? `[earlier output omitted: showing the last ${tail.output.length.toLocaleString("en-US")} characters of a ${tail.totalBytes.toLocaleString("en-US")}-byte log; read the rest with read_command_output(sessionId: "${record.id}", offset: 0); full output: ${tail.logPath}]\n\n`
+    : "";
+
   return {
-    text: `${content.slice(0, maxChars)}\n\n[output truncated; use read_command_output for the full log]`,
-    truncated: true
+    logPath: tail.logPath,
+    output: `${prefix}${tail.output}`,
+    outputBytes: tail.totalBytes,
+    truncated: tail.truncated
   };
+}
+
+function tailDisplay(tail: { output: string }) {
+  return tail.output.length > 0
+    ? [
+        {
+          kind: "text" as const,
+          text: tail.output
+        }
+      ]
+    : [];
 }

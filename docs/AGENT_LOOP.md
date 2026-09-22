@@ -40,6 +40,15 @@ executes (so plan and working-memory state persists) but counts toward the guard
 and receives the `noProgress` nudge telling it to take a concrete action or
 complete.
 
+**One planning turn is free (2026-09-18).** "Think, then act" is exactly the
+pattern the system prompt asks for, so punishing the first planning turn taught
+the model to skip a step it should take. A second counter,
+`consecutivePlanningTurns`, tracks the run of planning-only turns; the first one
+is silent, and only from the second onward does `consecutiveNudges` increment and
+the `noProgress` nudge fire. Both counters reset on any productive turn. A
+**mixed** turn — `think` plus a real action tool — was already productive
+(`nonCompletionCalls.every(...)`) and stays that way.
+
 ### How a tool is classified (no per-model magic)
 
 Classification is by the tool's **declared family**, not by which model is loaded:
@@ -221,11 +230,31 @@ Per-model recommended values live in `docs/SMALL_MODELS.md`.
 
 ## Reasoning persistence (`<think>`)
 
-Reasoning leaks into `content` for many local models. We strip `<think>`/analysis
-markup from the **persisted** assistant message **only on turns that also produced a
-tool call** (`stripReasoningMarkup`) — once the model has committed to an action, its
-deliberation is noise that, if replayed, reinforces indecision loops. Pure-text turns
-keep their reasoning, and live streaming display is never altered.
+Reasoning leaks into `content` for many local models, and providers also return it
+out of band (`reasoning_content` on LM Studio, `message.thinking` on Ollama). The
+two paths are handled differently on purpose.
+
+**Inline `<think>` markup → a first-class message part.** `buildAssistantTurnMessage`
+runs `splitReasoningMarkup` over every assistant text part and moves the markup's
+contents into a `{ kind: "reasoning", text }` part, leaving the answer in the text
+part. It is no longer deleted on tool-call turns: deleting it lost detail the
+operator wanted in the transcript, while leaving it inline meant every later turn
+replayed the model's indecision back at it. Splitting satisfies both.
+
+**Age-based filtering at the request boundary.** `filterModelVisibleMessages` (via
+`dropStaleReasoningParts`) keeps reasoning only for the most recent
+`runtime.reasoningContextTurns` turns (default `1` = the current turn). Filtering
+is **per turn, not per message**, which is what lets this turn's reasoning survive
+across its own tool results while older deliberation stops consuming the window.
+`0` drops reasoning from requests entirely. A message left with no parts after
+filtering is dropped. The transcript on disk always keeps every reasoning part.
+
+**Provider-native reasoning never enters the transcript.** It streams as
+unpersisted `message.reasoning` deltas (thousands per turn — the events log is not
+a token stream) and is archived as exactly **one persisted** `message.reasoning`
+event per turn with `payload.final === true`, flushed by `flushTurnReasoning` in
+`src/gateway/runtime.ts`. Live consumers (CLI, web) skip `final` events so the text
+is not rendered twice; readers of the events log see only the aggregate.
 
 ## Status metrics
 
@@ -306,3 +335,27 @@ queued `SteeringInjection`, so the "no, but do this instead" path designed in
 the CLI prints the question and its options and sends the typed reply as the
 resolution comment, which the resumed tool call returns to the model as the answer
 (previously the CLI approved with no comment, so the tool saw an empty answer).
+
+## Interactive external agents and the loop — 2026-09-18
+
+An interactive external-agent session is a process that **outlives the tool call that
+started it**. That is new for this runtime: every other tool either completes or is
+explicitly a detached job. Consequences the loop has to respect:
+
+- `send` blocks the tool call until the external agent's turn ends (idle + screen
+  stability, or its ready pattern, bounded by `turnTimeoutMs`). From the loop's point of
+  view this is just a slow tool — no loop changes were needed.
+- The tool result leads with a one-paragraph summary produced by a **separate** model
+  call, then includes the rendered screen as a text part. Leading with the summary means
+  a small model reads prose first and only falls through to the raw screen when it needs
+  detail. The summarizer runs with `toolChoice: "none"` — a summarizer that could call
+  tools would be a second agent loop.
+- Approval gates `start`, not `send`. Opening a channel to an autonomous agent is the
+  consent-worthy act; re-approving every message would make a conversation unusable.
+  `UNGATED_EXTERNAL_AGENT_ACTIONS` in `src/core/external-agents/service.ts` encodes this.
+- A human can be typing in the same terminal. `writeHumanInput` is a separate entry point
+  from `sendToSession` precisely so a human's bytes are never mistaken for a turn: they
+  are not summarized, not counted, and they soft-lock the *agent's* writes instead of
+  being blocked by that lock.
+
+See [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md) for the full design.

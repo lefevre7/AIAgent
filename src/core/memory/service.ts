@@ -235,7 +235,7 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
     }
 
     const assistantMessages = snapshot.messages.filter((message) => message.role === "assistant");
-    const toolCalls = snapshot.toolCalls.filter((call) => call.status === "succeeded");
+    const toolCalls = snapshot.toolCalls;
     const sourceTokenCount = params.sourceTokenCount ?? estimateTokenCountFromSnapshot(snapshot.messages);
     const summary = buildSessionSummary(snapshot.session.goal, assistantMessages, toolCalls);
 
@@ -878,17 +878,61 @@ function buildSessionSummary(
     .map((part) => part.text)
     .at(-1);
 
+  const succeeded = toolCalls.filter((call) => call.status === "succeeded").length;
+  const toolCallLines = renderToolCallLines(toolCalls);
+
   return [
     `# Session Summary`,
     ``,
     `Goal: ${goal}`,
     ``,
-    `Successful tool calls: ${toolCalls.length}`,
+    `Successful tool calls: ${succeeded} of ${toolCalls.length}`,
+    ...(toolCallLines.length > 0 ? [``, `## Tool Calls`, ``, ...toolCallLines] : []),
     latestAssistantText ? `` : undefined,
     latestAssistantText ? `Latest assistant summary: ${latestAssistantText}` : undefined
   ]
     .filter((line): line is string => typeof line === "string")
     .join("\n");
+}
+
+const SUMMARY_TOOL_CALL_LIMIT = 100;
+const SUMMARY_TOOL_ARGUMENT_CHARS = 200;
+const SUMMARY_TOOL_OUTPUT_CHARS = 400;
+
+/**
+ * Renders one line per tool call.
+ *
+ * A bare count tells a future session that work happened but not what it was,
+ * so resumed and compacted sessions kept re-running commands they had already
+ * run. The arguments and a clipped result make the log actually replayable.
+ */
+function renderToolCallLines(toolCalls: SessionSnapshot["toolCalls"]): string[] {
+  const visible = toolCalls.slice(-SUMMARY_TOOL_CALL_LIMIT);
+  const omitted = toolCalls.length - visible.length;
+  const lines = visible.map((call) => {
+    const args = clipForSummary(JSON.stringify(call.arguments ?? {}), SUMMARY_TOOL_ARGUMENT_CHARS);
+    const outcome =
+      call.status === "succeeded"
+        ? clipForSummary(stringifyToolOutcome(call.result), SUMMARY_TOOL_OUTPUT_CHARS)
+        : clipForSummary(call.error?.message ?? call.status, SUMMARY_TOOL_OUTPUT_CHARS);
+
+    return `- ${call.toolName}(${args}) -> ${call.status}${outcome.length > 0 ? `: ${outcome}` : ""}`;
+  });
+
+  return omitted > 0 ? [`- (${omitted} earlier tool call(s) omitted)`, ...lines] : lines;
+}
+
+function stringifyToolOutcome(result: unknown): string {
+  if (result === undefined || result === null) {
+    return "";
+  }
+
+  return typeof result === "string" ? result : JSON.stringify(result);
+}
+
+function clipForSummary(value: string, maxChars: number): string {
+  const collapsed = value.replace(/\s+/gu, " ").trim();
+  return collapsed.length <= maxChars ? collapsed : `${collapsed.slice(0, maxChars)}…`;
 }
 
 function resolveCompactionPhase(

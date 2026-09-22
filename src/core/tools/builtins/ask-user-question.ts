@@ -45,6 +45,10 @@ export function createAskUserQuestionTool(): RuntimeTool {
         result: {
           answer,
           answered: true,
+          // Explicit so the model can tell "picked option 2" from "typed
+          // something we never offered" instead of inferring it from a
+          // missing field.
+          matchedOption: selectedOption !== undefined,
           question: input.question,
           ...(selectedOption ? { selectedOption } : {})
         }
@@ -66,10 +70,11 @@ const askUserQuestionOutputSchema: JsonSchemaDocument = {
   properties: {
     answer: { type: "string" },
     answered: { type: "boolean" },
+    matchedOption: { type: "boolean" },
     question: { type: "string" },
     selectedOption: { type: "string" }
   },
-  required: ["answer", "answered", "question"],
+  required: ["answer", "answered", "matchedOption", "question"],
   type: "object"
 };
 

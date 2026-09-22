@@ -20,18 +20,26 @@ import {
   createDefaultToolRegistry,
   resolveVisibleToolDefinitions,
   createExternalAgentApprovalTargetResolver,
+  createExternalAgentServiceFromConfig,
+  createExternalAgentSessionServiceFromConfig,
+  createExternalAgentTurnSummarizer,
   createImageServiceFromConfig,
   createMcpManagerFromLoadedConfig,
   createMemoryServiceFromConfig,
   createPlaywrightBrowserAutomationService,
   createToolApprovalDecider,
+  openTerminalWindow,
   withMcpTrustRules,
   CommandRuntime,
   loadAIAgentConfig,
   type ApprovalSettings,
   type AppConfig,
+  type CommandOutputListener,
   type EmbeddingAdapterRegistration,
   type ExternalAgentService,
+  type ExternalAgentSessionService,
+  type ExternalAgentSessionHost,
+  type ExternalAgentTurnSummarizer,
   type ImageService,
   type LanguageModelAdapterRegistration,
   type LoadedAIAgentConfig,
@@ -129,9 +137,18 @@ type GatewayRuntimeEvents = {
 
 type GatewayRuntimeOptions = {
   approvals: ApprovalSettings;
+  /**
+   * Opens a desktop terminal window on an interactive external-agent session.
+   * Injected rather than called directly so the gateway never depends on a
+   * platform-specific window manager, and tests can assert on it.
+   */
+  attachExternalAgentSession?: (
+    externalSessionId: string
+  ) => Promise<{ command: string }>;
   channelService?: ChannelService;
   config: AppConfig;
   externalAgentService?: ExternalAgentService;
+  externalAgentSessionService?: ExternalAgentSessionService;
   imageService?: ImageService;
   mcpManager: MCPManager;
   memoryService: Awaited<ReturnType<typeof createMemoryServiceFromConfig>>;
@@ -168,6 +185,12 @@ export class GatewayRuntime
 {
   private readonly activeRunsById = new Map<string, ActiveGatewayRun>();
   private readonly activeRunsBySession = new Map<string, ActiveGatewayRun>();
+  // Accumulated provider-native reasoning per turn, flushed as one persisted
+  // event when the turn is reported. See onAssistantReasoning.
+  private readonly pendingReasoningByTurn = new Map<
+    string,
+    { sessionId: string; text: string }
+  >();
   // Terminal runs, kept briefly so `run.get` can answer for a run that already
   // finished. A caller that subscribes to run.updated just after a run ends
   // would otherwise have no way to learn it is over, and would wait forever.
@@ -226,6 +249,8 @@ export class GatewayRuntime
         );
       },
       onAssistantReasoning: ({ delta, sessionId, turnId }) => {
+        // Per-delta events stream live but are never persisted: a single turn
+        // can produce thousands, and the events log is not a token stream.
         void this.emitEvent(
           {
             createdAt: new Date().toISOString(),
@@ -236,6 +261,15 @@ export class GatewayRuntime
           },
           false
         );
+        // Accumulated here so the turn can be archived as one persisted event.
+        // Provider-native reasoning deliberately never enters the transcript
+        // (it would be replayed to the model); the events log is its archive.
+        const pending = this.pendingReasoningByTurn.get(turnId);
+        if (pending) {
+          pending.text += delta;
+        } else {
+          this.pendingReasoningByTurn.set(turnId, { sessionId, text: delta });
+        }
       },
       // Tool activity is emitted as each call settles rather than with the
       // post-run batch, so an operator watching a long run sees tools as they
@@ -291,6 +325,32 @@ export class GatewayRuntime
     await this.eventLog.initialize();
     this.resolvedContextWindowTokens =
       await this.resolveProviderContextWindow();
+  }
+
+  /**
+   * Publishes live output from a long-lived process.
+   *
+   * Emitted with `persist=false`: a PTY produces thousands of small chunks and
+   * the durable copy already exists as the session's combined log, so writing
+   * every chunk to the events log would bloat it for no recoverable gain.
+   */
+  emitToolOutputDelta(payload: {
+    chunk: string;
+    sessionId?: string;
+    sourceId: string;
+    sourceKind: "command" | "external_agent";
+    stream: "combined" | "stderr" | "stdout";
+  }): void {
+    void this.emitEvent(
+      {
+        createdAt: new Date().toISOString(),
+        id: `tool-output.${payload.sourceId}.${crypto.randomUUID()}`,
+        metadata: payload.sessionId ? { sessionId: payload.sessionId } : {},
+        payload,
+        topic: "tool.output.delta"
+      },
+      false
+    );
   }
 
   // Best-effort: ask the default provider for the configured model's context
@@ -733,6 +793,93 @@ export class GatewayRuntime
             )
           )
         );
+      case "external_agent.session.attach": {
+        const { externalSessionId } = gatewayRequestPayloadSchemas[
+          "external_agent.session.attach"
+        ].parse(request.payload);
+        if (!this.options.attachExternalAgentSession) {
+          throw gatewayError(
+            "unsupported",
+            "This runtime cannot open a terminal window for an interactive external-agent session."
+          );
+        }
+        const { command } =
+          await this.options.attachExternalAgentSession(externalSessionId);
+        const sessions =
+          await this.requireExternalAgentSessionService().listSessions();
+        const session = sessions.find((entry) => entry.id === externalSessionId);
+        if (!session) {
+          throw gatewayError(
+            "not_found",
+            `Interactive external-agent session "${externalSessionId}" was not found.`
+          );
+        }
+        return gatewayResponsePayloadSchemas[
+          "external_agent.session.attach"
+        ].parse({ command, session });
+      }
+      case "external_agent.session.list":
+        gatewayRequestPayloadSchemas["external_agent.session.list"].parse(
+          request.payload
+        );
+        return gatewayResponsePayloadSchemas[
+          "external_agent.session.list"
+        ].parse({
+          sessions:
+            await this.requireExternalAgentSessionService().listSessions()
+        });
+      case "external_agent.session.read":
+        return gatewayResponsePayloadSchemas[
+          "external_agent.session.read"
+        ].parse(
+          await this.requireExternalAgentSessionService().readSession(
+            gatewayRequestPayloadSchemas["external_agent.session.read"].parse(
+              request.payload
+            )
+          )
+        );
+      case "external_agent.session.send":
+        return gatewayResponsePayloadSchemas[
+          "external_agent.session.send"
+        ].parse(
+          await this.requireExternalAgentSessionService().sendToSession(
+            gatewayRequestPayloadSchemas["external_agent.session.send"].parse(
+              request.payload
+            )
+          )
+        );
+      case "external_agent.session.start":
+        return gatewayResponsePayloadSchemas[
+          "external_agent.session.start"
+        ].parse(
+          await this.requireExternalAgentSessionService().startSession(
+            gatewayRequestPayloadSchemas["external_agent.session.start"].parse(
+              request.payload
+            )
+          )
+        );
+      case "external_agent.session.stop":
+        return gatewayResponsePayloadSchemas[
+          "external_agent.session.stop"
+        ].parse(
+          await this.requireExternalAgentSessionService().stopSession(
+            gatewayRequestPayloadSchemas["external_agent.session.stop"].parse(
+              request.payload
+            )
+          )
+        );
+      case "external_agent.session.write": {
+        const payload = gatewayRequestPayloadSchemas[
+          "external_agent.session.write"
+        ].parse(request.payload);
+        await this.requireExternalAgentSessionService().writeHumanInput(
+          payload.externalSessionId,
+          payload.text
+        );
+        return gatewayResponsePayloadSchemas[
+          "external_agent.session.write"
+        ].parse({ ok: true });
+      }
       case "gateway.health":
         gatewayRequestPayloadSchemas["gateway.health"].parse(request.payload);
         return gatewayResponsePayloadSchemas["gateway.health"].parse({
@@ -1220,6 +1367,13 @@ export class GatewayRuntime
       await body();
     } catch (error) {
       await this.failRun(runId, sessionId, normalizeGatewayError(error));
+    } finally {
+      // The success path flushes per turn from emitSessionRunEvents, which a
+      // failing run never reaches: its accumulated reasoning would stay in the
+      // map forever (a leak in a long-lived server) and the archive event
+      // would be lost for exactly the turns worth reading back. Flushing here
+      // covers every exit, and is a no-op for turns already flushed.
+      await this.flushPendingReasoningForSession(sessionId);
     }
   }
 
@@ -1337,6 +1491,8 @@ export class GatewayRuntime
       maxIdenticalToolCalls:
         this.options.config.runtime.maxIdenticalToolCalls,
       maxTurns: this.options.config.runtime.maxTurnsPerRun,
+      reasoningContextTurns:
+        this.options.config.runtime.reasoningContextTurns,
       session: currentSession,
       userMessages: params.userMessages
     });
@@ -1649,6 +1805,56 @@ export class GatewayRuntime
     });
   }
 
+  /**
+   * Archives a turn's provider-native reasoning as one persisted event.
+   *
+   * The live stream is thousands of unpersisted deltas; this is the durable
+   * record an operator can read back later. It never reaches the transcript,
+   * so it is never replayed into the model's context.
+   */
+  private async flushTurnReasoning(turnId: string): Promise<void> {
+    const pending = this.pendingReasoningByTurn.get(turnId);
+    this.pendingReasoningByTurn.delete(turnId);
+    if (!pending || pending.text.trim().length === 0) {
+      return;
+    }
+
+    await this.emitEvent(
+      {
+        createdAt: new Date().toISOString(),
+        id: `message-reasoning-turn.${turnId}`,
+        metadata: { sessionId: pending.sessionId },
+        payload: {
+          delta: pending.text,
+          final: true,
+          sessionId: pending.sessionId,
+          turnId
+        },
+        topic: "message.reasoning"
+      },
+      true
+    );
+  }
+
+  /**
+   * Flushes any reasoning still buffered for a session's turns.
+   *
+   * The per-turn flush runs off `result.turns`, which only exists when the
+   * loop returned normally. This is the catch-all for every other way a run
+   * ends, so nothing accumulates in `pendingReasoningByTurn` indefinitely.
+   */
+  private async flushPendingReasoningForSession(sessionId: string): Promise<void> {
+    const staleTurnIds = Array.from(this.pendingReasoningByTurn.entries())
+      .filter(([, pending]) => pending.sessionId === sessionId)
+      .map(([turnId]) => turnId);
+
+    for (const turnId of staleTurnIds) {
+      // Emission failures must not replace the run's own outcome; the buffer
+      // entry is already removed by flushTurnReasoning before it emits.
+      await this.flushTurnReasoning(turnId).catch(() => undefined);
+    }
+  }
+
   private async emitSessionRunEvents(
     result: Awaited<ReturnType<AgentLoop["run"]>>
   ): Promise<void> {
@@ -1682,6 +1888,7 @@ export class GatewayRuntime
     // hook already emitted one per tool call as it settled, and re-emitting
     // would duplicate the event id in the log.
     for (const turn of result.turns) {
+      await this.flushTurnReasoning(turn.id);
       await this.emitEvent(
         {
           createdAt: turn.completedAt ?? turn.startedAt,
@@ -2572,6 +2779,17 @@ export class GatewayRuntime
     return this.options.externalAgentService;
   }
 
+  private requireExternalAgentSessionService(): ExternalAgentSessionService {
+    if (!this.options.externalAgentSessionService) {
+      throw gatewayError(
+        "not_implemented",
+        "Interactive external-agent sessions are not configured for this gateway instance."
+      );
+    }
+
+    return this.options.externalAgentSessionService;
+  }
+
   private requireChannelService(): ChannelService {
     if (!this.options.channelService) {
       throw gatewayError(
@@ -2626,8 +2844,18 @@ export class GatewayRuntime
   }
 }
 
-export async function createGatewayRuntimeFromLoadedConfig(params: {
-  channelService?: ChannelService;
+/**
+ * Builds the command a desktop terminal window runs to join a live session.
+ *
+ * The window runs the same `aia attach` relay any operator could run by hand,
+ * so the desktop window is a convenience over a documented command rather than
+ * a private channel only the agent can open.
+ */
+function buildAttachCommand(externalSessionId: string): string {
+  return `aia attach ${externalSessionId}`;
+}
+
+export async function createGatewayRuntimeFromLoadedConfig(params: {  channelService?: ChannelService;
   cwd: string;
   embeddingAdapters?: EmbeddingAdapterRegistration[];
   env?: Record<string, string | undefined>;
@@ -2660,6 +2888,21 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     fetchImpl: params.fetchImpl,
     sessions
   });
+  // Built here, not only injected. The interactive session service below is
+  // constructed from config, so every surface gets interactive agents — but the
+  // one-shot job service used to arrive only from the server's runtime context,
+  // and `createDefaultToolRegistry` registers `external_agent` *only when that
+  // service exists*. The result was that the CLI and the in-process SDK had no
+  // external-agent tool at all: not one-shot, and not interactive either, since
+  // the same tool carries both. A caller that wants its own instance (the
+  // server, which also serves it over HTTP) still injects one.
+  const externalAgentService =
+    params.externalAgentService ??
+    createExternalAgentServiceFromConfig({
+      config: params.loaded.resolvedConfig,
+      sessions
+    }) ??
+    undefined;
   const browserService = createPlaywrightBrowserAutomationService({
     actionTimeoutMs: params.loaded.resolvedConfig.browser.actionTimeoutMs,
     artifactRoot: params.loaded.resolvedConfig.browser.artifactRoot,
@@ -2681,8 +2924,12 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     stateRoot: params.loaded.resolvedConfig.memory.stateRoot,
     workspaceRoot: params.cwd
   });
+  // The command runtime is built before the gateway it reports to, so the sink
+  // is late-bound rather than threading a half-built runtime into a service.
+  const commandOutputSink: { emit?: CommandOutputListener } = {};
   const commandRuntime = new CommandRuntime({
     baseDirectory: params.cwd,
+    onOutput: (event) => commandOutputSink.emit?.(event),
     stateRoot: params.loaded.resolvedConfig.memory.stateRoot
   });
   const imageService = Object.values(
@@ -2698,11 +2945,46 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     params.loaded.approvals,
     params.loaded.resolvedConfig.mcp.servers
   );
+  // Like the command runtime above, the interactive session service is built
+  // before the gateway and the model runtime it depends on, so both hooks are
+  // late-bound through sinks instead of threading a half-built runtime around.
+  const externalAgentOutputSink: {
+    emit?: (event: {
+      chunk: string;
+      externalSessionId: string;
+      sessionId?: string;
+      stream: "combined" | "stderr" | "stdout";
+    }) => void;
+  } = {};
+  const externalAgentSummarySink: { summarize?: ExternalAgentTurnSummarizer } = {};
+  const externalAgentSessionService = createExternalAgentSessionServiceFromConfig({
+    config: params.loaded.resolvedConfig,
+    onOutput: (event) => externalAgentOutputSink.emit?.(event),
+    onWarning: (message) => {
+      console.warn(message);
+    },
+    summarize: async (input) => externalAgentSummarySink.summarize?.(input),
+    workspaceRoot: params.cwd
+  });
+  const externalAgentSessionHost: ExternalAgentSessionHost | undefined = externalAgentSessionService
+    ? {
+        async attach(externalSessionId) {
+          const command = buildAttachCommand(externalSessionId);
+          await openTerminalWindow({
+            command,
+            terminalApp: params.loaded.resolvedConfig.externalAgents.interactive.terminalApp
+          });
+          await externalAgentSessionService.noteAttached(externalSessionId);
+          return { command };
+        },
+        service: externalAgentSessionService
+      }
+    : undefined;
   const toolRuntime = new ToolRuntime({
     approvalDecider: createToolApprovalDecider({
-      resolveAdditionalTargets: params.externalAgentService
+      resolveAdditionalTargets: externalAgentService
         ? createExternalAgentApprovalTargetResolver({
-            service: params.externalAgentService
+            service: externalAgentService
           })
         : undefined,
       settings: approvals
@@ -2711,7 +2993,8 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
       browserService,
       channelService: params.channelService,
       commandRuntime,
-      externalAgentService: params.externalAgentService,
+      externalAgentService,
+      ...(externalAgentSessionHost ? { externalAgentSessionHost } : {}),
       fetchImpl: params.fetchImpl,
       imageService,
       mcpArtifactRoot: path.join(
@@ -2732,10 +3015,17 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
   });
   const runtime = new GatewayRuntime({
     approvals,
+    ...(externalAgentSessionHost
+      ? {
+          attachExternalAgentSession: async (externalSessionId: string) =>
+            externalAgentSessionHost.attach(externalSessionId)
+        }
+      : {}),
     browserService,
     channelService: params.channelService,
     config: params.loaded.resolvedConfig,
-    externalAgentService: params.externalAgentService,
+    externalAgentService,
+    ...(externalAgentSessionService ? { externalAgentSessionService } : {}),
     imageService,
     mcpManager,
     memoryService,
@@ -2746,6 +3036,28 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     userHomeDirectory: params.userHomeDirectory,
     workspaceRoot: params.cwd
   });
+  externalAgentSummarySink.summarize = createExternalAgentTurnSummarizer({
+    config: params.loaded.resolvedConfig,
+    modelRuntime
+  });
+  externalAgentOutputSink.emit = (event) => {
+    runtime.emitToolOutputDelta({
+      chunk: event.chunk,
+      ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      sourceId: event.externalSessionId,
+      sourceKind: "external_agent",
+      stream: event.stream
+    });
+  };
+  commandOutputSink.emit = (event) => {
+    runtime.emitToolOutputDelta({
+      chunk: event.chunk,
+      ...(event.ownerSessionId ? { sessionId: event.ownerSessionId } : {}),
+      sourceId: event.sessionId,
+      sourceKind: "command",
+      stream: event.stream
+    });
+  };
   for (const registration of params.embeddingAdapters ?? []) {
     if (registration.makeDefault) {
       memoryService.setDefaultEmbeddingProvider({
@@ -3162,6 +3474,8 @@ export function deriveGatewayEventSessionId(
       return event.payload.sessionId;
     case "session.updated":
       return event.payload.id;
+    case "tool.output.delta":
+      return event.payload.sessionId;
     case "tool.updated":
       return event.payload.sessionId;
     case "turn.updated":

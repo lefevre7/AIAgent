@@ -25,6 +25,16 @@ export type RuntimeToolContext = {
 };
 
 export type RuntimeToolResult = Partial<ToolResultEnvelope> & {
+  /**
+   * Result keys whose content is already rendered verbatim in a display part.
+   *
+   * The transcript always carries the tool's `result` so a tool cannot hide its
+   * own output behind a friendly status line, but a tool that already prints a
+   * large blob as readable text should not pay for it twice in the context
+   * window. Keys listed here are dropped from the model-facing JSON part only;
+   * the persisted `toolCall.result` keeps them.
+   */
+  displayedResultKeys?: string[];
   result?: JsonValue;
 };
 
@@ -382,25 +392,45 @@ function buildToolResultMessageParts(toolCall: ToolCallRecord, result?: RuntimeT
   } as const));
 
   const parts = [...displayParts, ...artifactParts, ...citationParts];
-  if (parts.length > 0) {
+
+  // A plain string result with no display of its own is already fully visible,
+  // and reading it as raw text beats reading it as an escaped JSON string.
+  if (displayParts.length === 0 && !toolCall.error && typeof toolCall.result === "string") {
+    return [{ kind: "text", text: toolCall.result }, ...artifactParts, ...citationParts];
+  }
+
+  const modelResult = omitDisplayedResultKeys(toolCall.result, result?.displayedResultKeys ?? []);
+  const hasResult = modelResult !== undefined && modelResult !== null;
+  if (!hasResult && !toolCall.error && parts.length > 0) {
     return parts;
   }
 
-  if (typeof toolCall.result === "string") {
-    return [{ kind: "text", text: toolCall.result }];
-  }
-
+  // Invariant: the model always sees the tool's actual `result`. Display parts
+  // used to suppress it entirely, so a tool that added a friendly status line
+  // silently starved the model of its own output.
   return [
+    ...parts,
     {
       kind: "json",
       value: {
         ...(toolCall.error ? { error: toolCall.error } : {}),
-        ...(toolCall.result !== undefined && toolCall.result !== null ? { result: toolCall.result } : {}),
+        ...(hasResult ? { result: modelResult } : {}),
         status: toolCall.status,
         toolName: toolCall.toolName
       }
     }
   ];
+}
+
+function omitDisplayedResultKeys(result: JsonValue | undefined, displayedKeys: string[]): JsonValue | undefined {
+  if (displayedKeys.length === 0 || typeof result !== "object" || result === null || Array.isArray(result)) {
+    return result;
+  }
+
+  const omitted = new Set(displayedKeys);
+  const next = Object.fromEntries(Object.entries(result).filter(([key]) => !omitted.has(key)));
+
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 function isStructuredError(error: unknown): error is StructuredError {

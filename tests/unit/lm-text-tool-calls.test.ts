@@ -132,6 +132,27 @@ describe("resolveToolCallProposals", () => {
     expect(resolved.content).toContain("Done.");
   });
 
+  test("recovers a tool call emitted inside a <think> block", () => {
+    // Reasoning is now split into its own message part rather than deleted, so
+    // recovery must still run over content that contains <think> markup —
+    // small local models routinely emit the call from inside the block.
+    const resolved = resolveToolCallProposals({
+      content:
+        '<think>I should list the directory.\n<tool_call>{"name":"shell_command","arguments":{"command":"ls"}}</tool_call>\n</think>Listing now.',
+      definitions,
+      fallbackPrefix: "req.4",
+      nativeToolCalls: []
+    });
+    expect(resolved.recoveredFromText).toBe(true);
+    expect(resolved.proposals).toHaveLength(1);
+    expect(resolved.proposals[0]?.arguments).toEqual({ command: "ls" });
+    expect(resolved.content).not.toContain("<tool_call>");
+    // The reasoning survives here; the agent loop is what moves it into a
+    // reasoning part and ages it out of later requests.
+    expect(resolved.content).toContain("I should list the directory.");
+    expect(resolved.content).toContain("Listing now.");
+  });
+
   test("leaves content untouched when nothing is recoverable", () => {
     const resolved = resolveToolCallProposals({
       content: "No tools, just thinking.",

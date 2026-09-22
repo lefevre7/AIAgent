@@ -103,7 +103,7 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
             </label>
             <label>
               <span>Working directory</span>
-              <input name="cwd" type="text" defaultValue={dashboard.settings.memory.workspaceRoot} required />
+              <input name="cwd" type="text" defaultValue={dashboard.settings.runtime.workspaceRoot} required />
             </label>
             <label>
               <span>Initial message</span>
@@ -357,7 +357,37 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
                             >
                               <input type="hidden" name="redirectTo" value={redirectTo} />
                               <input type="hidden" name="decision" value="approved" />
-                              <button type="submit">Approve</button>
+                              {readApprovalOptions(approval).map((option, index) => (
+                                <label key={option.label} className="approval-option">
+                                  <input
+                                    type="radio"
+                                    name="comment"
+                                    value={option.label}
+                                    defaultChecked={index === 0}
+                                  />
+                                  <span>{option.description ? `${option.label} — ${option.description}` : option.label}</span>
+                                </label>
+                              ))}
+                              {/* "Other" is a radio with an empty value so a plain HTML form can
+                                  express it; the server falls back to commentOther when it wins. */}
+                              <label className="approval-option">
+                                <input
+                                  type="radio"
+                                  name="comment"
+                                  value=""
+                                  defaultChecked={readApprovalOptions(approval).length === 0}
+                                />
+                                <span>Other</span>
+                              </label>
+                              <input
+                                type="text"
+                                name="commentOther"
+                                placeholder="Type your own answer"
+                                aria-label="Other answer"
+                              />
+                              <button type="submit">
+                                {approval.request.target.kind === "question" ? "Answer" : "Approve"}
+                              </button>
                             </form>
                           ) : null}
                         </article>
@@ -509,7 +539,7 @@ function buildLiveStreamScript(sessionId: string): string {
     "    try {",
     "      var ev = JSON.parse(e.data);",
     '      if (ev.topic === "message.delta") { out.textContent += ev.payload.delta; }',
-    '      else if (ev.topic === "message.reasoning") { if (reasoningOut) { reasoningOut.textContent += ev.payload.delta; } }',
+    '      else if (ev.topic === "message.reasoning") { if (reasoningOut && ev.payload.final !== true) { reasoningOut.textContent += ev.payload.delta; } }',
     '      else if (ev.topic === "tool.updated") { out.textContent += "\\n[tool] " + ev.payload.toolName + ": " + ev.payload.status + "\\n"; }',
     '      else if (ev.topic === "message.created" && ev.payload.role === "assistant") { out.textContent += "\\n"; }',
     "    } catch (err) {}",
@@ -543,6 +573,8 @@ function describeEvent(event: GatewayEvent): string {
       return `${event.payload.title} is ${event.payload.status}`;
     case "tool.updated":
       return `${event.payload.toolName} is ${event.payload.status}`;
+    case "tool.output.delta":
+      return `${event.payload.sourceId}: ${event.payload.chunk}`;
     case "turn.updated":
       return `${event.payload.trigger} is ${event.payload.status}`;
     case "external_agent.updated":
@@ -581,6 +613,8 @@ function summarizeChannelDelivery(delivery: Pick<ChannelDeliveryRecord, "channel
             return part.title ?? part.uri;
           case "image":
             return part.alt ?? part.uri;
+          case "reasoning":
+            return `[thinking] ${part.text}`;
           case "tool_call":
             return `[tool] ${part.toolName}`;
         }
@@ -588,6 +622,27 @@ function summarizeChannelDelivery(delivery: Pick<ChannelDeliveryRecord, "channel
       .join(" "),
     180
   )}`;
+}
+
+function readApprovalOptions(approval: {
+  request: { metadata?: Record<string, unknown> };
+}): Array<{ description?: string; label: string }> {
+  const raw = approval.request.metadata?.options;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.flatMap((option) => {
+    if (typeof option !== "object" || option === null || Array.isArray(option)) {
+      return [];
+    }
+    const record = option as { description?: unknown; label?: unknown };
+    if (typeof record.label !== "string" || record.label.length === 0) {
+      return [];
+    }
+    const description = typeof record.description === "string" ? record.description : undefined;
+    return [{ ...(description ? { description } : {}), label: record.label }];
+  });
 }
 
 function summarizeMessage(message: Message): string {
@@ -611,6 +666,8 @@ function summarizeMessage(message: Message): string {
             return part.title ?? part.uri;
           case "image":
             return part.alt ?? part.uri;
+          case "reasoning":
+            return `[thinking] ${part.text}`;
           case "tool_call":
             return `[tool] ${part.toolName}`;
         }

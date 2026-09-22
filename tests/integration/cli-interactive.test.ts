@@ -366,7 +366,7 @@ describe("interactive CLI loop", () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(capture.getStdout()).toContain("Approve Write File → write_file? [y/N/a]");
+    expect(capture.getStdout()).toContain("Approve Write File → write_file? [y/N/a/e]");
     // The request's justification is shown so the operator knows why it is asked.
     expect(capture.getStdout()).toContain("Ask before file writes.");
     expect(capture.getStdout()).toContain("Approved write_file.");
@@ -374,36 +374,37 @@ describe("interactive CLI loop", () => {
     expect(fake.getSent()).toEqual(["write the file"]);
   });
 
-  test("denies an approval when the operator declines and skips the optional note", async () => {
+  test("denies an approval outright without prompting for an explanation", async () => {
     const fake = createFakeSdk({ pendingApprovals: [{ label: "Run Command", requestId: "approval.2", value: "shell_command" }] });
     const capture = createCaptureStreams();
 
     const exitCode = await runCli([], capture.streams, {
       createSdk: async () => fake.sdk,
-      // "n" denies, the empty line skips the note, then /exit.
-      interactiveInput: lineSource(["run it", "n", "", "/exit"])
+      // "n" denies and consumes no further input; explaining is opt-in via "e".
+      interactiveInput: lineSource(["run it", "n", "/exit"])
     });
 
     expect(exitCode).toBe(0);
-    expect(capture.getStdout()).toContain("Optional note or alternative instruction");
+    expect(capture.getStdout()).not.toContain("What should the agent do instead?");
     expect(capture.getStdout()).toContain("Denied shell_command.");
     expect(fake.getResolved()).toEqual([{ decision: "denied", requestId: "approval.2" }]);
     expect(capture.getStdout()).toContain("Goodbye.");
   });
 
-  test("sends a denial note as the resolution comment so it becomes steering", async () => {
+  test("`e` denies and sends the explanation as the resolution comment so it becomes steering", async () => {
     const fake = createFakeSdk({ pendingApprovals: [{ label: "Run Command", requestId: "approval.3", value: "shell_command" }] });
     const capture = createCaptureStreams();
 
     const exitCode = await runCli([], capture.streams, {
       createSdk: async () => fake.sdk,
-      interactiveInput: lineSource(["run it", "no", "use ls instead of find", "/exit"])
+      interactiveInput: lineSource(["run it", "e", "use ls instead of find", "/exit"])
     });
 
     expect(exitCode).toBe(0);
     expect(fake.getResolved()).toEqual([
       { comment: "use ls instead of find", decision: "denied", requestId: "approval.3" }
     ]);
+    expect(capture.getStdout()).toContain("What should the agent do instead?");
     expect(capture.getStdout()).toContain("Denied shell_command. Your note was queued as steering for the agent.");
   });
 
@@ -436,7 +437,7 @@ describe("interactive CLI loop", () => {
     ]);
     expect(capture.getStdout()).toContain("further write_file requests are auto-approved for this session");
     expect(capture.getStdout()).toContain("Auto-approved write_file (always for this session).");
-    expect(capture.getStdout()).toContain("Approve Run Command → shell_command? [y/N/a]");
+    expect(capture.getStdout()).toContain("Approve Run Command → shell_command? [y/N/a/e]");
   });
 
   test("answers an agent question directly and threads the reply as the resolution comment", async () => {
@@ -461,11 +462,40 @@ describe("interactive CLI loop", () => {
 
     expect(exitCode).toBe(0);
     expect(capture.getStdout()).toContain("The agent asks: Which database should I target?");
-    expect(capture.getStdout()).toContain("  - sqlite: Local dev database");
-    expect(capture.getStdout()).toContain("  - postgres");
-    expect(capture.getStdout()).not.toContain("[y/N/a]");
+    expect(capture.getStdout()).toContain("  1) sqlite — Local dev database");
+    expect(capture.getStdout()).toContain("  2) postgres");
+    // Free text is always allowed; the prompt says so instead of offering a
+    // separate "other" choice the operator would have to select first.
+    expect(capture.getStdout()).toContain("number, or type your own answer");
+    expect(capture.getStdout()).not.toContain("[y/N/a/e]");
     expect(fake.getResolved()).toEqual([{ comment: "postgres", decision: "approved", requestId: "approval.7" }]);
     expect(capture.getStdout()).toContain("Answer sent to the agent.");
+  });
+
+  test("resolves a numbered question answer to the option label", async () => {
+    const fake = createFakeSdk({
+      pendingApprovals: [
+        {
+          justification: "Which database should I target?",
+          kind: "question",
+          label: "Ask User Question",
+          options: [{ description: "Local dev database", label: "sqlite" }, { label: "postgres" }],
+          requestId: "approval.8",
+          value: "ask_user_question"
+        }
+      ]
+    });
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCli([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: lineSource(["set up the db", "2", "/exit"])
+    });
+
+    expect(exitCode).toBe(0);
+    // Numbering is a CLI convenience; the tool only ever sees the label, so
+    // ask_user_question can still report matchedOption correctly.
+    expect(fake.getResolved()).toEqual([{ comment: "postgres", decision: "approved", requestId: "approval.8" }]);
   });
 
   test("/compact summarizes the session through the SDK and reports the result", async () => {

@@ -993,6 +993,10 @@ function renderMessagePart(part: MessagePart): string {
       return JSON.stringify(part.value);
     case "markdown":
       return part.markdown;
+    case "reasoning":
+      // Reasoning that survives this far is deliberately in scope (the current
+      // turn); age-based filtering happens before serialization.
+      return part.text;
     case "status":
       return `[status:${part.state}] ${part.summary}`;
     case "text":

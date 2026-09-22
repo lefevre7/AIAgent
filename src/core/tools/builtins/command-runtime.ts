@@ -1,12 +1,10 @@
-import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { spawn as spawnPty, type IPty } from "node-pty";
-
 import { createArtifactReferenceFromFile } from "@/core/io/artifacts";
 import { sleep, writeJsonAtomic } from "@/core/io/files";
+import { startProcessSession } from "@/core/process/session";
 import { runProcess } from "@/core/voice/utils";
 
 import { normalizeSlashes, resolveLocalPath } from "@/core/tools/builtins/local-paths";
@@ -29,6 +27,10 @@ export type CommandSessionRecord = {
     stderr?: string;
     stdout?: string;
   };
+  // The agent session that started this command. Live output is emitted long
+  // after the starting tool call settled, so the association has to be stored
+  // rather than inferred from whatever turn happens to be running.
+  ownerSessionId?: string;
   pty: boolean;
   signal?: string | null;
   startedAt: string;
@@ -56,6 +58,28 @@ export type ReadCommandOutputResult = {
   truncated: boolean;
 };
 
+export type CommandTailResult = {
+  logPath: string;
+  offset: number;
+  output: string;
+  /**
+   * Size of the whole log in bytes.
+   *
+   * Bytes, not characters, because the tail is read by seeking to the end of
+   * the file rather than decoding all of it — counting characters would mean
+   * reading everything, which is exactly the cost this avoids.
+   */
+  totalBytes: number;
+  truncated: boolean;
+};
+
+export type CommandOutputListener = (event: {
+  chunk: string;
+  ownerSessionId?: string;
+  sessionId: string;
+  stream: CommandLogStream;
+}) => void;
+
 type RunningCommandSession = {
   completion: Promise<CommandSessionRecord>;
   handle: {
@@ -74,10 +98,35 @@ export class CommandRuntime {
   constructor(
     private readonly options: {
       baseDirectory: string;
+      onOutput?: CommandOutputListener;
       stateRoot: string;
     }
   ) {
     this.commandsRoot = path.join(options.stateRoot, "commands", "runs");
+  }
+
+  /**
+   * Fans live output out to the control plane.
+   *
+   * Swallowing listener failures is deliberate: `EventEmitter`-style dispatch is
+   * synchronous, so a throwing subscriber would otherwise travel back into the
+   * command it is merely reporting on.
+   */
+  private emitOutput(record: CommandSessionRecord, stream: CommandLogStream, chunk: string): void {
+    if (!this.options.onOutput || chunk.length === 0) {
+      return;
+    }
+
+    try {
+      this.options.onOutput({
+        chunk,
+        ...(record.ownerSessionId ? { ownerSessionId: record.ownerSessionId } : {}),
+        sessionId: record.id,
+        stream
+      });
+    } catch {
+      // Reporting output must never break the process producing it.
+    }
   }
 
   async runShellCommand(params: {
@@ -151,6 +200,7 @@ export class CommandRuntime {
     cols?: number;
     command: string;
     cwd?: string;
+    ownerSessionId?: string;
     rows?: number;
   }): Promise<CommandSessionRecord> {
     const cwd = resolveLocalPath(params.cwd ?? this.options.baseDirectory, this.options.baseDirectory);
@@ -172,6 +222,7 @@ export class CommandRuntime {
       logPaths: {
         combined: combinedPath
       },
+      ...(params.ownerSessionId ? { ownerSessionId: params.ownerSessionId } : {}),
       pty: true,
       startedAt,
       status: "running",
@@ -179,14 +230,14 @@ export class CommandRuntime {
     };
 
     const outputStream = fsSync.createWriteStream(combinedPath, { flags: "a" });
-    const startedSession = this.startPtySession({
+    const startedSession = this.startSession({
       cols: params.cols,
       cwd,
       id,
       outputStream,
       record,
       rows: params.rows
-    }) ?? this.startPipeSession({ cwd, id, outputStream, record });
+    });
 
     this.runningSessions.set(id, startedSession);
     await this.persistRecord(startedSession.record);
@@ -334,6 +385,78 @@ export class CommandRuntime {
     };
   }
 
+  /**
+   * Reads the end of a session's combined log.
+   *
+   * Lifecycle tools (exec/write_stdin/wait/kill) need "what has this process
+   * said lately", which is the opposite end of the log from the paged reads
+   * `readCommandOutput` is built for. Keeping the tail here means every caller
+   * reports output the same way instead of each tool re-deriving offsets.
+   */
+  async readCommandTail(params: {
+    maxChars?: number;
+    sessionId: string;
+    stream?: CommandLogStream;
+  }): Promise<CommandTailResult | null> {
+    const record = await this.requireRecord(params.sessionId);
+    const stream = params.stream ?? "combined";
+    const targetPath = resolveOutputPath(record, stream);
+    if (!targetPath) {
+      return null;
+    }
+
+    const maxChars = params.maxChars ?? 8_000;
+
+    // Seek rather than read the whole log: every command-lifecycle tool
+    // (exec_command, write_stdin, wait_command, kill_command) calls this on
+    // each invocation, and a long-running build or PTY tail can leave a log
+    // far larger than the few KB actually wanted. Reading it whole made each
+    // keystroke O(log size) in both time and peak memory.
+    let handle: fs.FileHandle;
+    try {
+      handle = await fs.open(targetPath, "r");
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return null;
+      }
+
+      throw error;
+    }
+
+    try {
+      const { size } = await handle.stat();
+      // UTF-8 is up to 4 bytes per character, so reading 4x the character
+      // budget guarantees the tail contains at least `maxChars` characters.
+      // The slice below then trims to the exact count.
+      const readBytes = Math.min(size, maxChars * 4);
+      const start = size - readBytes;
+      const buffer = Buffer.alloc(readBytes);
+      await handle.read(buffer, 0, readBytes, start);
+
+      // A mid-character start offset would decode as a replacement character;
+      // drop any leading continuation bytes (0b10xxxxxx) before decoding.
+      let begin = 0;
+      while (start > 0 && begin < buffer.length && (buffer[begin]! & 0xc0) === 0x80) {
+        begin += 1;
+      }
+      const tail = buffer.subarray(begin).toString("utf8");
+      const output = tail.length > maxChars ? tail.slice(tail.length - maxChars) : tail;
+
+      return {
+        logPath: targetPath,
+        // Byte-accurate character offsets would need the whole file; the
+        // caller uses this only to say "there is more before this", and
+        // read_command_output(offset: 0) is the documented way to get it all.
+        offset: Math.max(0, size - Buffer.byteLength(output, "utf8")),
+        output,
+        totalBytes: size,
+        truncated: size > Buffer.byteLength(output, "utf8")
+      };
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
   private async persistRecord(record: CommandSessionRecord): Promise<void> {
     await writeJsonAtomic(this.recordPath(record.id), record);
   }
@@ -398,146 +521,65 @@ export class CommandRuntime {
     return path.join(this.commandRoot(sessionId), "record.json");
   }
 
-  private startPtySession(params: {
+  /**
+   * Starts the child through the shared process primitive and wires its output
+   * into this runtime's log file, live listener, and persisted record.
+   *
+   * The primitive owns PTY-vs-pipe; everything below is command-session
+   * bookkeeping, which is why the two concerns live in different modules.
+   */
+  private startSession(params: {
     cols?: number;
     cwd: string;
     id: string;
     outputStream: fsSync.WriteStream;
     record: CommandSessionRecord;
     rows?: number;
-  }): RunningCommandSession | null {
-    let pty: IPty;
-    try {
-      pty = spawnPty(params.record.command, params.record.args, {
-        cols: params.cols ?? 120,
-        cwd: params.cwd,
-        env: buildPtyEnvironment(),
-        name: process.env.TERM || "xterm-color",
-        rows: params.rows ?? 40
-      });
-    } catch {
-      return null;
-    }
-
-    const completion = this.createPtyCompletion(params.id, params.record, params.outputStream, pty);
-    return {
-      completion,
-      handle: {
-        kill(signal) {
-          pty.kill(signal ?? "SIGTERM");
-        },
-        write(text, submit) {
-          pty.write(text);
-          if (submit) {
-            pty.write("\r");
-          }
-        }
-      },
-      killed: false,
-      outputStream: params.outputStream,
-      record: params.record
-    };
-  }
-
-  private startPipeSession(params: {
-    cwd: string;
-    id: string;
-    outputStream: fsSync.WriteStream;
-    record: CommandSessionRecord;
   }): RunningCommandSession {
-    const child = spawnChild(params.record.command, params.record.args, {
+    // `record` is reassigned below once the primitive reports whether it got a
+    // real terminal, so the emit closure reads through the session entry.
+    const session = startProcessSession({
+      args: params.record.args,
+      ...(params.cols === undefined ? {} : { cols: params.cols }),
+      command: params.record.command,
       cwd: params.cwd,
-      env: process.env,
-      stdio: "pipe"
-    }) as ChildProcessWithoutNullStreams;
-    const record = {
+      onData: (chunk, stream) => {
+        params.outputStream.write(chunk);
+        this.emitOutput(this.runningSessions.get(params.id)?.record ?? params.record, stream, chunk);
+      },
+      ...(params.rows === undefined ? {} : { rows: params.rows })
+    });
+
+    const record: CommandSessionRecord = {
       ...params.record,
-      pty: false
+      pty: session.pty
     };
-    const completion = this.createPipeCompletion(params.id, record, params.outputStream, child);
+
+    const completion = session.exited.then(async (exit) => {
+      if (exit.error) {
+        params.outputStream.write(`[spawn_error]\n${exit.error.message}\n`);
+      }
+      params.outputStream.end();
+      return this.finalizeSessionRecord(params.id, record, {
+        exitCode: exit.exitCode,
+        signal: exit.signal
+      });
+    });
 
     return {
       completion,
       handle: {
-        kill(signal) {
-          child.kill((signal as NodeJS.Signals | undefined) ?? "SIGTERM");
+        kill: (signal) => {
+          session.kill(signal);
         },
-        write(text, submit) {
-          child.stdin.write(submit ? `${text}\n` : text);
+        write: (text, submit) => {
+          session.write(text, submit);
         }
       },
       killed: false,
       outputStream: params.outputStream,
       record
     };
-  }
-
-  private createPtyCompletion(
-    sessionId: string,
-    record: CommandSessionRecord,
-    outputStream: fsSync.WriteStream,
-    pty: IPty
-  ): Promise<CommandSessionRecord> {
-    return new Promise<CommandSessionRecord>((resolve) => {
-      pty.onData((data) => {
-        outputStream.write(data);
-      });
-
-      pty.onExit(async (event) => {
-        outputStream.end();
-        const nextRecord = await this.finalizeSessionRecord(sessionId, record, {
-          exitCode: event.exitCode,
-          signal: event.signal === 0 ? null : String(event.signal)
-        });
-        resolve(nextRecord);
-      });
-    });
-  }
-
-  private createPipeCompletion(
-    sessionId: string,
-    record: CommandSessionRecord,
-    outputStream: fsSync.WriteStream,
-    child: ChildProcessWithoutNullStreams
-  ): Promise<CommandSessionRecord> {
-    return new Promise<CommandSessionRecord>((resolve) => {
-      let settled = false;
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        outputStream.write(chunk);
-      });
-      child.stderr.on("data", (chunk: string) => {
-        outputStream.write(chunk);
-      });
-
-      child.once("error", async (error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        outputStream.write(`[spawn_error]\n${error.message}\n`);
-        outputStream.end();
-        const nextRecord = await this.finalizeSessionRecord(sessionId, record, {
-          exitCode: 1,
-          signal: null
-        });
-        resolve(nextRecord);
-      });
-
-      child.once("exit", async (exitCode, signal) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        outputStream.end();
-        const nextRecord = await this.finalizeSessionRecord(sessionId, record, {
-          exitCode: exitCode ?? 1,
-          signal: signal ?? null
-        });
-        resolve(nextRecord);
-      });
-    });
   }
 
   private async finalizeSessionRecord(
@@ -595,12 +637,6 @@ function buildShellInvocation(commandText: string): {
     args: ["-lc", commandText],
     command: "/bin/sh"
   };
-}
-
-function buildPtyEnvironment(): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")
-  );
 }
 
 function resolveOutputPath(record: CommandSessionRecord, stream: CommandLogStream): string | null {

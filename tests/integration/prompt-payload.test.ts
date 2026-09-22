@@ -50,6 +50,7 @@ describe("model-visible payload budget", () => {
     expect(leanTools.length).toBeLessThanOrEqual(MAX_LEAN_TOOL_COUNT);
 
     const allNames = new Set(registry.listDefinitions().map((definition) => definition.invocationName));
+    const allAliases = new Set(registry.listDefinitions().flatMap((definition) => definition.aliases));
     for (const name of LEAN_TOOL_PROFILE_INVOCATION_NAMES) {
       // Guard against typos in the lean list: every lean name that the default
       // registry can provide must resolve to a registered tool. (web_search and
@@ -58,7 +59,14 @@ describe("model-visible payload budget", () => {
       if (allNames.has(name)) {
         expect(leanTools.some((definition) => definition.invocationName === name)).toBe(true);
       }
+
+      // Regression: the lean profile matches invocation names, not aliases, so
+      // listing an alias silently exposes nothing. "create_file" was listed for
+      // months while the lean profile had no way to create a file at all.
+      expect(allNames.has(name) || !allAliases.has(name)).toBe(true);
     }
+
+    expect(leanTools.some((definition) => definition.invocationName === "write_file")).toBe(true);
 
     const toolsJson = JSON.stringify(serializeToolDefinitions(leanTools));
     expect(toolsJson.length).toBeLessThanOrEqual(MAX_LEAN_TOOLS_JSON_CHARS);

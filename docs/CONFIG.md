@@ -102,3 +102,38 @@ files) and hot-reloads when they change, unless `mcp.watch` is set to `false`
 Vision note: image content returned by MCP tools is forwarded to the model unless
 `runtime.modelSettings.supportsVision` is `false` (see `docs/SMALL_MODELS.md`); set it
 false for text-only local models so such content becomes a text placeholder instead.
+
+## Reasoning in the context window
+
+`runtime.reasoningContextTurns` (default `1`) controls how many of the most recent
+turns keep their `<think>` reasoning in the request sent to the model. `1` keeps
+only the current turn, so reasoning survives across that turn's tool results while
+older deliberation stops consuming the window (and stops reinforcing plan/re-plan
+loops). `0` removes reasoning from requests entirely.
+
+This affects **only** what the model sees. The transcript on disk always keeps every
+reasoning part, and provider-native reasoning is archived in the events log. See
+`docs/AGENT_LOOP.md` → "Reasoning persistence".
+
+## Interactive external agents
+
+`externalAgents.interactive` holds the defaults for long-lived external-agent terminals:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `cols` / `rows` | `120` / `40` | PTY size. The rendered screen the model reads is this size. |
+| `idleMs` | `2000` | No output for this long counts toward turn end. |
+| `stabilityMs` | `1000` | Rendered screen unchanged for this long counts toward turn end. |
+| `turnTimeoutMs` | `600000` | Hard bound on one `send`. |
+| `humanLockMs` | `10000` | Agent writes are refused this long after a human keystroke. |
+| `sessionWarningThreshold` | `4` | Warn (never block) past this many live sessions. |
+| `terminalApp` | `"Terminal"` | macOS app opened by `attach`. |
+
+Each agent in `externalAgents.agents` may carry its own `interactive` block (`args`,
+`idleMs`, `readyPattern?`, `stabilityMs`, `turnTimeoutMs`) which wins over the defaults.
+An agent with no `interactive` block can still run one-shot jobs but cannot start a session.
+
+**The shipped `args` include the external agent's own approval-bypass flag**
+(`--dangerously-skip-permissions` for Claude, `--dangerously-bypass-approvals-and-sandbox`
+for Codex). That is deliberate and it lives in config precisely so you can delete it. Read
+the security section of `docs/EXTERNAL_AGENTS.md` before leaving it enabled.

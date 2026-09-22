@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { JsonSchemaDocument, ToolDefinition } from "@/core/contracts";
 import { type WorkspaceBinaryMutationResult, type WorkspaceMutationResult, type WorkspaceMutationEngine } from "@/core/workspace";
 import { runProcess } from "@/core/voice/utils";
+import { truncateToolOutput } from "@/core/tools/output";
 import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
 
 import {
@@ -18,6 +19,10 @@ import {
 } from "@/core/tools/builtins/local-paths";
 
 const localPathSchema = z.string().min(1).max(4096);
+
+// Matches `shell_command`'s budget so every high-volume tool clips at the same
+// scale. See `createGrepFilesTool` for why a match-count cap is not enough.
+const MAX_GREP_OUTPUT_CHARS = 12_000;
 
 const readFileInputSchema = z
   .object({
@@ -362,17 +367,33 @@ export function createGrepFilesTool(params: { workspaceEngine: WorkspaceMutation
         regex: input.regex
       });
 
+      // `maxResults` bounds how many matches come back, not how large one is:
+      // a single hit inside a minified bundle or a source map carries that
+      // whole line, so 85 matches once serialized to 14MB here. Cap the
+      // rendered output the way `shell_command` does, and keep only the
+      // matches that fit so the persisted record and the event journal are
+      // bounded too. `matchCount` still reports the real total.
+      const clipped = truncateToolOutput({
+        content: renderGrepMatches(matches),
+        followUp: "grep_files with a narrower query, a `path` scope, or a smaller `maxResults`",
+        maxChars: MAX_GREP_OUTPUT_CHARS
+      });
+
       return {
         display: [
           {
             kind: "markdown",
-            markdown: renderGrepMatches(matches)
+            markdown: clipped.text
           }
         ],
+        displayedResultKeys: ["matches"],
         result: {
-          matches,
+          matchCount: matches.length,
+          matches: retainRenderedMatches(matches, MAX_GREP_OUTPUT_CHARS),
+          outputChars: clipped.totalChars,
           query: input.query,
-          regex: input.regex ?? false
+          regex: input.regex ?? false,
+          truncated: clipped.truncated
         }
       };
     }
@@ -993,14 +1014,42 @@ function renderPathMatches(query: string, matches: Array<{ path: string }>): str
   return [`Matches for ${query}:`, ...matches.map((match) => `- ${match.path}`)].join("\n");
 }
 
-function renderGrepMatches(matches: Array<{ column: number; line: number; path: string; text: string }>): string {
+type GrepMatch = { column: number; line: number; path: string; text: string };
+
+function renderGrepMatchLine(match: GrepMatch): string {
+  return `- ${match.path}:${match.line}:${match.column} ${match.text}`;
+}
+
+function renderGrepMatches(matches: GrepMatch[]): string {
   if (matches.length === 0) {
     return "No content matches found.";
   }
 
-  return matches
-    .map((match) => `- ${match.path}:${match.line}:${match.column} ${match.text}`)
-    .join("\n");
+  return matches.map(renderGrepMatchLine).join("\n");
+}
+
+/**
+ * Keeps the leading matches whose rendered lines fit inside `maxChars`.
+ *
+ * The displayed text is clipped mid-line by `truncateToolOutput`, which is the
+ * right answer for something a reader scans, but a structured `matches` array
+ * should not contain a half-truncated entry. Whole lines only: a first match
+ * that is itself longer than the budget yields an empty array, and the clipped
+ * display plus `matchCount` are what tell the caller it existed.
+ */
+function retainRenderedMatches(matches: GrepMatch[], maxChars: number): GrepMatch[] {
+  const retained: GrepMatch[] = [];
+  let used = 0;
+  for (const match of matches) {
+    // +1 for the newline join.
+    used += renderGrepMatchLine(match).length + 1;
+    if (used > maxChars) {
+      break;
+    }
+    retained.push(match);
+  }
+
+  return retained;
 }
 
 function buildRangeOperationsFromLinePatches(

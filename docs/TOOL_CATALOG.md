@@ -32,7 +32,7 @@ Sources surveyed (sibling repos under `AIAgents/`):
 | Memory | `memory_search`, `memory_get`, `memory_status`, `memory_index`, `memory_write` |
 | Voice | `voice_list_voices`, `voice_synthesize_text`, `voice_transcribe_audio` |
 | Image | `image_generate` (text→image, image→image, inpaint) |
-| External agents | `external_agent` (run/get/list/cancel/resume) |
+| External agents | `external_agent` (run/get/list/cancel/resume + start/send/read/stop/attach) |
 | MCP | `mcp_search`, `mcp_read_resource`, `mcp_read_resource_template`, plus dynamic MCP server tools |
 
 ## Deduped capability matrix
@@ -68,6 +68,7 @@ built — see notes) · **Out** (out of scope — rationale given).
 | MCP tool use + resources | all | `mcp_*` + dynamic | Have |
 | Voice TTS / STT | openclaw | `voice_*` | Have |
 | Run external agent CLI | claude, codex, mistral-vibe | `external_agent` | Have |
+| Interactive external agent terminal | — | `external_agent` (`start`/`send`/`read`/`stop`/`attach`) | Have — see [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md) |
 | **Think / reasoning scratchpad** | OpenHands | `think` | **Added** |
 | **Edit notebook cells** | vscode, opendev | `notebook_edit` | **Added** |
 | **Ask the operator a question** | codex, Roo, opendev, mistral-vibe | `ask_user_question` | **Added** |
@@ -101,6 +102,11 @@ built — see notes) · **Out** (out of scope — rationale given).
   options; the operator's resolution **comment is the answer**, threaded back into
   the resumed tool call so the result the model sees contains it. Works on every
   surface that can resolve an approval (CLI, web, gateway, SDK, channels).
+  The operator is never forced to pick a suggested option: the CLI numbers the
+  options but accepts free text, and the web form renders each option as a radio
+  plus an "Other" radio with a text input. The result always carries a
+  `matchedOption` boolean so the model can tell "picked option 2" from "typed
+  something we never offered" without inferring it from a missing field.
 - **`view_image`** — load a local image file as an `image` message artifact so a
   vision-capable model can see it. Read-only; the LM serializers already forward
   image parts as base64/data-urls, so no model-layer changes were needed.
@@ -113,6 +119,33 @@ built — see notes) · **Out** (out of scope — rationale given).
 - **`pdf_read`** — extract text from a local PDF (text-based; no OCR). Uses an
   injectable extractor defaulting to a lazily-imported `pdf-parse`; truncation,
   page count, `.pdf` guard, and clear errors on encrypted/corrupt files.
+
+## Output limits
+
+Every high-volume tool clips what it hands the model and leaves an actionable
+marker (`truncateToolOutput`, `src/core/tools/output.ts`) naming the follow-up
+call and the on-disk artifact. Current budgets:
+
+| Tool | Budget | Follow-up |
+|---|---|---|
+| `shell_command` | 12k chars of combined output | `read_command_output(sessionId, offset)` |
+| `read_command_output` | 16k chars default | itself, with `offset` |
+| `exec_command`, `write_stdin`, `wait_command`, `kill_command` | 8k-char tail | `read_command_output(sessionId, offset: 0)` |
+| `grep_files` | 12k chars of rendered matches | narrower query, `path` scope, or smaller `maxResults` |
+
+**Why `grep_files` needs a character budget and not just `maxResults`.** A match
+count bounds how *many* lines come back, not how *big* one is, and a match
+carries its whole source line. One hit inside a minified bundle or a
+`.js.map` — a single multi-megabyte line — is enough: `grep_files({query:
+"edit_file"})` against this repo returned 85 matches (under the 100 default) that
+serialized to **14.8MB**, which went into the model's context in one tool message
+and was journaled twice to disk. The rendered output is now clipped, and
+`result.matches` keeps only whole entries that fit, with `matchCount` reporting
+the real total.
+
+Note that traversal is still unfiltered: `grep_files` walks and reads up to
+10,000 entries including `node_modules/` and `dist/`, so scoping with `path`
+remains the cheap way to search a large tree.
 
 ## Planned (in scope, not yet built)
 

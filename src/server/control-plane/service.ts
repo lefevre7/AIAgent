@@ -95,6 +95,14 @@ export type ControlPlaneSettingsSummary = {
     logLevel: string;
     statusUpdates: boolean;
     verboseEvents: boolean;
+    /**
+     * The directory a new session runs in by default.
+     *
+     * Distinct from `memory.workspaceRoot`, which is where memory *documents*
+     * live (`./memory` by default). The web session form reached for the
+     * memory root and so proposed running agents inside it.
+     */
+    workspaceRoot: string;
   };
   tunnel: {
     enabled: boolean;
@@ -332,7 +340,8 @@ export class ControlPlaneService {
         defaultProvider: config.runtime.defaultProvider,
         logLevel: config.runtime.logLevel,
         statusUpdates: config.runtime.statusUpdates,
-        verboseEvents: config.runtime.verboseEvents
+        verboseEvents: config.runtime.verboseEvents,
+        workspaceRoot: this.context.cwd
       },
       tunnel: {
         enabled: config.tunnel.enabled,

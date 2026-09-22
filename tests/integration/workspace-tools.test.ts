@@ -84,6 +84,37 @@ describe("workspace tools", () => {
     expect((grep.result as { matches: Array<{ path: string }> }).matches[0]?.path).toBe("src/app.ts");
   });
 
+  test("bounds the grep result when a matching line is enormous", async () => {
+    const root = await createTempRoot();
+    // A source map or a minified bundle is one very long line. `maxResults`
+    // caps how many matches come back, not how big one is, so before the
+    // output cap a single hit like this serialized to megabytes and went
+    // straight into the model's context and the event journal.
+    const hugeLine = `{"needle":"${"x".repeat(2_000_000)}"}`;
+    await fs.writeFile(path.join(root, "bundle.js.map"), `${hugeLine}\n`, "utf8");
+    await fs.writeFile(path.join(root, "small.ts"), "const needle = 1;\n", "utf8");
+    const tools = toolsByName(root);
+
+    const grep = await run(tools.get("grep_files"), { query: "needle" }, root);
+    const result = grep.result as {
+      matchCount: number;
+      matches: Array<{ text: string }>;
+      outputChars: number;
+      truncated: boolean;
+    };
+
+    expect(result.matchCount).toBe(2);
+    expect(result.truncated).toBe(true);
+    // Both the rendered display and the retained matches stay bounded; the
+    // 2MB line is reported via matchCount and the truncation marker instead.
+    expect(JSON.stringify(result.matches).length).toBeLessThan(20_000);
+    expect(JSON.stringify(grep.display).length).toBeLessThan(20_000);
+    expect(result.outputChars).toBeGreaterThan(1_000_000);
+    const markdown = (grep.display as Array<{ markdown: string }>)[0]?.markdown ?? "";
+    expect(markdown).toContain("[output truncated:");
+    expect(markdown).toContain("grep_files with a narrower query");
+  });
+
   test("writes, appends, edits, patches, and undoes files", async () => {
     const root = await createTempRoot();
     const tools = toolsByName(root);

@@ -4,7 +4,15 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { createDefaultToolRuntime, sessionRecordSchema, toolCallRecordSchema, turnRecordSchema, type ToolRuntime } from "@/core";
+import {
+  CommandRuntime,
+  createDefaultToolRuntime,
+  sessionRecordSchema,
+  toolCallRecordSchema,
+  turnRecordSchema,
+  type MessagePart,
+  type ToolRuntime
+} from "@/core";
 
 const tempRoots: string[] = [];
 
@@ -131,6 +139,11 @@ describe("workspace and command built-ins", () => {
       timedOut: false
     });
 
+    // Lifecycle tools must report what the process actually printed. Returning
+    // only a status line is what made command work invisible to the model.
+    expect(getStringField(waited.toolCall.result, "output")).toContain("echo:hello");
+    expect(renderPartsToText(waited.resultMessage?.parts)).toContain("echo:hello");
+
     const longRunning = await executeApproved(runtime, root, "exec_command", {
       args: ["-e", "setInterval(() => {}, 1000);"],
       command: process.execPath
@@ -148,6 +161,44 @@ describe("workspace and command built-ins", () => {
       status: "killed",
       timedOut: false
     });
+  });
+
+  test("streams live command output to the configured listener with its owning session", async () => {
+    const root = await createTempRoot();
+    const events: { chunk: string; ownerSessionId?: string; sessionId: string; stream: string }[] = [];
+    const commandRuntime = new CommandRuntime({
+      baseDirectory: root,
+      onOutput: (event) => {
+        events.push(event);
+      },
+      stateRoot: path.join(root, ".aia")
+    });
+    const runtime = createDefaultToolRuntime({
+      commandRuntime,
+      stateRoot: path.join(root, ".aia"),
+      workspaceRoot: root
+    });
+
+    const started = await executeApproved(runtime, root, "exec_command", {
+      args: ["-e", "process.stdout.write('live:hello\\n');"],
+      command: process.execPath
+    });
+    expect(started.toolCall.status).toBe("succeeded");
+    const commandSessionId = getStringField(started.toolCall.result, "sessionId");
+
+    await waitForOutput(runtime, root, commandSessionId, "live:hello");
+
+    // Output must be attributable: the listener is how the gateway turns PTY
+    // bytes into a tool.output.delta aimed at one agent session, so a chunk
+    // without its owner would either leak or be dropped.
+    const combined = events
+      .filter((event) => event.sessionId === commandSessionId)
+      .map((event) => event.chunk)
+      .join("");
+    expect(combined).toContain("live:hello");
+    expect(events.every((event) => event.ownerSessionId === "session.integration.tools")).toBe(true);
+
+    await executeApproved(runtime, root, "kill_command", { sessionId: commandSessionId, timeoutMs: 5_000 });
   });
 
   test("surfaces errors for unknown command sessions", async () => {
@@ -276,6 +327,21 @@ function normalizeTestPath(targetPath: string): string {
   return targetPath.split(path.sep).join("/");
 }
 
+// Approximates what the model reads: the tool result message flattened to text.
+function renderPartsToText(parts: MessagePart[] | undefined): string {
+  return (parts ?? [])
+    .map((part) => {
+      if (part.kind === "text") {
+        return part.text;
+      }
+      if (part.kind === "json") {
+        return JSON.stringify(part.value);
+      }
+      return "";
+    })
+    .join("\n");
+}
+
 async function waitForOutput(runtime: ToolRuntime, cwd: string, sessionId: string, needle: string): Promise<void> {
   const deadline = Date.now() + 5_000;
 
@@ -329,5 +395,38 @@ describe("command output querying and pagination", () => {
     // reading an unavailable stream for a completed session surfaces a failure
     const stderrRead = await executeApproved(runtime, root, "read_command_output", { sessionId, stream: "stdout" });
     expect(stderrRead.toolCall.status).toBe("succeeded");
+  });
+  test("reads a command tail by seeking, not by loading the whole log", async () => {
+    const root = await createTempRoot();
+    const commandRuntime = new CommandRuntime({ baseDirectory: root, stateRoot: path.join(root, ".aia") });
+    const started = await commandRuntime.startExecCommand({ args: [], command: "cat", cwd: root });
+
+    // Every lifecycle tool calls readCommandTail on each invocation, so a
+    // large log must not be read in full just to report its last few KB.
+    const logPath = started.logPaths.combined;
+    const filler = `${"y".repeat(999)}\n`;
+    await fs.writeFile(logPath, filler.repeat(3_000), "utf8");
+    await fs.appendFile(logPath, "FINAL-MARKER\n", "utf8");
+
+    const tail = await commandRuntime.readCommandTail({ maxChars: 2_000, sessionId: started.id });
+    if (!tail) {
+      throw new Error("Expected a tail for a running command session.");
+    }
+
+    expect(tail.output.length).toBeLessThanOrEqual(2_000);
+    expect(tail.output).toContain("FINAL-MARKER");
+    expect(tail.truncated).toBe(true);
+    // Reported against the whole file even though only the tail was read.
+    expect(tail.totalBytes).toBeGreaterThan(3_000_000);
+    expect(tail.offset).toBe(tail.totalBytes - Buffer.byteLength(tail.output, "utf8"));
+
+    // A multi-byte character straddling the seek boundary must not decode as
+    // a replacement character.
+    await fs.writeFile(logPath, `${"\u00e9".repeat(5_000)}END`, "utf8");
+    const multibyte = await commandRuntime.readCommandTail({ maxChars: 100, sessionId: started.id });
+    expect(multibyte?.output).not.toContain("\ufffd");
+    expect(multibyte?.output.endsWith("END")).toBe(true);
+
+    await commandRuntime.killCommand({ sessionId: started.id });
   });
 });

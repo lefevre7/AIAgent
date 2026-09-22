@@ -214,6 +214,86 @@ describe("tool runtime", () => {
     expect(requestedResult.toolCall.status).toBe("awaiting_approval");
     expect(requestedResult.approvalRequest?.target.kind).toBe("path");
   });
+
+  // Regression: display parts used to suppress `result` entirely, so a tool
+  // that rendered a friendly status line reported "succeeded" to the model and
+  // nothing else.
+  test("always surfaces the tool result to the model even when the tool renders a display", async () => {
+    const registry = new ToolRegistryBuilder()
+      .register({
+        definition: createRuntimeTool().definition,
+        async execute() {
+          return {
+            display: [{ kind: "status", state: "succeeded", summary: "Command finished." }],
+            result: {
+              exitCode: 0,
+              output: "build complete"
+            }
+          };
+        }
+      })
+      .build();
+    const runtime = new ToolRuntime({ registry });
+
+    const result = await runtime.execute(createCall({}), {
+      session: buildSession(),
+      turn: buildTurn()
+    });
+
+    expect(result.resultMessage?.parts).toEqual([
+      { kind: "status", state: "succeeded", summary: "Command finished." },
+      {
+        kind: "json",
+        value: {
+          result: { exitCode: 0, output: "build complete" },
+          status: "succeeded",
+          toolName: "fixture_tool"
+        }
+      }
+    ]);
+  });
+
+  test("omits result keys the tool already rendered verbatim in a display part", async () => {
+    const registry = new ToolRegistryBuilder()
+      .register({
+        definition: createRuntimeTool().definition,
+        async execute() {
+          return {
+            display: [{ kind: "text", text: "line one\nline two" }],
+            displayedResultKeys: ["output"],
+            result: {
+              exitCode: 0,
+              output: "line one\nline two"
+            }
+          };
+        }
+      })
+      .build();
+    const runtime = new ToolRuntime({ registry });
+
+    const result = await runtime.execute(createCall({}), {
+      session: buildSession(),
+      turn: buildTurn()
+    });
+
+    // The blob is readable text exactly once; the structured metadata still
+    // reaches the model, and the persisted result keeps everything.
+    expect(result.resultMessage?.parts).toEqual([
+      { kind: "text", text: "line one\nline two" },
+      {
+        kind: "json",
+        value: {
+          result: { exitCode: 0 },
+          status: "succeeded",
+          toolName: "fixture_tool"
+        }
+      }
+    ]);
+    expect(result.toolCall.result).toEqual({
+      exitCode: 0,
+      output: "line one\nline two"
+    });
+  });
 });
 
 function buildSession() {

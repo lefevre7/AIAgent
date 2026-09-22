@@ -46,9 +46,34 @@ describe("ask_user_question tool runtime", () => {
     expect(resumed.toolCall.result).toMatchObject({
       answer: "REST",
       answered: true,
+      matchedOption: true,
       question: "Which API style should I use?",
       selectedOption: "REST"
     });
+  });
+
+  test("reports free text as an unmatched answer rather than omitting the signal", async () => {
+    const runtime = createDefaultToolRuntime();
+    const resumed = await runtime.executeApproved(
+      toolCallRecordSchema.parse({
+        arguments: { options: [{ label: "REST" }, { label: "GraphQL" }], question: "Which API style should I use?" },
+        id: "tool-call.ask.resumed.2",
+        metadata: { approvalResolutionComment: "gRPC, actually" },
+        sessionId: "session.ask.1",
+        startedAt: "2026-06-10T12:00:00.000Z",
+        status: "pending",
+        toolName: "ask_user_question",
+        turnId: "turn.ask.1"
+      }),
+      { session: buildSession(), turn: buildTurn() }
+    );
+
+    expect(resumed.toolCall.status).toBe("succeeded");
+    expect(resumed.toolCall.result).toMatchObject({
+      answer: "gRPC, actually",
+      matchedOption: false
+    });
+    expect(resumed.toolCall.result).not.toHaveProperty("selectedOption");
   });
 });
 

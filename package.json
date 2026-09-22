@@ -44,6 +44,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
+    "postinstall": "node scripts/ensure-pty-helper.mjs",
     "prepare": "npm run build:node",
     "check": "npm run typecheck && npm run lint && npm run test",
     "test": "npm run test:unit && npm run test:integration",
@@ -54,6 +55,7 @@
     "test:live": "vitest run --config vitest.live.config.ts",
     "test:live:browser": "vitest run --config vitest.live.config.ts tests/live/browser-service.live.test.ts",
     "test:live:external-agents": "vitest run --config vitest.live.config.ts tests/live/external-agent-codex.live.test.ts",
+    "test:live:external-agents-interactive": "vitest run --config vitest.live.config.ts tests/live/external-agent-interactive.live.test.ts",
     "test:live:image": "vitest run --config vitest.live.config.ts tests/live/image-service.live.test.ts",
     "test:live:lm-studio": "vitest run --config vitest.live.config.ts tests/live/lm-studio.live.test.ts",
     "test:live:memory": "vitest run --config vitest.live.config.ts tests/live/memory-embeddings.live.test.ts",
@@ -66,6 +68,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",
+    "@xterm/headless": "^5.5.0",
     "express": "^5.1.0",
     "jsonc-parser": "^3.3.1",
     "next": "^15.0.0",

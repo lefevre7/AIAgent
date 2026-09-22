@@ -29,6 +29,34 @@ describe("tool registry lookups and search scoring", () => {
     expect(substring.some((match) => match.definition.invocationName === "grep_files")).toBe(true);
   });
 
+  test("a phrased query still finds the tool, ranked below an exact match", () => {
+    // Whole-query containment alone made every multi-word query miss: no field
+    // contains the literal phrase, so the model got an empty result and burned
+    // a turn guessing again. Under the lean tool profile `tool_search` is the
+    // only route to most tools, so a miss is expensive.
+    const reg = registry();
+
+    const phrased = reg.searchDefinitions({
+      limit: 5,
+      query: "search the workspace for files containing a pattern"
+    });
+    expect(phrased.some((match) => match.definition.invocationName === "grep_files")).toBe(true);
+
+    const hyphenated = reg.searchDefinitions({ limit: 5, query: "read-file from disk" });
+    expect(hyphenated.some((match) => match.definition.invocationName === "read_file")).toBe(true);
+
+    // A partial match must not outrank the real thing.
+    const mixed = reg.searchDefinitions({ limit: 10, query: "think" });
+    expect(mixed[0]?.definition.invocationName).toBe("think");
+  });
+
+  test("short connective words alone do not manufacture matches", () => {
+    const reg = registry();
+    // Every token is <= 2 chars, so there is nothing to match on and the
+    // whole-query path finds no field containing "to a of".
+    expect(reg.searchDefinitions({ limit: 5, query: "to a of" })).toHaveLength(0);
+  });
+
   test("returns everything (score 1) for an empty query and respects the limit", () => {
     const reg = registry();
     const all = reg.searchDefinitions({ limit: 3, query: "" });

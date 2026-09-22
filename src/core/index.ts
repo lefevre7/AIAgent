@@ -11,6 +11,7 @@ export * from "@/core/lm";
 export * from "@/core/mcp";
 export * from "@/core/memory";
 export * from "@/core/plans";
+export * from "@/core/process";
 export * from "@/core/prompts";
 export * from "@/core/runtime-metadata";
 export * from "@/core/research";

@@ -485,6 +485,9 @@ function renderMessagePartsToText(parts: MessagePart[]): string | undefined {
           return JSON.stringify(part.value, null, 2);
         case "markdown":
           return part.markdown;
+        case "reasoning":
+          // The model's thinking is not an answer; channels get the answer.
+          return "";
         case "status":
           return part.summary;
         case "text":
