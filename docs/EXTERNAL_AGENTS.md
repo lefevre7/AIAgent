@@ -153,17 +153,53 @@ Mitigations in place:
   a conversation unusable, and consent was already given at `start`.
 - Arguments are argv-only. No shell string is ever constructed, so there is no shell-injection surface.
 - The environment is a real allowlist, shared by the one-shot and interactive paths
-  (`buildExternalAgentEnvironment`, `src/core/external-agents/environment.ts`). A child gets a fixed
-  floor — `PATH`, `HOME`, `SHELL`, `TERM*`, `LANG`/`LC_*`, `TMPDIR`, `TZ`, `USER`, proxy and CA
-  variables — plus whatever the agent's own `passEnv` names and its `env` map sets. Nothing else in
-  the operator's shell is inherited, which matters precisely because this agent runs with its own
-  approvals bypassed.
+  (`buildExternalAgentEnvironment`, `src/core/external-agents/environment.ts`). See
+  "What an external agent can read" below. Nothing outside that allowlist is inherited, which matters
+  precisely because this agent runs with its own approvals bypassed.
 
 > **Behaviour change (2026-09-21).** Both paths previously inherited the whole of `process.env`: the
 > one-shot builder seeded from `{ ...process.env }` and then re-copied each `passEnv` key back into
 > it, which is a no-op, and the interactive path passed no `env` at all — so it honoured neither
 > `passEnv` nor `env`. If an agent of yours depended on an inherited variable, name it in that agent's
 > `passEnv`.
+
+### What an external agent can read
+
+A spawned agent does **not** inherit your shell. It receives exactly three things, most-specific-wins:
+
+1. **A fixed floor** it cannot run without: `PATH`, `HOME`, `SHELL`, `TERM`/`TERMINFO`/`COLORTERM`,
+   `LANG`/`LC_ALL`/`LC_CTYPE`, `TMPDIR`/`TMP`/`TEMP`, `TZ`, `USER`/`LOGNAME`/`HOSTNAME`, the proxy
+   variables in both cases, and `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`/`SSL_CERT_DIR`. Everything here
+   decides whether the process _runs_, not what it can reach. `listBaseEnvironmentAllowlist()` is the
+   single source of truth.
+2. **`externalAgents.passEnv`** — a global list applied to every agent.
+3. **The agent's own `passEnv`**, then its literal **`env`** map, then per-call overrides.
+
+For scale, on a typical shell of ~56 variables a default `claude` preset receives about 6.
+
+Use the global list for variables several CLIs need, so they are named once instead of per preset:
+
+```jsonc
+"externalAgents": {
+  // Applied to every agent, merged with each agent's own passEnv.
+  // A starter set — add only what your agents actually need.
+  "passEnv": [
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+    "GH_TOKEN",            // gh CLI
+    "npm_config_registry", // private npm registry
+    "JAVA_HOME", "GOPATH", "CARGO_HOME", "RUSTUP_HOME",
+    "NVM_DIR", "PYENV_ROOT", "VIRTUAL_ENV"
+  ]
+}
+```
+
+**It stays an allowlist on purpose, and there is deliberately no "inherit everything" switch.** These
+agents run with their own approvals bypassed (see above) and the _model_ decides when to invoke them,
+so a variable you add here is a credential you are handing to a sandbox-disabled process. Add names
+deliberately; prefer the narrowest set that works.
+
+If an agent misbehaves in a way that looks like missing configuration, a missing environment variable
+is the first thing to check — that is the expected cost of this design.
 
 ### A second hazard: unexpected modal prompts
 

@@ -873,3 +873,35 @@ real window on this machine.
 
 Docs updated: `docs/EXTERNAL_AGENTS.md` ("Sharing the terminal with a human", the new "Where the window
 connects" and "Auto-attach" sections), `docs/CONFIG.md`, `README.md`.
+
+## Addendum (2026-09-23): a global environment allowlist for external agents
+
+Operator question: "what about all the other env vars on my system — do any get passed to the external
+agents?"
+
+**Answer: almost none, by design.** `buildExternalAgentEnvironment` is deny-by-default. Measured on a
+real shell of 56 variables, the default `claude` preset received 6 (`HOME`, `LOGNAME`, `PATH`, `SHELL`,
+`TMPDIR`, `USER`) and 50 were withheld — including a `CLAUDE_CODE_MESSAGING_TOKEN` that happened to be
+exported. That is the 2026-09-21 fix working: before it, `passEnv` was a provable no-op and every child
+inherited the whole shell while the docs called it an allowlist.
+
+The ergonomic complaint behind the question was real, though: a variable several CLIs need had to be
+repeated in every preset. So `externalAgents.passEnv` now exists as a **global allowlist**, merged with
+each agent's own list. Precedence is floor → global `passEnv` → agent `passEnv` → agent `env` →
+per-call overrides, most specific wins. Empty by default, so nothing changes until an operator opts in.
+
+Plumbed through `BuildExecutionParams.globalPassEnv` (one-shot adapters) and
+`ExternalAgentSessionServiceOptions.passEnv` (interactive), so the two paths still cannot drift — which
+is the failure the shared builder exists to prevent.
+
+**Deliberately not added: an "inherit everything" switch.** It was offered and declined. These agents
+run with their own approvals bypassed (R11) and the _model_ chooses when to invoke them, so inheriting
+the shell would hand every exported credential to a sandbox-disabled process. A starter list lives in
+`docs/EXTERNAL_AGENTS.md` instead, so the easy path is naming a dozen variables rather than opening the
+gate.
+
+Also asked and declined in the same pass: writing the `AIA_*` env-override defaults into
+`aia.config.jsonc`, and adding a full env-var table to `docs/CONFIG.md`. The 62 `AIA_*` overrides remain
+discoverable through `src/core/config/env-overrides.ts`. If a future agent is asked to document them,
+note that 30 already have entries in the workspace config, 7 have no default worth writing, and 8 are
+credentials for the three unimplemented channels.

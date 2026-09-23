@@ -68,4 +68,52 @@ describe("buildExternalAgentEnvironment", () => {
       expect(listBaseEnvironmentAllowlist()).toContain(key);
     }
   });
+  // A global list exists so a variable several CLIs need is named once rather
+  // than repeated in every preset. It is still an allowlist: everything not
+  // named is still withheld.
+  it("passes the global externalAgents.passEnv to every agent", () => {
+    const env = buildExternalAgentEnvironment({
+      config: { env: {}, passEnv: [] },
+      globalPassEnv: ["DATABASE_URL"],
+      processEnv
+    });
+
+    expect(env.DATABASE_URL).toBe("postgres://should-not-leak");
+    // Unnamed credentials are still withheld.
+    expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it("unions the global and per-agent lists", () => {
+    const env = buildExternalAgentEnvironment({
+      config: { env: {}, passEnv: ["OPENAI_API_KEY"] },
+      globalPassEnv: ["DATABASE_URL"],
+      processEnv
+    });
+
+    expect(env.DATABASE_URL).toBe("postgres://should-not-leak");
+    expect(env.OPENAI_API_KEY).toBe("sk-opted-in");
+    expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  });
+
+  // Precedence: the agent's explicit `env` is more specific than either list.
+  it("lets an agent's own env override a value named by the global list", () => {
+    const env = buildExternalAgentEnvironment({
+      config: { env: { DATABASE_URL: "postgres://agent-specific" }, passEnv: [] },
+      globalPassEnv: ["DATABASE_URL"],
+      processEnv
+    });
+
+    expect(env.DATABASE_URL).toBe("postgres://agent-specific");
+  });
+
+  it("ignores globally named variables that are not set", () => {
+    const env = buildExternalAgentEnvironment({
+      config: { env: {}, passEnv: [] },
+      globalPassEnv: ["NOT_SET_ANYWHERE"],
+      processEnv
+    });
+
+    expect("NOT_SET_ANYWHERE" in env).toBe(false);
+  });
 });

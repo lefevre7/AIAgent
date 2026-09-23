@@ -46,6 +46,8 @@ export type ExternalAgentSessionServiceOptions = {
   idleMs?: number;
   onOutput?: ExternalAgentSessionOutputListener;
   onWarning?: (message: string) => void;
+  /** `externalAgents.passEnv` — names every agent may read. */
+  passEnv?: readonly string[];
   rows?: number;
   sessionWarningThreshold?: number;
   stabilityMs?: number;
@@ -136,7 +138,7 @@ export class FileExternalAgentSessionService implements ExternalAgentSessionServ
       // `env` here used to fall through to a full copy of `process.env`, which
       // meant an interactive session honoured neither the agent's `env` map
       // nor its `passEnv` allowlist while the one-shot path honoured both.
-      env: buildExternalAgentEnvironment({ config }),
+      env: buildExternalAgentEnvironment({ config, globalPassEnv: this.options.passEnv ?? [] }),
       onData: (chunk, stream) => {
         watcher.write(chunk);
         logStream.write(chunk);
@@ -517,6 +519,7 @@ export function createExternalAgentSessionServiceFromConfig(params: {
     idleMs: externalAgents.interactive.idleMs,
     ...(params.onOutput ? { onOutput: params.onOutput } : {}),
     ...(params.onWarning ? { onWarning: params.onWarning } : {}),
+    passEnv: externalAgents.passEnv,
     rows: externalAgents.interactive.rows,
     sessionWarningThreshold: externalAgents.interactive.sessionWarningThreshold,
     stabilityMs: externalAgents.interactive.stabilityMs,

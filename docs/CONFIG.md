@@ -117,6 +117,11 @@ reasoning part, and provider-native reasoning is archived in the events log. See
 
 ## Interactive external agents
 
+`externalAgents.passEnv` is a global environment allowlist applied to every agent, merged with each
+agent's own `passEnv` (the agent's entry wins). Empty by default. A spawned agent otherwise sees only a
+fixed floor of variables — see `docs/EXTERNAL_AGENTS.md` → "What an external agent can read" for the
+floor, a starter list, and why there is no inherit-everything switch.
+
 `externalAgents.interactive` holds the defaults for long-lived external-agent terminals:
 
 | Key                       | Default      | Meaning                                                         |

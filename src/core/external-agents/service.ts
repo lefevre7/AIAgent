@@ -56,6 +56,8 @@ type ExternalAgentRuntimeMetadata = z.infer<typeof externalAgentRuntimeMetadataS
 
 type FileExternalAgentServiceOptions = {
   agents: Record<string, ExternalAgentRuntimeConfig>;
+  /** `externalAgents.passEnv` — names every agent may read. */
+  passEnv?: readonly string[];
   pollIntervalMs?: number;
   sessions?: FileSessionStore;
   stateRoot: string;
@@ -99,6 +101,8 @@ type ExternalAgentRuntime = {
 type BuildExecutionParams = {
   attempt: number;
   attemptRoot: string;
+  /** `externalAgents.passEnv` — names every agent may read, from config. */
+  globalPassEnv: readonly string[];
   job?: ExternalAgentJobRecord;
   request: ExternalAgentJobRequest;
   runtime: ExternalAgentRuntime;
@@ -352,6 +356,7 @@ export class FileExternalAgentService implements ExternalAgentService {
         ? await adapter.buildResume({
             attempt,
             attemptRoot,
+            globalPassEnv: this.options.passEnv ?? [],
             job,
             request: job.request,
             runtime,
@@ -360,6 +365,7 @@ export class FileExternalAgentService implements ExternalAgentService {
         : await adapter.buildRun({
             attempt,
             attemptRoot,
+            globalPassEnv: this.options.passEnv ?? [],
             job,
             request: job.request,
             runtime
@@ -996,6 +1002,7 @@ export function createExternalAgentServiceFromConfig(params: {
 
   return new FileExternalAgentService({
     agents: enabledAgents,
+    passEnv: params.config.externalAgents.passEnv,
     pollIntervalMs: params.config.externalAgents.pollIntervalMs,
     sessions: params.sessions,
     stateRoot: params.config.externalAgents.stateRoot
@@ -1200,7 +1207,7 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
         args,
         command: config.command,
         cwd: params.request.cwd,
-        env: buildProcessEnvironment(config),
+        env: buildProcessEnvironment(config, {}, params.globalPassEnv),
         resultPath: path.join(params.attemptRoot, "final-output.txt"),
         stderrPath: path.join(params.attemptRoot, "stderr.log"),
         stdinText: undefined,
@@ -1229,7 +1236,7 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
         args,
         command: config.command,
         cwd: params.request.cwd,
-        env: buildProcessEnvironment(config),
+        env: buildProcessEnvironment(config, {}, params.globalPassEnv),
         resultPath: path.join(params.attemptRoot, "final-output.txt"),
         stderrPath: path.join(params.attemptRoot, "stderr.log"),
         stdinText: undefined,
@@ -1308,7 +1315,7 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
         args,
         command: config.command,
         cwd: params.request.cwd,
-        env: buildProcessEnvironment(config),
+        env: buildProcessEnvironment(config, {}, params.globalPassEnv),
         finalOutputPath: resultPath,
         resultPath,
         schemaPath,
@@ -1349,7 +1356,7 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
         args,
         command: config.command,
         cwd: params.request.cwd,
-        env: buildProcessEnvironment(config),
+        env: buildProcessEnvironment(config, {}, params.globalPassEnv),
         finalOutputPath: resultPath,
         resultPath,
         schemaPath,
@@ -1430,9 +1437,13 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
         args,
         command: config.command,
         cwd: params.request.cwd,
-        env: buildProcessEnvironment(config, {
-          VIBE_HOME: vibeHomePath
-        }),
+        env: buildProcessEnvironment(
+          config,
+          {
+            VIBE_HOME: vibeHomePath
+          },
+          params.globalPassEnv
+        ),
         resultPath: path.join(params.attemptRoot, "final-output.json"),
         sessionLogRoot,
         stderrPath: path.join(params.attemptRoot, "stderr.log"),
@@ -1460,9 +1471,13 @@ const PRESET_ADAPTERS: Record<ExternalAgentKind, ExternalAgentPresetAdapter> = {
         args,
         command: config.command,
         cwd: params.request.cwd,
-        env: buildProcessEnvironment(config, {
-          VIBE_HOME: vibeHomePath
-        }),
+        env: buildProcessEnvironment(
+          config,
+          {
+            VIBE_HOME: vibeHomePath
+          },
+          params.globalPassEnv
+        ),
         resultPath: path.join(params.attemptRoot, "final-output.json"),
         sessionLogRoot,
         stderrPath: path.join(params.attemptRoot, "stderr.log"),
@@ -1547,12 +1562,13 @@ function buildExternalAgentDefinition(agentId: string, config: ExternalAgentRunt
  */
 function buildProcessEnvironment(
   config: ExternalAgentRuntimeConfig,
-  overrides: Record<string, string> = {}
+  overrides: Record<string, string> = {},
+  globalPassEnv: readonly string[] = []
 ): NodeJS.ProcessEnv {
   // Next.js augments ProcessEnv with required keys, so the plain record has to
   // be widened back to the spawn signature's expectation (same cast as
   // `src/core/process/session.ts`).
-  return buildExternalAgentEnvironment({ config, overrides }) as NodeJS.ProcessEnv;
+  return buildExternalAgentEnvironment({ config, globalPassEnv, overrides }) as NodeJS.ProcessEnv;
 }
 
 function appendInstructions(args: string[], instructions: string, mode: "arg" | "stdin", promptFlag?: string): void {

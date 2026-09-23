@@ -422,6 +422,16 @@ const externalAgentsConfigSchema = z
         turnTimeoutMs: positiveTimeoutSchema
       })
       .strict(),
+    /**
+     * Environment variables every agent may read, merged with each agent's own
+     * `passEnv` (the agent's list wins on a conflict).
+     *
+     * Exists so a variable needed by several CLIs is named once instead of per
+     * preset. It is still an allowlist: external agents run with their own
+     * approvals bypassed, so they must not inherit the whole shell. Empty by
+     * default — see docs/EXTERNAL_AGENTS.md for a starter list.
+     */
+    passEnv: z.array(z.string().min(1).max(256)).max(256).default([]),
     pollIntervalMs: z.number().int().positive().max(60_000),
     stateRoot: z.string().min(1)
   })
@@ -812,6 +822,7 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
         terminalApp: "Terminal",
         turnTimeoutMs: 600_000
       },
+      passEnv: [],
       pollIntervalMs: 500,
       stateRoot: "./.aia/external-agents"
     },
