@@ -101,8 +101,22 @@ export function bindGatewayWebSocketConnection(
   }
 ): void {
   let subscription: GatewaySubscription | null = null;
+  // While a backlog catch-up sweep (below) is in flight for the current
+  // subscription, a persisted event delivered live would duplicate whatever
+  // the sweep is about to deliver for it — the sweep re-queries "from cursor
+  // to now" repeatedly until a page comes back empty, so it will always catch
+  // up to anything appended mid-sweep on its own. Non-persisted events (no
+  // `cursor`, e.g. `message.delta`) were never part of any backlog, so they
+  // are never gated. `sweepGeneration` guards against a client resubscribing
+  // again before an earlier sweep's `finally` runs, so that earlier sweep
+  // cannot clear the gate out from under the newer one.
+  let liveGateActive = false;
+  let sweepGeneration = 0;
   const unsubscribe = options.runtime.subscribe((event) => {
     if (!subscription || !eventMatchesGatewaySubscription(event, subscription) || websocket.readyState !== 1) {
+      return;
+    }
+    if (liveGateActive && event.cursor) {
       return;
     }
 
@@ -118,25 +132,33 @@ export function bindGatewayWebSocketConnection(
     void handleGatewayWebSocketMessage(websocket, normalizeWebSocketMessage(data), {
       onSubscriptionChanged: async (nextSubscription) => {
         subscription = nextSubscription;
-        let cursor = nextSubscription.cursor;
-        while (true) {
-          const replay = await options.runtime.replayEvents(
-            gatewayEventReplayQuerySchema.parse({
-              ...nextSubscription,
-              cursor,
-              limit: 500
-            })
-          );
-          for (const event of replay.events) {
-            if (websocket.readyState !== 1) {
+        liveGateActive = true;
+        const generation = ++sweepGeneration;
+        try {
+          let cursor = nextSubscription.cursor;
+          while (true) {
+            const replay = await options.runtime.replayEvents(
+              gatewayEventReplayQuerySchema.parse({
+                ...nextSubscription,
+                cursor,
+                limit: 500
+              })
+            );
+            for (const event of replay.events) {
+              if (websocket.readyState !== 1) {
+                return;
+              }
+              websocket.send(JSON.stringify(event));
+            }
+            if (!replay.nextCursor) {
               return;
             }
-            websocket.send(JSON.stringify(event));
+            cursor = replay.nextCursor;
           }
-          if (!replay.nextCursor) {
-            return;
+        } finally {
+          if (sweepGeneration === generation) {
+            liveGateActive = false;
           }
-          cursor = replay.nextCursor;
         }
       },
       requestTimeoutMs: options.requestTimeoutMs,

@@ -154,6 +154,83 @@ describe("gateway websocket", () => {
       liveEvent
     ]);
   });
+
+  test("does not deliver a persisted event twice when it arrives live mid-backlog-sweep", async () => {
+    // Before the fix, `subscription` (which arms the live listener) was set
+    // *before* the backlog catch-up sweep ran, so a persisted event appended
+    // while the sweep was still in flight could be delivered twice: once via
+    // the live listener (armed early) and again via the sweep's own delivery
+    // of the same event. This drives that exact interleaving: the backlog
+    // query is held pending while a live event with the same cursor arrives,
+    // then the pending query resolves with that same event.
+    const persistedEvent = gatewayEventSchema.parse({
+      createdAt: "2026-03-31T12:05:00.000Z",
+      cursor: "cursor.1",
+      id: "message-created.mid-sweep.1",
+      metadata: {},
+      payload: {
+        createdAt: "2026-03-31T12:05:00.000Z",
+        id: "message.mid-sweep.1",
+        metadata: {},
+        parts: [{ kind: "text", text: "mid-sweep" }],
+        role: "assistant",
+        sessionId: "session.1",
+        source: "assistant",
+        tags: [],
+        visibility: "default"
+      },
+      topic: "message.created"
+    });
+
+    let replayCallCount = 0;
+    let resolveFirstReplay: ((page: { events: GatewayEvent[]; nextCursor?: string }) => void) | undefined;
+    const firstReplay = new Promise<{ events: GatewayEvent[]; nextCursor?: string }>((resolve) => {
+      resolveFirstReplay = resolve;
+    });
+    const runtime = createRuntimeStub({
+      replayEvents: async () => {
+        replayCallCount += 1;
+        if (replayCallCount === 1) {
+          return firstReplay;
+        }
+        return { events: [] };
+      }
+    });
+    const socket = new FakeGatewaySocket();
+
+    bindGatewayWebSocketConnection(socket, {
+      requestTimeoutMs: 5_000,
+      runtime
+    });
+
+    socket.emitMessage(
+      JSON.stringify({
+        createdAt: "2026-03-31T12:00:00.000Z",
+        id: "gateway-request.subscribe.1",
+        metadata: {},
+        payload: { cursor: "cursor.0", sessionId: "session.1", topics: ["message.created"] },
+        topic: "gateway.subscribe"
+      })
+    );
+    await waitFor(() => socket.sent.length === 1);
+
+    // The backlog sweep's first (and only, in this test) query is now pending.
+    // A live delivery of the same event while the sweep is in flight must be
+    // gated — the sweep's own resolution below is what delivers it.
+    runtime.emitEvent(persistedEvent);
+    await flush();
+    expect(socket.sent).toHaveLength(1);
+
+    resolveFirstReplay?.({ events: [persistedEvent] });
+    await waitFor(() => socket.sent.length === 2);
+    expect(socket.takeJsonMessages().at(-1)).toEqual(persistedEvent);
+
+    // The sweep has finished, so the gate should be open again: a genuinely
+    // new live event delivers immediately, exactly once.
+    runtime.emitEvent(persistedEvent);
+    await waitFor(() => socket.sent.length === 1);
+    expect(socket.takeJsonMessages()).toEqual([persistedEvent]);
+  });
 });
 
 function createRuntimeStub(

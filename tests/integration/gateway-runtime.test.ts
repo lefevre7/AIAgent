@@ -302,4 +302,75 @@ describe("gateway runtime request dispatch", () => {
       }
     });
   });
+
+  test("a stale run's completion cannot release a busy-gate slot a fresher run now owns", async () => {
+    // `activeRunsBySession` is keyed by sessionId, which is reused across runs
+    // over time (unlike `activeRunsById`). Before the fix, `completeRun`
+    // deleted the session's slot unconditionally, so a run whose finalization
+    // is merely running late (it is still the *same* run object here, just a
+    // second finalize path arriving after a fresher run has already taken the
+    // slot) could clear the busy-gate out from under a run that is still
+    // genuinely active, letting a second run start against the session
+    // concurrently.
+    const adapter = new ScriptedLanguageModelAdapter({
+      modelId: "example-gw-busy-gate",
+      providerId: "example_lm",
+      responses: []
+    });
+
+    await withExampleSdk({
+      name: "gateway-runtime-busy-gate",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "example-gw-busy-gate", enabled: true }] },
+      run: async ({ sdk, workspaceRoot }) => {
+        const created = await sdk.sessions.create({
+          cwd: workspaceRoot,
+          goal: "Exercise the busy-gate race",
+          metadata: { surface: "example" },
+          title: "Busy Gate Race"
+        });
+        const sessionId = created.session.id;
+
+        const runtime = sdk.controlPlane as unknown as {
+          activeRunsById: Map<string, { cancelRequested: boolean; run: Record<string, unknown> }>;
+          activeRunsBySession: Map<string, { cancelRequested: boolean; run: Record<string, unknown> }>;
+          completeRun: (
+            active: { cancelRequested: boolean; run: Record<string, unknown> },
+            params: { sessionId: string; status: string }
+          ) => Promise<void>;
+        };
+
+        const buildActive = (runId: string) => ({
+          cancelRequested: false,
+          run: {
+            approvalRequestIds: [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            id: runId,
+            kind: "session_message",
+            messageIds: [],
+            metadata: {},
+            sessionId,
+            status: "running",
+            toolCallIds: [],
+            turnIds: [],
+            updatedAt: "2026-01-01T00:00:00.000Z"
+          }
+        });
+
+        const stale = buildActive("gateway-run.busy-gate.stale");
+        const fresh = buildActive("gateway-run.busy-gate.fresh");
+
+        // Simulate: `stale` used to occupy the slot, but a fresher run for the
+        // same session has since taken over (the only state that matters to
+        // `completeRun` is what is currently in the maps, not how it got
+        // there).
+        runtime.activeRunsById.set(fresh.run.id as string, fresh);
+        runtime.activeRunsBySession.set(sessionId, fresh);
+
+        await runtime.completeRun(stale, { sessionId, status: "completed" });
+
+        expect(runtime.activeRunsBySession.get(sessionId)).toBe(fresh);
+        expect(runtime.activeRunsById.get(fresh.run.id as string)).toBe(fresh);
+      }
+    });
+  });
 });

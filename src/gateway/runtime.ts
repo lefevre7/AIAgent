@@ -359,6 +359,7 @@ export class GatewayRuntime
     await this.options.browserService?.dispose().catch(() => undefined);
     await this.options.imageService?.dispose().catch(() => undefined);
     await this.options.mcpManager.close().catch(() => undefined);
+    await this.options.externalAgentSessionService?.shutdown().catch(() => undefined);
   }
 
   async getChannelStatuses(channel?: string): Promise<ChannelRuntimeStatus[]> {
@@ -2306,7 +2307,16 @@ export class GatewayRuntime
       // request for that session with no way to clear it short of a restart.
       this.rememberFinishedRun(active.run);
       this.activeRunsById.delete(active.run.id);
-      this.activeRunsBySession.delete(active.run.sessionId);
+      // `activeRunsBySession` is keyed by sessionId, which is reused across
+      // runs over time — unlike `activeRunsById`, an unconditional delete here
+      // can release a slot this run no longer owns. If a stale run's
+      // completion (e.g. a cancelled run finalizing late) fires after a
+      // fresher run for the same session has already taken the slot, deleting
+      // unconditionally would wrongly clear the busy-gate out from under the
+      // fresh run and let a second run start against the session concurrently.
+      if (this.activeRunsBySession.get(active.run.sessionId) === active) {
+        this.activeRunsBySession.delete(active.run.sessionId);
+      }
     });
   }
 
