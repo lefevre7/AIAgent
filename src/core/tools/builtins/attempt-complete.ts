@@ -7,12 +7,17 @@ export function createAttemptCompleteTool(): RuntimeTool {
     async execute(call): Promise<RuntimeToolResult> {
       const status = typeof call.arguments.status === "string" ? call.arguments.status : "success";
       const summary = typeof call.arguments.summary === "string" ? call.arguments.summary : "Completion requested.";
+      const remainingCaveatsRaw = call.arguments.remainingCaveats;
+      const remainingCaveats = Array.isArray(remainingCaveatsRaw)
+        ? remainingCaveatsRaw.filter((entry): entry is string => typeof entry === "string")
+        : [];
 
       return {
         result: {
           completionRequested: true,
           status,
-          summary
+          summary,
+          ...(remainingCaveats.length > 0 ? { remainingCaveats } : {})
         }
       };
     }
@@ -91,6 +96,12 @@ export const attemptCompleteToolDefinition: ToolDefinition = {
     properties: {
       completionRequested: {
         type: "boolean"
+      },
+      remainingCaveats: {
+        items: {
+          type: "string"
+        },
+        type: "array"
       },
       status: {
         type: "string"

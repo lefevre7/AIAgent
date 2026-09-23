@@ -50,6 +50,34 @@ describe("attempt_complete tool execute", () => {
       summary: "Completion requested."
     });
   });
+
+  test("carries remainingCaveats through instead of discarding them", async () => {
+    const tool = createAttemptCompleteTool();
+
+    const result = await tool.execute(
+      call({
+        remainingCaveats: ["The migration script is untested against production data.", 42, null],
+        status: "partial",
+        summary: "Refactored the module."
+      }),
+      {} as never
+    );
+
+    expect(result.result).toEqual({
+      completionRequested: true,
+      remainingCaveats: ["The migration script is untested against production data."],
+      status: "partial",
+      summary: "Refactored the module."
+    });
+  });
+
+  test("omits remainingCaveats entirely when none were given", async () => {
+    const tool = createAttemptCompleteTool();
+
+    const result = await tool.execute(call({ status: "success", summary: "Done." }), {} as never);
+
+    expect(result.result).not.toHaveProperty("remainingCaveats");
+  });
 });
 
 describe("memory tool execute paths", () => {

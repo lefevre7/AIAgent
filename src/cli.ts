@@ -565,9 +565,16 @@ function describeCompletionReason(reason: GatewayRunCompletionReason | undefined
 }
 
 // Anything other than a clean completion gets a line. A turn that ends for an
-// unstated reason is indistinguishable from the agent quitting on you.
-function formatTurnStopNotice(run: GatewayRunRecord | null, snapshot: SessionSnapshot): string | null {
-  if (run?.completionReason === "session_completed") {
+// unstated reason is indistinguishable from the agent quitting on you. A
+// clean completion is only silent here when the caller already printed the
+// attempt_complete summary above — otherwise (an empty/untagged summary) the
+// operator would see nothing at all after "Thinking...".
+function formatTurnStopNotice(
+  run: GatewayRunRecord | null,
+  snapshot: SessionSnapshot,
+  hadCompletionSummary: boolean
+): string | null {
+  if (run?.completionReason === "session_completed" && hadCompletionSummary) {
     return null;
   }
 
@@ -688,7 +695,7 @@ async function runChatTurn(
       // A turn that ends for any reason other than "the agent finished" used
       // to print nothing at all, which is how a paused or blocked run read as
       // the agent stopping for no reason.
-      const notice = formatTurnStopNotice(finalRun, snapshot);
+      const notice = formatTurnStopNotice(finalRun, snapshot, Boolean(completionSummary));
       if (notice) {
         writeLine(streams.stderr, notice);
       }

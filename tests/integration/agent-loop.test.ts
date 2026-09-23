@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   AgentLoop,
   ApprovalCoordinator,
+  COMPACTION_WATERMARK_METADATA_KEY,
   COMPLETION_SUMMARY_MESSAGE_TAG,
   FileSessionStore,
   filterModelVisibleMessages,
@@ -105,6 +106,50 @@ describe("agent loop", () => {
     // The resume metadata is what the CLI reads for a stop notice, so the real
     // answer has to displace the generic "task completed successfully" literal.
     expect(snapshot?.resumeMetadata?.statusSummary).toBe("17 * 23 = 391.");
+  });
+
+  // `remainingCaveats` is declared on attempt_complete's schema and its own
+  // usage guidance explicitly invites the model to report them, but nothing
+  // ever read the argument back out of the intercepted completion call — an
+  // honestly-reported caveat was silently discarded instead of reaching the
+  // operator anywhere.
+  test("appends remainingCaveats to the persisted completion summary", async () => {
+    const { loop, store } = await createLoop([
+      buildModelResponse({
+        sessionId: "session.loop.caveats",
+        toolCalls: [
+          {
+            arguments: {
+              remainingCaveats: ["The migration script is untested against production data.", "", 42],
+              status: "partial",
+              summary: "Refactored the module."
+            },
+            callId: "tool.complete.caveats",
+            toolName: "attempt_complete"
+          }
+        ]
+      })
+    ]);
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      session: buildSession(),
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+
+    const snapshot = await store.getSessionSnapshot(result.session.id);
+    const summaryMessage = snapshot?.messages.find((message) =>
+      (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG)
+    );
+
+    expect(summaryMessage?.parts).toEqual([
+      {
+        kind: "text",
+        text: "Refactored the module.\n\nRemaining caveats:\n- The migration script is untested against production data."
+      }
+    ]);
   });
 
   test("falls back to the generic status when attempt_complete carries no usable summary", async () => {
@@ -561,7 +606,7 @@ describe("agent loop", () => {
   test("initializes memory placeholders and compacts on accepted completion when a memory lifecycle is configured", async () => {
     const initializeCalls: string[] = [];
     const compactCalls: string[] = [];
-    const { loop } = await createLoop(
+    const { loop, store } = await createLoop(
       [
         buildModelResponse({
           messageText: "The work is complete.",
@@ -596,6 +641,15 @@ describe("agent loop", () => {
     expect(result.stopReason).toBe("completed");
     expect(initializeCalls).toEqual(["session.loop.1"]);
     expect(compactCalls).toEqual(["session.loop.1:completion"]);
+
+    // Unlike threshold and manual compaction, completion-triggered compaction
+    // never advanced the watermark, so a resumed completed session replayed
+    // the full raw transcript with none of the benefit the compaction that
+    // just ran was supposed to provide.
+    const snapshot = await store.getSessionSnapshot(result.session.id);
+    const latestMessageId = snapshot?.messages.at(-1)?.id;
+    expect(latestMessageId).toBeTruthy();
+    expect(result.session.metadata[COMPACTION_WATERMARK_METADATA_KEY]).toBe(latestMessageId);
   });
 
   test("falls back to a failing default tool executor when none is configured", async () => {

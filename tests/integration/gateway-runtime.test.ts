@@ -190,7 +190,12 @@ describe("gateway runtime request dispatch", () => {
         const result = await created.handle.compact();
         unsubscribe();
 
-        expect(result.hiddenMessageCount).toBeGreaterThan(0);
+        // Completion-triggered compaction already ran and advanced the
+        // watermark to `lastMessageId` when the run finished, so this manual
+        // compact has nothing new to hide — it is exercising the same
+        // idempotent-rewrite path the "compacting again" case below covers,
+        // just as the *first* call instead of the second.
+        expect(result.hiddenMessageCount).toBe(0);
         expect(result.compactedThroughMessageId).toBe(lastMessageId);
         expect(result.summary).toContain("Session Summary");
         // The agent's narration and its accepted completion summary are
@@ -215,6 +220,42 @@ describe("gateway runtime request dispatch", () => {
         expect(again.compactedThroughMessageId).toBe(lastMessageId);
 
         await expect(sdk.sessions.compact("session.does-not-exist")).rejects.toThrow(/not found/u);
+      }
+    });
+  });
+
+  test("session.compact hides real messages on a session completion-compaction never touched", async () => {
+    // Completion-triggered compaction only ever runs from the accepted
+    // attempt_complete branch, so a session that stops for any other reason
+    // (here: repeated turns with no tool use, hitting the no-progress guard)
+    // reaches manual /compact with genuinely uncompacted history — unlike the
+    // "compact a finished session" case above, which completion-compaction
+    // already caught up on by the time compact() is called.
+    const adapter = new ScriptedLanguageModelAdapter({
+      modelId: "example-gw-compact-blocked",
+      providerId: "example_lm",
+      responses: [1, 2, 3, 4].map(
+        (turn) => (request) => buildScriptedResponse({ request, text: `Thinking out loud, turn ${turn}.` })
+      )
+    });
+
+    await withExampleSdk({
+      name: "gateway-runtime-compact-blocked",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "example-gw-compact-blocked", enabled: true }] },
+      run: async ({ sdk, workspaceRoot }) => {
+        const created = await sdk.sessions.create({
+          cwd: workspaceRoot,
+          goal: "Never quite finish",
+          initialMessage: { text: "please start" },
+          metadata: { surface: "example" },
+          title: "Compact Blocked Session"
+        });
+        await created.run!.wait();
+        const snapshot = await created.handle.snapshot();
+        expect(snapshot.snapshot.session.status).toBe("completion_blocked");
+
+        const result = await created.handle.compact();
+        expect(result.hiddenMessageCount).toBeGreaterThan(0);
       }
     });
   });

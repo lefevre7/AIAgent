@@ -513,7 +513,13 @@ export class AgentLoop {
           // session summary, from one place.
           const completionSummary = readCompletionSummary(completionCalls[0]);
           if (completionSummary) {
-            const summaryMessage = createCompletionSummaryMessage(session.id, turn.id, completionSummary);
+            const remainingCaveats = readRemainingCaveats(completionCalls[0]);
+            const summaryMessage = createCompletionSummaryMessage(
+              session.id,
+              turn.id,
+              completionSummary,
+              remainingCaveats
+            );
             await this.options.sessions.appendMessages([summaryMessage]);
             appendedMessages.push(summaryMessage);
             turn.outputMessageIds.push(summaryMessage.id);
@@ -527,10 +533,24 @@ export class AgentLoop {
           session = await this.persistSession(session, "completed", {
             statusSummary: completionSummary ?? "The task completed successfully."
           });
-          await this.options.memoryLifecycle?.compactSession({
-            sessionId: session.id,
-            trigger: "completion"
-          });
+          if (this.options.memoryLifecycle) {
+            await this.options.memoryLifecycle.compactSession({
+              sessionId: session.id,
+              trigger: "completion"
+            });
+            // Unlike threshold and manual compaction, this path never advanced
+            // the watermark, so a resumed completed session replayed the full
+            // raw transcript to the model with none of the benefit the
+            // compaction that just ran was supposed to provide.
+            const latestMessageId = (await this.options.sessions.getSessionSnapshot(session.id))?.messages.at(-1)?.id;
+            if (latestMessageId) {
+              session = await this.persistSession(
+                { ...session, metadata: { ...session.metadata, [COMPACTION_WATERMARK_METADATA_KEY]: latestMessageId } },
+                "completed",
+                { statusSummary: completionSummary ?? "The task completed successfully." }
+              );
+            }
+          }
           return {
             approvalRequests: appendedApprovalRequests,
             messages: appendedMessages,
@@ -1212,18 +1232,43 @@ function readCompletionSummary(completionCall: ModelToolCallProposal | undefined
 }
 
 /**
+ * Pulls the model's own "what's still not done" list out of an accepted
+ * `attempt_complete` call. The tool's schema and usage guidance both invite
+ * the model to report remaining caveats, but nothing ever read the argument
+ * back out — the runtime discarded it, so an honestly-reported caveat never
+ * reached the operator.
+ */
+function readRemainingCaveats(completionCall: ModelToolCallProposal | undefined): string[] {
+  const raw = completionCall?.arguments?.remainingCaveats;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+}
+
+/**
  * The final answer, persisted as an ordinary assistant message.
  *
  * Tagged so a surface can tell the completion summary apart from streamed
  * narration on the same turn (the CLI prints it after the stream; without the
  * tag it could not know whether it had already shown this text).
  */
-function createCompletionSummaryMessage(sessionId: string, turnId: string, summary: string): Message {
+function createCompletionSummaryMessage(
+  sessionId: string,
+  turnId: string,
+  summary: string,
+  remainingCaveats: string[]
+): Message {
+  const text =
+    remainingCaveats.length > 0
+      ? `${summary}\n\nRemaining caveats:\n${remainingCaveats.map((caveat) => `- ${caveat}`).join("\n")}`
+      : summary;
+
   return {
     createdAt: new Date().toISOString(),
     id: createMessageId("completion", `${turnId}.${crypto.randomUUID()}`),
     metadata: {},
-    parts: [{ kind: "text", text: summary }],
+    parts: [{ kind: "text", text }],
     role: "assistant",
     sessionId,
     source: "assistant",

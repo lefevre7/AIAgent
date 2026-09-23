@@ -150,6 +150,7 @@ function createFakeSdk(
   options: {
     compactResult?: { hiddenMessageCount: number; summaryPath?: string };
     compactError?: string;
+    completionReason?: string;
     completionSummary?: string;
     lastError?: string;
     modelStatus?: string;
@@ -233,7 +234,11 @@ function createFakeSdk(
         emit("echo: ");
         emit(input.text);
       }
-      return { async wait() {} };
+      return {
+        async wait() {
+          return options.completionReason ? { completionReason: options.completionReason } : undefined;
+        }
+      };
     },
     async snapshot() {
       return buildSnapshot(`echo: ${sent[sent.length - 1] ?? ""}`, options.lastError, options.completionSummary);
@@ -300,6 +305,26 @@ describe("interactive CLI loop", () => {
     expect(capture.getStdout()).not.toContain("bootstrap is in place");
     expect(fake.getSent()).toEqual(["hello there"]);
     expect(fake.wasClosed()).toBe(true);
+  });
+
+  test("says something when a turn completes cleanly but with no tagged summary", async () => {
+    // A run can reach completionReason "session_completed" without ever
+    // persisting a message tagged as the attempt_complete summary (an empty
+    // summary argument, or a completion path that never tags one). Before the
+    // fix, formatTurnStopNotice unconditionally suppressed its notice for
+    // "session_completed", so with no streamed text and no summary the
+    // operator saw nothing at all after "Thinking...".
+    const fake = createFakeSdk({ completionReason: "session_completed", suppressStream: true });
+    const capture = createCaptureStreams();
+
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: lineSource(["hello there", "/exit"])
+    });
+
+    expect(exitCode).toBe(0);
+    expect(capture.getStdout()).not.toContain("echo: hello there");
+    expect(capture.getStderr()).toContain("Turn ended:");
   });
 
   test("exits cleanly when the input stream ends with no /exit (EOF)", async () => {
