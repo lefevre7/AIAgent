@@ -128,6 +128,17 @@ export class FileExternalAgentSessionService implements ExternalAgentSessionServ
       stabilityMs: interactive?.stabilityMs ?? this.options.stabilityMs ?? DEFAULT_STABILITY_MS
     });
     const logStream = fsSync.createWriteStream(logPath, { flags: "a" });
+    // A write failure (disk full, permission revoked mid-session) raises an
+    // unhandled 'error' on the stream, which is an uncaught exception that
+    // would take the whole host process down — the same class of bug already
+    // fixed for `child.stdin` in the pipe fallback (src/core/process/session.ts).
+    // The interactive session itself keeps running; only the durable on-disk
+    // log copy is affected.
+    logStream.on("error", (error) => {
+      this.options.onWarning?.(
+        `External agent session ${id} log file "${logPath}" failed: ${error.message}. The session keeps running; only the on-disk log is affected.`
+      );
+    });
 
     const processSession = startProcessSession({
       args,

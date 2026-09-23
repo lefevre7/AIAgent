@@ -144,6 +144,58 @@ describe("external-agent service", () => {
     );
   });
 
+  test("concurrent finalize triggers for the same job settle exactly once", async () => {
+    // A real process exit, a poll cycle noticing the process is gone, and a
+    // timeout-driven termination can all independently call the private
+    // `finalizeJob`. Before the fix, only the final write was serialized, so
+    // two concurrent callers could both read the job as "running", both pass
+    // the terminal-status guard, and both write — with the last writer
+    // silently winning and, for a detached job, its lifecycle message
+    // potentially emitted twice. This drives that exact race directly.
+    const root = await createTempRoot();
+    const sessions = new FileSessionStore(path.join(root, ".aia"));
+    const session = buildExternalAgentSession({ cwd: root, id: "session.external-agent.race" });
+    await sessions.saveSession(session);
+
+    const service = new FileExternalAgentService({
+      agents: { codex: createMockCodexConfig() },
+      sessions,
+      stateRoot: path.join(root, ".aia", "external-agents")
+    });
+
+    const started = await service.run({
+      agentId: "codex",
+      args: [],
+      cwd: root,
+      id: "external-job.service.race",
+      instructions: "[sleep:300] race success",
+      metadata: {},
+      mode: "detached",
+      sessionId: session.id
+    });
+    expect(started.status).toBe("running");
+
+    const privateService = service as unknown as {
+      finalizeJob: (jobId: string, exit: { exitCode?: number; signal?: string }) => Promise<{ status: string }>;
+    };
+    const [first, second] = await Promise.all([
+      privateService.finalizeJob(started.id, { exitCode: 0 }),
+      privateService.finalizeJob(started.id, { exitCode: 0 })
+    ]);
+    expect(first.status).not.toBe("running");
+    expect(second.status).not.toBe("running");
+
+    const snapshot = await sessions.getSessionSnapshot(session.id);
+    const externalAgentMessages = snapshot?.messages.filter((message) => message.source === "external_agent") ?? [];
+    expect(externalAgentMessages).toHaveLength(1);
+
+    // The real mock-CLI child was never killed (only its job *record* was
+    // force-finalized above); let its own `[sleep:300]` finish naturally
+    // before the temp root is removed, so its real exit handler finds the
+    // job already terminal instead of racing this test's own cleanup.
+    await sleep(400);
+  });
+
   test("an agent that reports its own failure is failed, not offered for resume", async () => {
     const root = await createTempRoot();
     const service = new FileExternalAgentService({

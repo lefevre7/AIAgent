@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { FileExternalAgentSessionService } from "@/core/external-agents/sessions";
 import type { ExternalAgentConfig } from "@/core/config";
@@ -163,6 +164,31 @@ describe("FileExternalAgentSessionService", () => {
 
     const sessions = await restarted.listSessions();
     expect(sessions.find((entry) => entry.id === record.id)?.status).toBe("stopped");
+  });
+
+  test("reports a log-file write failure instead of crashing the host process", async () => {
+    const createWriteStreamSpy = vi.spyOn(fsSync, "createWriteStream");
+    const warnings: string[] = [];
+    const { service } = await createService({ onWarning: (message) => warnings.push(message) });
+
+    const record = await service.startSession({ agentId: "mock" });
+    const logStream = createWriteStreamSpy.mock.results.at(-1)?.value as fsSync.WriteStream;
+    expect(logStream).toBeDefined();
+
+    // Simulate a real write failure (disk full, permission revoked mid-session)
+    // on the same stream instance the service is using. Before the fix, an
+    // unhandled 'error' event here is an uncaught exception that takes down
+    // the whole host process; the fix attaches a listener that reports it
+    // through `onWarning` instead.
+    logStream.emit("error", new Error("ENOSPC: no space left on device"));
+
+    expect(warnings.some((message) => message.includes(record.id) && message.includes("ENOSPC"))).toBe(true);
+
+    // The session itself must still be usable — only the log write failed.
+    const turn = await service.sendToSession({ externalSessionId: record.id, noWait: false, text: "still alive" });
+    expect(turn.screen).toContain("answer: still alive");
+
+    createWriteStreamSpy.mockRestore();
   });
 
   test("rejects an unknown or disabled agent id", async () => {

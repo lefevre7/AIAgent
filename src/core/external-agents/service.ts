@@ -692,7 +692,27 @@ export class FileExternalAgentService implements ExternalAgentService {
     });
   }
 
+  /**
+   * Multiple independent triggers — the child's real 'exit'/'error' event, a
+   * poll cycle noticing the process is gone, and a timeout-driven termination
+   * — can all race to finalize the same job. `writeJob` alone only serializes
+   * the final write; without locking the whole read-check-write sequence, two
+   * concurrent callers can both read the job while it is still "running", both
+   * pass the `isTerminalJob` guard, and both write their own (possibly
+   * different) terminal record, with the last writer silently winning and a
+   * detached job's lifecycle message potentially emitted twice.
+   */
   private async finalizeJob(
+    jobId: string,
+    exit: {
+      exitCode?: number;
+      signal?: string;
+    }
+  ): Promise<ExternalAgentJobRecord> {
+    return this.withLock(() => this.finalizeJobLocked(jobId, exit));
+  }
+
+  private async finalizeJobLocked(
     jobId: string,
     exit: {
       exitCode?: number;
@@ -709,7 +729,7 @@ export class FileExternalAgentService implements ExternalAgentService {
       return current;
     }
 
-    const hydrated = await this.hydrateJob(current);
+    const hydrated = await this.hydrateJob(current, { locked: true });
     const runtimeMetadata = getRuntimeMetadata(hydrated);
     if (!runtimeMetadata) {
       const failed = externalAgentJobRecordSchema.parse({
@@ -723,7 +743,7 @@ export class FileExternalAgentService implements ExternalAgentService {
         status: "failed",
         updatedAt: new Date().toISOString()
       });
-      await this.writeJob(failed);
+      await this.writeJobUnlocked(failed);
       this.cleanupMonitor(jobId);
       if (failed.request.mode === "detached") {
         await this.emitDetachedLifecycleMessage(failed);
@@ -740,7 +760,7 @@ export class FileExternalAgentService implements ExternalAgentService {
       status: nextStatus,
       updatedAt: new Date().toISOString()
     });
-    await this.writeJob(terminal);
+    await this.writeJobUnlocked(terminal);
     this.cleanupMonitor(jobId);
     if (terminal.request.mode === "detached") {
       await this.emitDetachedLifecycleMessage(terminal);
@@ -761,7 +781,16 @@ export class FileExternalAgentService implements ExternalAgentService {
     });
   }
 
-  private async hydrateJob(job: ExternalAgentJobRecord): Promise<ExternalAgentJobRecord> {
+  /**
+   * `locked: true` is for callers that already hold `serviceLock` (currently
+   * only `finalizeJobLocked`) — `withLock` is not reentrant, so hydrating from
+   * inside an already-locked section must use the unlocked write or it
+   * deadlocks against itself the moment a harvested patch is non-empty.
+   */
+  private async hydrateJob(
+    job: ExternalAgentJobRecord,
+    options: { locked?: boolean } = {}
+  ): Promise<ExternalAgentJobRecord> {
     const runtimeMetadata = getRuntimeMetadata(job);
     if (!runtimeMetadata) {
       return job;
@@ -804,7 +833,11 @@ export class FileExternalAgentService implements ExternalAgentService {
       ...patches,
       updatedAt: new Date().toISOString()
     });
-    await this.writeJob(updated);
+    if (options.locked) {
+      await this.writeJobUnlocked(updated);
+    } else {
+      await this.writeJob(updated);
+    }
     return updated;
   }
 
@@ -920,9 +953,12 @@ export class FileExternalAgentService implements ExternalAgentService {
   }
 
   private async writeJob(job: ExternalAgentJobRecord): Promise<void> {
-    await this.withLock(async () => {
-      await writeJsonAtomic(this.jobFile(job.id), job);
-    });
+    await this.withLock(() => this.writeJobUnlocked(job));
+  }
+
+  /** For callers that already hold `serviceLock` (e.g. `finalizeJobLocked`) — `withLock` is not reentrant. */
+  private async writeJobUnlocked(job: ExternalAgentJobRecord): Promise<void> {
+    await writeJsonAtomic(this.jobFile(job.id), job);
   }
 
   private async withLock<T>(action: () => Promise<T>): Promise<T> {

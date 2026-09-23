@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   FileExternalAgentService,
@@ -114,6 +114,56 @@ describe("gateway external-agent dispatch", () => {
 
     const missing = await runtime.request(gwRequest("external_agent.get", { jobId: "external-agent.codex.missing" }));
     expect(missing.ok).toBe(false);
+  });
+
+  test("close() shuts down the interactive external-agent session service", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-gw-ea-session-"));
+    tempRoots.push(root);
+    const config = createDefaultAppConfig({ userStateDirectory: path.join(root, "home", ".aia") });
+    config.memory.stateRoot = path.join(root, ".aia");
+    const sessions = new FileSessionStore(config.memory.stateRoot);
+    const shutdown = vi.fn(async () => undefined);
+
+    const runtime = new GatewayRuntime({
+      approvals: { configVersion: 1, defaultMode: "allow", rules: [] },
+      config,
+      externalAgentSessionService: {
+        listSessions: async () => [],
+        noteAttached: async () => undefined,
+        readSession: async () => ({ record: {} as never, screen: "" }),
+        sendToSession: async () => ({ record: {} as never, screen: "" }),
+        shutdown,
+        startSession: async () => ({}) as never,
+        stopSession: async () => ({}) as never,
+        writeHumanInput: async () => undefined
+      },
+      mcpManager: { close: async () => undefined },
+      memoryService: {
+        compactSession: async () => undefined,
+        getPromptContext: async () => null,
+        initializeSessionMemory: async () => undefined,
+        registerEmbeddingAdapter: () => undefined,
+        setDefaultEmbeddingProvider: () => undefined
+      },
+      modelRuntime: {
+        close: async () => undefined,
+        generate: async () => ({}),
+        health: async () => ({ status: "healthy" }),
+        registerAdapter: () => undefined
+      },
+      sessions,
+      taskStateService: { getTaskState: async () => null },
+      toolRuntime: createDefaultToolRuntime({}),
+      workspaceRoot: root
+    } as never);
+    await runtime.initialize();
+
+    // Before the fix, `shutdown()` on the interactive session service was
+    // never wired into any production shutdown path, so live PTY-driven
+    // sessions (running with their own approval bypasses) were simply
+    // orphaned rather than terminated when the host process closed.
+    await runtime.close();
+    expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
   test("rejects external-agent requests when no service is configured", async () => {

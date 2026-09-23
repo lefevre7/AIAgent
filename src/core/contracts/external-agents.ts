@@ -217,6 +217,13 @@ export interface ExternalAgentSessionService {
   readSession(request: ExternalAgentSessionReadRequest): Promise<ExternalAgentSessionTurn>;
   sendToSession(request: ExternalAgentSessionSendRequest): Promise<ExternalAgentSessionTurn>;
   startSession(request: ExternalAgentSessionStartRequest): Promise<ExternalAgentSessionRecord>;
+  /**
+   * Terminates every live interactive session's child process and waits for
+   * each to finalize. Must be called when the host process is shutting down —
+   * otherwise live sessions (each a real PTY-driven CLI, possibly running with
+   * its own approval bypasses) are simply orphaned rather than cleaned up.
+   */
+  shutdown(): Promise<void>;
   stopSession(request: ExternalAgentSessionStopRequest): Promise<ExternalAgentSessionRecord>;
   /**
    * Relays a raw keystroke from an attached human terminal.

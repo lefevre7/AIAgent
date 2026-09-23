@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   CommandRuntime,
@@ -251,6 +251,57 @@ describe("workspace and command built-ins", () => {
 
     await executeApproved(runtime, root, "kill_command", { sessionId, timeoutMs: 5_000 });
   });
+
+  test("does not produce an unhandled rejection when an abandoned wait's completion later fails", async () => {
+    const root = await createTempRoot();
+    const commandRuntime = new CommandRuntime({ baseDirectory: root, stateRoot: path.join(root, ".aia") });
+    const runtime = createDefaultToolRuntime({
+      commandRuntime,
+      stateRoot: path.join(root, ".aia"),
+      workspaceRoot: root
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const started = await executeApproved(runtime, root, "exec_command", {
+        args: ["-e", "setTimeout(() => process.exit(0), 150);"],
+        command: process.execPath
+      });
+      const sessionId = getStringField(started.toolCall.result, "sessionId");
+
+      // Make only the *finalize* write fail (disk full / permission revoked),
+      // not the earlier "running" record writes that session startup needs.
+      const persistRecord = vi.spyOn(
+        commandRuntime as unknown as { persistRecord: (record: { status: string }) => Promise<void> },
+        "persistRecord"
+      );
+      const original = persistRecord.getMockImplementation();
+      persistRecord.mockImplementation(async (record) => {
+        if (record.status === "completed" || record.status === "failed" || record.status === "killed") {
+          throw new Error("simulated disk-full while persisting the finalize record");
+        }
+        return original?.(record);
+      });
+
+      // waitForCommand's timeout race loses on purpose here: the process
+      // outlives this short timeout, so the caller walks away from
+      // `completion` while it is still pending — exactly the scenario the fix
+      // targets. Before the fix, the later rejection below had no listener.
+      const waited = await executeApproved(runtime, root, "wait_command", { sessionId, timeoutMs: 30 });
+      expect(waited.toolCall.result).toMatchObject({ timedOut: true });
+
+      // Give the real process time to exit and the abandoned `completion`
+      // promise time to settle (and reject, per the mock above).
+      await sleep(400);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+
+    expect(unhandled).toEqual([]);
+  });
 });
 
 function createRuntime(root: string): ToolRuntime {
@@ -374,6 +425,12 @@ async function createTempRoot(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-workspace-command-tools-"));
   tempRoots.push(root);
   return root;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 describe("command output querying and pagination", () => {
   test("filters output by query and paginates with offset/maxChars", async () => {

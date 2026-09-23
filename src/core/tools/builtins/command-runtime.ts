@@ -550,6 +550,13 @@ export class CommandRuntime {
         signal: exit.signal
       });
     });
+    // `waitForCommand`'s timeout race (below) can walk away from this promise
+    // without ever awaiting it again — Promise.race does not cancel the loser.
+    // A later rejection (finalizeSessionRecord throwing) would then be a
+    // genuine unhandled promise rejection with no listener anywhere. This
+    // fire-and-forget catch only marks `completion` as handled to Node; it
+    // does not consume or change what a real awaiter of `completion` observes.
+    completion.catch(() => undefined);
 
     return {
       completion,
