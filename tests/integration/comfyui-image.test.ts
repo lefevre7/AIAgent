@@ -144,6 +144,39 @@ describe("ComfyUI image generation", () => {
     });
   });
 
+  test("recovers after a transient probe failure instead of failing every generation forever", async () => {
+    // ensureCapabilities cached the *rejected* probe promise forever, so once
+    // the backend was unreachable even briefly, every later generate() call —
+    // even long after ComfyUI came back up — kept awaiting that same stale
+    // rejection instead of probing again.
+    // fetchJson retries a retriable failure once internally (maxAttempts: 2),
+    // so the first probe attempt needs *both* of its own requests to fail
+    // before it truly rejects — otherwise the internal retry alone would
+    // mask the bug this test is for.
+    let systemStatsCalls = 0;
+    const healthyFetch = fakeComfy();
+    const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+      if (url.pathname === "/system_stats") {
+        systemStatsCalls += 1;
+        if (systemStatsCalls <= 2) {
+          return new Response("service unavailable", { status: 503 });
+        }
+      }
+      return healthyFetch(input);
+    }) as unknown as typeof fetch;
+
+    const service = await buildService(fetchImpl);
+
+    await expect(service.generate(request() as never)).rejects.toMatchObject({
+      code: expect.stringMatching(/image_provider_probe_failed|provider_http_error/u)
+    });
+
+    const recovered = await service.generate(request() as never);
+    expect(recovered.images[0]?.kind).toBe("image");
+    expect(systemStatsCalls).toBeGreaterThanOrEqual(3);
+  });
+
   test("normalizes string, object, and wrapped model-list shapes and drops invalid entries", async () => {
     const objectModels = await buildService(
       fakeComfy({

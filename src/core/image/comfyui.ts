@@ -406,7 +406,15 @@ export class ComfyUIImageGenerationAdapter implements ImageGenerationAdapter {
 
   private async ensureCapabilities(): Promise<void> {
     if (!this.capabilityProbe) {
-      this.capabilityProbe = this.probeCapabilities();
+      // A transient backend outage must not permanently disable image
+      // generation for the rest of the process's life: without clearing the
+      // cache on failure, every future call kept awaiting this same rejected
+      // promise even after ComfyUI came back up. The catch clears it and
+      // re-throws so this call still reports the failure that just happened.
+      this.capabilityProbe = this.probeCapabilities().catch((error: unknown) => {
+        this.capabilityProbe = null;
+        throw error;
+      });
     }
 
     return this.capabilityProbe;
