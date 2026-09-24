@@ -17,6 +17,7 @@ import {
   type SessionRecord,
   COMPLETION_SUMMARY_MESSAGE_TAG
 } from "@/core/contracts";
+import { COMPACTION_WATERMARK_METADATA_KEY } from "@/core/agent/loop";
 import { writeJsonAtomic } from "@/core/io/files";
 import type { EmbeddingRuntime } from "@/core/memory/embeddings";
 import {
@@ -237,7 +238,15 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
 
     const assistantMessages = snapshot.messages.filter((message) => message.role === "assistant");
     const toolCalls = snapshot.toolCalls;
-    const sourceTokenCount = params.sourceTokenCount ?? estimateTokenCountFromSnapshot(snapshot.messages);
+    // Unlike the threshold path (which reports the model's own reported
+    // usage.inputTokens), completion and manual compaction had no real request
+    // to read a token count from, so this estimates it — but counting the
+    // *entire* raw transcript overstates what is actually still in context
+    // once an earlier compaction has already moved the watermark forward,
+    // making the before/after accounting inflated and inconsistent with the
+    // threshold path's real number.
+    const sourceTokenCount =
+      params.sourceTokenCount ?? estimateTokenCountFromSnapshot(inContextMessages(snapshot.messages, snapshot.session));
     const summary = buildSessionSummary(snapshot.session.goal, assistantMessages, toolCalls);
 
     await fs.mkdir(this.options.chatSessionRoot, { recursive: true });
@@ -961,6 +970,21 @@ function resolveCompactionPhase(
     case "threshold":
       return "threshold";
   }
+}
+
+/**
+ * Restricts a session's messages to what a real model request would still
+ * see: everything after the compaction watermark, if one is set. Mirrors
+ * `filterModelVisibleMessages`'s watermark slice (not its reasoning-part or
+ * hidden-visibility filtering, which do not matter for a token estimate).
+ */
+function inContextMessages(messages: SessionSnapshot["messages"], session: SessionRecord): SessionSnapshot["messages"] {
+  const watermarkId = session.metadata[COMPACTION_WATERMARK_METADATA_KEY];
+  if (typeof watermarkId !== "string" || watermarkId.length === 0) {
+    return messages;
+  }
+  const index = messages.findIndex((message) => message.id === watermarkId);
+  return index >= 0 ? messages.slice(index + 1) : messages;
 }
 
 function estimateTokenCountFromSnapshot(messages: SessionSnapshot["messages"]): number {

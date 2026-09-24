@@ -210,6 +210,80 @@ describe("file-backed memory service", () => {
     );
   });
 
+  // Unlike the threshold path (which reports the model's own usage.inputTokens),
+  // completion and manual compaction have no real request to read a token
+  // count from, so they estimate one. Counting the *entire* raw transcript
+  // overstated what was actually still in context once an earlier compaction
+  // had already moved the watermark forward, inflating the recorded
+  // before/after token accounting every time a session was compacted twice.
+  test("estimates sourceTokenCount from messages still in context, not the whole raw transcript", async () => {
+    const root = await createTempRoot();
+    const stateRoot = path.join(root, "workspace", ".aia");
+    const sessions = new FileSessionStore(stateRoot);
+    const watermarkId = "message.assistant.pre-compaction";
+    const session: SessionRecord = {
+      ...buildSession(),
+      metadata: { compactedThroughMessageId: watermarkId }
+    };
+    await sessions.saveSession(session);
+    await sessions.appendMessages([
+      {
+        createdAt: "2026-03-27T17:09:00.000Z",
+        id: "message.user.pre-compaction",
+        metadata: {},
+        parts: [{ kind: "text", text: "A very long first request. ".repeat(200) }],
+        role: "user",
+        sessionId: session.id,
+        source: "user",
+        tags: [],
+        turnId: "turn.memory.pre",
+        visibility: "default"
+      },
+      {
+        createdAt: "2026-03-27T17:09:01.000Z",
+        id: watermarkId,
+        metadata: {},
+        parts: [
+          { kind: "text", text: "A very long first reply, already folded into an earlier summary. ".repeat(200) }
+        ],
+        role: "assistant",
+        sessionId: session.id,
+        source: "assistant",
+        tags: [],
+        turnId: "turn.memory.pre",
+        visibility: "default"
+      },
+      {
+        createdAt: "2026-03-27T17:10:00.000Z",
+        id: "message.assistant.post-compaction",
+        metadata: {},
+        parts: [{ kind: "text", text: "A short new reply." }],
+        role: "assistant",
+        sessionId: session.id,
+        source: "assistant",
+        tags: [],
+        turnId: "turn.memory.post",
+        visibility: "default"
+      }
+    ]);
+
+    const memory = new FileBackedMemoryService({
+      chatSessionRoot: path.join(root, "workspace", "chat-session-memory"),
+      sessions,
+      stateRoot,
+      userGlobalRoot: path.join(root, "home", ".aia", "memory"),
+      workspaceRoot: path.join(root, "workspace", "memory")
+    });
+
+    const result = await memory.compactSessionDetailed({ sessionId: session.id, trigger: "manual" });
+
+    // The two long pre-watermark messages are ~7,000 characters combined
+    // (~1,750 estimated tokens); the one short post-watermark message is
+    // ~19 characters (a handful of tokens). Before the fix this counted the
+    // whole transcript and would have been in the thousands.
+    expect(result.sourceTokenCount).toBeLessThan(20);
+  });
+
   test("executes memory_write through the default runtime when the memory service is configured", async () => {
     const root = await createTempRoot();
     const workspaceRoot = path.join(root, "workspace", "memory");

@@ -231,6 +231,71 @@ describe("memory retrieval", () => {
     expect(result.hits[0]?.entry.metadata.filePath).toBe("memory/architecture.md");
   });
 
+  test("ranks a stronger bm25 match above a weaker one instead of scoring every hit identically", async () => {
+    // sqlite's bm25() returns 0 or a negative number, more negative meaning a
+    // better match. Clamping that to a minimum of 0 before use collapsed
+    // every real match to the same score, so ranking among lexical results
+    // degenerated to whatever order sqlite happened to return rows in. This
+    // only exercises real FTS5 ranking, not the substring-scan fallback,
+    // which deliberately assigns every match the same flat score already.
+    if (!fts5IsAvailable()) {
+      return;
+    }
+
+    const root = await createTempRoot();
+    const mtimeMs = Date.now();
+    const documents: IndexedMemoryDocument[] = [
+      {
+        content: "widget widget widget. This note is entirely about the widget subsystem and nothing else.",
+        filePath: "memory/widget-focused.md",
+        mtimeMs,
+        scope: "workspace",
+        uri: "file:///memory/widget-focused.md"
+      },
+      {
+        content:
+          "A long unrelated changelog covering releases, dependency bumps, formatting passes, and CI tweaks. " +
+          "Somewhere in the middle it mentions a widget exactly once before moving on to other topics entirely.",
+        filePath: "memory/mostly-unrelated.md",
+        mtimeMs,
+        scope: "workspace",
+        uri: "file:///memory/mostly-unrelated.md"
+      }
+    ];
+
+    const engine = new MemoryRetrievalEngine({
+      candidateLimit: 12,
+      chunkOverlapChars: 64,
+      chunkTargetChars: 512,
+      embeddingProvider: "lm_studio",
+      embeddingsEnabled: false,
+      ftsEnabled: true,
+      hardFailOnStartup: false,
+      loadDocuments: async () => documents,
+      mmrLambda: 0.7,
+      retrievalLimit: 8,
+      sqlitePath: path.join(root, ".aia", "memory.sqlite")
+    });
+    await engine.initialize();
+
+    const result = await engine.search({
+      includeKinds: [],
+      limit: 5,
+      minConfidence: 0,
+      scopes: ["workspace"],
+      text: "widget"
+    });
+
+    expect(result.retrieval.activeMode).toBe("lexical");
+    expect(result.hits.length).toBe(2);
+    expect(result.hits[0]?.entry.metadata.filePath).toBe("memory/widget-focused.md");
+    // The real assertion: two genuinely different matches must not receive
+    // the same score. Before the fix both were 1 (or, after weighting,
+    // identical), regardless of how much better one match was than the other.
+    expect(result.hits[0]?.score).not.toBe(result.hits[1]?.score);
+    expect(result.hits[0]?.score).toBeGreaterThan(result.hits[1]?.score ?? Number.POSITIVE_INFINITY);
+  });
+
   test("degrades to lexical retrieval when the embedding provider is unavailable at startup", async () => {
     const root = await createTempRoot();
     const engine = new MemoryRetrievalEngine(

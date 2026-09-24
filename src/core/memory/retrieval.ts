@@ -541,7 +541,7 @@ export class MemoryRetrievalEngine {
       return rows
         .map((row) => ({
           chunk: mapRowToChunk(row),
-          lexicalScore: 1 / (1 + Math.max(0, Number(row.lexical_score ?? 0)))
+          lexicalScore: bm25ToRelevance(Number(row.lexical_score ?? 0))
         }))
         .filter((row) => scopeSet.has(row.chunk.scope))
         .slice(0, limit);
@@ -842,6 +842,21 @@ function cosineSimilarity(left: number[], right: number[]): number {
 
 function formatCitation(filePath: string, startLine: number, endLine: number): string {
   return startLine === endLine ? `${filePath}#L${startLine}` : `${filePath}#L${startLine}-L${endLine}`;
+}
+
+/**
+ * SQLite's `bm25()` returns 0 or a negative number, with *more negative*
+ * meaning a *better* match (https://www.sqlite.org/fts5.html#the_bm25_function).
+ * Clamping the raw value to a minimum of 0 before use — as this used to do —
+ * discards that entirely, since real matches are always <= 0: every genuine
+ * result collapsed to the same clamped score, flattening lexical ranking to a
+ * constant. This negates first, then saturates to [0, 1) with a curve where 0
+ * is the weakest possible signal and the score approaches (but never reaches)
+ * 1 for an arbitrarily strong match.
+ */
+export function bm25ToRelevance(rawScore: number): number {
+  const negated = Math.max(0, -rawScore);
+  return negated / (1 + negated);
 }
 
 function mapRowToChunk(row: Record<string, unknown>): IndexedChunk {
