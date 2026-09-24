@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 import readline from "node:readline";
@@ -14,6 +14,7 @@ import {
   grantConfigTrust,
   revokeConfigTrust,
   APP_CONFIG_FILE_NAME,
+  CLI_NAME,
   COMPLETION_SUMMARY_MESSAGE_TAG,
   DEFAULT_LM_STUDIO_MODEL,
   type ArtifactReference,
@@ -118,6 +119,7 @@ function formatHelp(): string {
     "  aia trust [--revoke] [--cwd <path>]",
     "                       Show or change trust for this workspace's config file",
     "  aia --help",
+    "  aia --version        Print the version and exit",
     "  aia --prompt <text> [--cwd <path>] [--goal <text>] [--title <text>]",
     "  aia voice --help",
     "",
@@ -186,12 +188,20 @@ export async function runCli(
       },
       title: {
         type: "string"
+      },
+      version: {
+        type: "boolean"
       }
     }
   });
 
   if (values.help) {
     writeLine(streams.stdout, formatHelp());
+    return 0;
+  }
+
+  if (values.version) {
+    writeLine(streams.stdout, `${CLI_NAME} ${readCliVersion()}`);
     return 0;
   }
 
@@ -222,6 +232,19 @@ export async function runCli(
     lineSource,
     deps
   );
+}
+
+/**
+ * The CLI's version, read from the package manifest rather than kept as a second constant that
+ * could drift from it.
+ *
+ * Resolved from this module's own path, which works both for `src/cli.ts` under tsx and for the
+ * bundled `dist/cli.js`: each sits one directory below `package.json`.
+ */
+function readCliVersion(): string {
+  const manifestPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version?: unknown };
+  return typeof manifest.version === "string" ? manifest.version : "unknown";
 }
 
 function formatBootstrapInfo(): string {

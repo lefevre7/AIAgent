@@ -90,6 +90,7 @@ If you want the `aia` shell command locally:
 npm run build:node
 npm link
 aia --help
+aia --version
 ```
 
 ## Run The Control Plane
