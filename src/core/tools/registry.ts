@@ -30,12 +30,20 @@ export class ToolRegistryBuilder {
     const invocationName = tool.definition.invocationName;
     const normalizedName = normalizeLookupKey(tool.definition.name);
 
+    // resolveToolId (below) treats invocationNames, names, and aliases as one
+    // shared lookup space, so a conflict check that only looks at a candidate
+    // key's own keyspace can miss a real collision: a later tool's alias or
+    // name could silently become permanently unreachable behind an earlier
+    // tool's invocationName (or vice versa), with no warning at registration.
+    // Reusing resolveToolId here — the same function callers actually go
+    // through — keeps "would this collide" and "what does this resolve to"
+    // from drifting apart again.
     const conflict = this.entries.has(toolId)
       ? `Tool id "${toolId}" is already registered.`
-      : this.invocationNames.has(invocationName)
+      : resolveToolId(invocationName, this.entries, this.invocationNames, this.names, this.aliases)
         ? `Tool invocation name "${invocationName}" is already registered.`
-        : this.names.has(normalizedName) || this.aliases.has(normalizedName)
-          ? `Tool name "${tool.definition.name}" conflicts with an existing tool or alias.`
+        : resolveToolId(tool.definition.name, this.entries, this.invocationNames, this.names, this.aliases)
+          ? `Tool name "${tool.definition.name}" conflicts with an existing tool, invocation name, or alias.`
           : null;
 
     // A single misbehaving source (e.g. an MCP server exposing two tools that
@@ -56,12 +64,12 @@ export class ToolRegistryBuilder {
         normalizedAliases.push(normalizedAlias);
         continue;
       }
-      if (this.names.has(normalizedAlias) || this.aliases.has(normalizedAlias)) {
+      if (resolveToolId(alias, this.entries, this.invocationNames, this.names, this.aliases)) {
         if (onDuplicate === "skip") {
           console.warn(`Skipping conflicting tool alias "${alias}".`);
           continue;
         }
-        throw new Error(`Tool alias "${alias}" conflicts with an existing tool or alias.`);
+        throw new Error(`Tool alias "${alias}" conflicts with an existing tool, invocation name, or alias.`);
       }
       this.aliases.set(normalizedAlias, toolId);
       normalizedAliases.push(normalizedAlias);

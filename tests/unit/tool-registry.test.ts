@@ -25,6 +25,60 @@ describe("tool registry", () => {
     );
   });
 
+  test("rejects a tool whose alias collides with another tool's invocation name", () => {
+    // resolveToolId checks invocationNames, names, and aliases as one shared
+    // lookup space (in that precedence order), but registration used to check
+    // each candidate key only against its own keyspace. A second tool
+    // registered with an alias equal to an existing tool's invocationName
+    // raised no conflict at registration time, yet that alias could never
+    // actually be resolved to afterward — invocationNames always won the
+    // lookup, so the alias silently became permanently unreachable.
+    const builder = new ToolRegistryBuilder().register(
+      createRuntimeTool({
+        aliases: [],
+        invocationName: "write_file",
+        name: "write_file",
+        toolId: "tool.builtin.write_file"
+      })
+    );
+
+    expect(() =>
+      builder.register(
+        createRuntimeTool({
+          aliases: ["write_file"],
+          invocationName: "create_file",
+          name: "create_file",
+          toolId: "tool.builtin.create_file"
+        })
+      )
+    ).toThrow(/conflicts with an existing tool/u);
+  });
+
+  test("rejects a tool whose invocation name collides with another tool's alias", () => {
+    const builder = new ToolRegistryBuilder().register(
+      createRuntimeTool({
+        aliases: ["task_complete"],
+        invocationName: "attempt_complete",
+        name: "attempt_complete",
+        toolId: "tool.builtin.attempt_complete"
+      })
+    );
+
+    // The new tool's *name* is deliberately unrelated to "task_complete", so
+    // this can only be caught by checking the invocation name itself against
+    // the aliases keyspace — the specific gap the fix closes.
+    expect(() =>
+      builder.register(
+        createRuntimeTool({
+          aliases: [],
+          invocationName: "task_complete",
+          name: "second_unrelated_tool",
+          toolId: "tool.builtin.task_complete_v2"
+        })
+      )
+    ).toThrow(/already registered/u);
+  });
+
   test("ranks search results using invocation names and descriptor text while honoring filters", () => {
     const registry = new ToolRegistryBuilder()
       .register(

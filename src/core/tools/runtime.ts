@@ -369,10 +369,20 @@ function buildToolResultMessageParts(toolCall: ToolCallRecord, result?: RuntimeT
       : artifact.kind === "audio"
         ? ({
             artifact,
-            durationMs:
-              typeof artifact.metadata.durationMs === "number" && Number.isFinite(artifact.metadata.durationMs)
-                ? Math.trunc(artifact.metadata.durationMs)
-                : undefined,
+            // The audio message part schema requires a positive integer when
+            // present (z.number().int().positive().optional()). A malformed
+            // artifact (a provider bug, or 0/negative/sub-1 duration metadata)
+            // otherwise builds a part that violates its own schema the moment
+            // anything downstream validates it against that schema — checked
+            // after truncation, since e.g. 0.5 is positive but truncates to 0.
+            durationMs: ((): number | undefined => {
+              const raw = artifact.metadata.durationMs;
+              if (typeof raw !== "number" || !Number.isFinite(raw)) {
+                return undefined;
+              }
+              const truncated = Math.trunc(raw);
+              return truncated > 0 ? truncated : undefined;
+            })(),
             kind: "audio",
             title: artifact.name,
             transcript: typeof artifact.metadata.transcript === "string" ? artifact.metadata.transcript : undefined,
