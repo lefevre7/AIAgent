@@ -362,7 +362,6 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
                               className="inline-form"
                             >
                               <input type="hidden" name="redirectTo" value={redirectTo} />
-                              <input type="hidden" name="decision" value="approved" />
                               {readApprovalOptions(approval).map((option, index) => (
                                 <label key={option.label} className="approval-option">
                                   <input
@@ -393,9 +392,20 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
                                 placeholder="Type your own answer"
                                 aria-label="Other answer"
                               />
-                              <button type="submit">
+                              {/* Two submit buttons sharing one `name` is a standard HTML
+                                  pattern: only the clicked button's value is submitted, no
+                                  JavaScript required. Before this, the form hardcoded
+                                  decision=approved with no way to submit denied at all — an
+                                  operator using only the dashboard could not reject a
+                                  pending approval, including a dangerous tool call. */}
+                              <button type="submit" name="decision" value="approved">
                                 {approval.request.target.kind === "question" ? "Answer" : "Approve"}
                               </button>
+                              {approval.request.target.kind === "question" ? null : (
+                                <button type="submit" name="decision" value="denied">
+                                  Deny
+                                </button>
+                              )}
                             </form>
                           ) : null}
                         </article>
@@ -506,6 +516,14 @@ function TaskStateCard({ taskState }: { taskState: TaskStateSnapshot | null }) {
     return <p className="empty">No task plan or working memory recorded for this session.</p>;
   }
 
+  // AGENTS.md item 11 promises "progress, next step, recent attempts, and
+  // blockers" across CLI, web, and channels; this card rendered only the
+  // first two, even though both fields are already on TaskStateSnapshot.
+  // Defensive fallbacks: the schema defaults these to [] only on a real
+  // parse, and a plain object built by an older/partial caller may omit them.
+  const blockers = taskState.blockers ?? [];
+  const recentAttempts = (taskState.recentAttempts ?? []).slice(-5).reverse();
+
   return (
     <div className="task-card">
       <p>
@@ -513,6 +531,28 @@ function TaskStateCard({ taskState }: { taskState: TaskStateSnapshot | null }) {
       </p>
       <p>Next step: {taskState.nextStep?.text ?? "No explicit next step."}</p>
       <p>Summary: {taskState.summary ?? "No summary recorded."}</p>
+      <p>Blockers:</p>
+      {blockers.length === 0 ? (
+        <p className="empty">No blockers recorded.</p>
+      ) : (
+        <ul>
+          {blockers.map((blocker) => (
+            <li key={blocker.id}>
+              [{blocker.priority}] {blocker.text}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p>Recent attempts:</p>
+      {recentAttempts.length === 0 ? (
+        <p className="empty">No recent attempts recorded.</p>
+      ) : (
+        <ul>
+          {recentAttempts.map((attempt) => (
+            <li key={attempt.id}>{attempt.text}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

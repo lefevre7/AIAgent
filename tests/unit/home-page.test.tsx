@@ -45,16 +45,28 @@ describe("HomePage", () => {
     // memory hits: summary, and a truncated long body (ellipsis appended)
     expect(html).toContain("a memory");
     expect(html).toContain("…");
-    // task state
+    // task state — progress, next step, blockers, and recent attempts all
+    // render (AGENTS.md item 11 promises all four; blockers/recentAttempts
+    // used to be silently dropped even though the data was already there)
     expect(html).toContain("2/5 complete");
     expect(html).toContain("write tests");
+    expect(html).toContain("waiting on API credentials");
+    expect(html).toContain("tried the old endpoint, got a 404");
     // channel route + delivery summary
     expect(html).toContain("Tester");
     expect(html).toContain("hello from channel");
-    // approvals: open one has an Approve button; resolved shows its decision
-    expect(html).toContain("Approve");
+    // approvals: open one has both an Approve and a Deny button (the web
+    // dashboard used to have no way to deny a pending approval at all);
+    // resolved shows its decision
+    expect(html).toContain('name="decision" value="approved"');
+    expect(html).toContain('name="decision" value="denied"');
     expect(html).toContain("approved");
-    // question approvals offer each option as a radio plus a free-text "Other"
+    // Exactly one open, non-question approval in this fixture — so exactly
+    // one Deny button, not one per open approval regardless of kind.
+    expect(html.match(/name="decision" value="denied"/gu)).toHaveLength(1);
+    // question approvals offer each option as a radio plus a free-text
+    // "Other", and (unlike a regular approval) no Deny button — a question
+    // has no operator-facing "denied" concept, only an answer
     expect(html).toContain("sqlite — Local dev database");
     expect(html).toContain("postgres");
     expect(html).toContain("Other");
@@ -176,7 +188,13 @@ function populatedDashboard(): ControlPlaneDashboard {
           turns: [{ id: "turn.1", status: "completed", summary: "did work", trigger: "user" }]
         }
       },
-      taskState: { nextStep: { text: "write tests" }, progress: { completed: 2, total: 5 }, summary: "halfway there" }
+      taskState: {
+        blockers: [{ id: "blocker.1", priority: "high", text: "waiting on API credentials" }],
+        nextStep: { text: "write tests" },
+        progress: { completed: 2, total: 5 },
+        recentAttempts: [{ id: "attempt.1", priority: "medium", text: "tried the old endpoint, got a 404" }],
+        summary: "halfway there"
+      }
     }
   };
 
