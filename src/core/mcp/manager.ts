@@ -878,18 +878,41 @@ async function connectClient(params: {
   }
 }
 
-async function collectPaginated<T extends Record<string, unknown>, K extends keyof T & string>(
+// A misbehaving or malicious connected server can return a nextCursor
+// forever (or cycle through a repeating set of cursors), and refresh()
+// serializes all server enumeration, so an unbounded loop here would hang
+// every other server behind this one indefinitely.
+const MAX_PAGINATION_PAGES = 1000;
+
+export async function collectPaginated<T extends Record<string, unknown>, K extends keyof T & string>(
   request: (cursor?: string) => Promise<T>,
   key: K
 ): Promise<NonNullable<T[K]> extends Array<infer Item> ? Item[] : never> {
   const items: unknown[] = [];
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
+  let pageCount = 0;
 
   do {
     const page = await request(cursor);
     const pageItems = Array.isArray(page[key]) ? page[key] : [];
     items.push(...pageItems);
+    pageCount += 1;
     cursor = typeof page.nextCursor === "string" ? page.nextCursor : undefined;
+
+    if (cursor && seenCursors.has(cursor)) {
+      console.warn(`[AIA_MCP_PAGINATION_TRUNCATED] A connected MCP server repeated cursor "${cursor}"; stopping.`);
+      break;
+    }
+    if (cursor) {
+      seenCursors.add(cursor);
+    }
+    if (cursor && pageCount >= MAX_PAGINATION_PAGES) {
+      console.warn(
+        `[AIA_MCP_PAGINATION_TRUNCATED] A connected MCP server exceeded ${MAX_PAGINATION_PAGES} pages; stopping.`
+      );
+      break;
+    }
   } while (cursor);
 
   return items as NonNullable<T[K]> extends Array<infer Item> ? Item[] : never;
