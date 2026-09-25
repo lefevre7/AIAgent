@@ -26,7 +26,7 @@ import {
   type ChannelWebhookEndpoint,
   type StructuredError
 } from "@/core/contracts";
-import { writeJsonAtomic } from "@/core/io/files";
+import { appendJsonlWithRotation, writeJsonAtomic } from "@/core/io/files";
 import type { FileSessionStore } from "@/core/sessions";
 import type { TunnelService } from "@/core/tunnel";
 
@@ -407,37 +407,10 @@ export class ChannelService {
    * pruned it. One retained generation bounds it without losing recent history.
    */
   private async appendDelivery(record: ChannelDeliveryRecord): Promise<void> {
-    const filePath = this.deliveriesFile();
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    // Best-effort, exactly as the session store does it: failing to rotate
-    // must never cost us the delivery record.
-    await this.rotateDeliveryLog(filePath).catch((error: unknown) => {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.warn(`AIA_DELIVERY_LOG_ROTATE_FAILED: could not rotate ${filePath} (${reason}); it will keep growing.`);
+    await appendJsonlWithRotation(this.deliveriesFile(), channelDeliveryRecordSchema.parse(record), {
+      maxBytes: MAX_DELIVERY_LOG_BYTES,
+      warningCode: "AIA_DELIVERY_LOG_ROTATE_FAILED"
     });
-
-    await fs.appendFile(filePath, `${JSON.stringify(channelDeliveryRecordSchema.parse(record))}\n`, "utf8");
-  }
-
-  /** Moves the delivery ledger aside once it crosses the size limit. */
-  private async rotateDeliveryLog(filePath: string): Promise<void> {
-    let size = 0;
-    try {
-      size = (await fs.stat(filePath)).size;
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
-        return;
-      }
-      throw error;
-    }
-
-    if (size < MAX_DELIVERY_LOG_BYTES) {
-      return;
-    }
-
-    // `rename` is atomic within a filesystem, so a concurrent reader sees
-    // either the rotated file or the fresh one, never a partial state.
-    await fs.rename(filePath, `${filePath}.1`);
   }
 
   private async bindRouteToSession(route: ChannelRoute): Promise<void> {

@@ -32,7 +32,7 @@ import {
   type VoicePlaybackRecord,
   type VoiceTranscriptionRecord
 } from "@/core/contracts";
-import { writeJsonAtomic } from "@/core/io/files";
+import { appendJsonlWithRotation, writeJsonAtomic } from "@/core/io/files";
 
 // Size at which the global event ledger rotates. Chosen to keep a long history
 // of ordinary events (they are a few hundred bytes each) while bounding a
@@ -322,41 +322,10 @@ export class FileSessionStore {
    * its history.
    */
   private async appendGlobalEvent(event: SessionEventEnvelope): Promise<void> {
-    const filePath = this.globalEventsFile();
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    // Rotation is best-effort: failing to rotate must never cost us the event,
-    // so a rotation error is reported and the append proceeds regardless.
-    await this.rotateGlobalEventLog(filePath).catch((error: unknown) => {
-      const reason = error instanceof Error ? error.message : String(error);
-      console.warn(`AIA_EVENT_LOG_ROTATE_FAILED: could not rotate ${filePath} (${reason}); it will keep growing.`);
+    await appendJsonlWithRotation(this.globalEventsFile(), event, {
+      maxBytes: MAX_GLOBAL_EVENT_LOG_BYTES,
+      warningCode: "AIA_EVENT_LOG_ROTATE_FAILED"
     });
-
-    await fs.appendFile(filePath, `${JSON.stringify(event)}\n`, "utf8");
-  }
-
-  /** Moves the ledger aside once it crosses the size limit. One generation. */
-  private async rotateGlobalEventLog(filePath: string): Promise<void> {
-    const size = await this.fileSize(filePath);
-    if (size < MAX_GLOBAL_EVENT_LOG_BYTES) {
-      return;
-    }
-
-    // `rename` is atomic within a filesystem, so a reader holding the path
-    // sees either the rotated file or the fresh one, never a partial state.
-    await fs.rename(filePath, `${filePath}.1`);
-  }
-
-  /** Size in bytes, or 0 when the file does not exist yet. */
-  private async fileSize(filePath: string): Promise<number> {
-    try {
-      return (await fs.stat(filePath)).size;
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
-        return 0;
-      }
-
-      throw error;
-    }
   }
 
   private createEventId(
