@@ -149,6 +149,11 @@ stream, `--prompt` returns it as `Assistant: …`, the web transcript renders it
 and `chat-session-memory` records it. The tag is what lets a surface tell the final
 answer apart from narration the operator already watched stream by.
 
+The interactive CLI only prints a summary that one of the current turn's runs wrote (the
+run records' `messageIds`, including runs resumed after approvals). The session snapshot
+holds every turn, so a session-wide lookup re-printed turn 1's answer under a later turn
+that produced none, and hid the `Turn ended: …` notice for it.
+
 `buildSessionSummary` records it on its own `Final answer:` line rather than letting it
 fall out of the same "latest assistant text" scan — otherwise a model that both narrates
 and completes would have its narration silently replaced by its sign-off.

@@ -692,15 +692,20 @@ async function runChatTurn(
       streams.stdout.write("\n");
     }
 
-    finalRun = (await resolvePendingApprovals(handle, streams, reader, approvalState)) ?? finalRun;
+    const resumedRuns = await resolvePendingApprovals(handle, streams, reader, approvalState);
+    // Test fakes can hand back no record at all; the real gateway always does.
+    const turnMessageIds = new Set([finalRun, ...resumedRuns].flatMap((entry) => entry?.messageIds ?? []));
+    finalRun = resumedRuns.at(-1) ?? finalRun;
 
     const snapshot = (await handle.snapshot()).snapshot;
 
     // The final answer arrives as the `attempt_complete` summary, which the
     // loop persists as a tagged assistant message. It never streams (it is a
     // tool argument, not generated text), so without this the operator sees
-    // reasoning and status lines and no answer at all.
-    const completionSummary = extractCompletionSummary(snapshot);
+    // reasoning and status lines and no answer at all. Only a summary this
+    // turn's runs wrote counts: the snapshot holds the whole session, and an
+    // earlier turn's answer must never be re-printed as this one's.
+    const completionSummary = extractCompletionSummary(snapshot, turnMessageIds);
     if (completionSummary) {
       writeLine(streams.stdout, completionSummary);
     }
@@ -737,20 +742,20 @@ async function runChatTurn(
 // steering so the agent hears "no, but do this instead" on the resumed turn.
 // `question`-kind approvals (ask_user_question) are answered directly: the
 // typed reply (or the chosen option's label) is the resolution comment the
-// tool returns to the model.
+// tool returns to the model. Returns every run it resumed, in order.
 async function resolvePendingApprovals(
   handle: AIAgentSessionHandle,
   streams: CliStreams,
   reader: CliLineReader,
   state: CliApprovalState
-): Promise<GatewayRunRecord | null> {
+): Promise<GatewayRunRecord[]> {
   const ask = createOperatorPrompt(streams, reader);
-  let lastRun: GatewayRunRecord | null = null;
+  const resumedRuns: GatewayRunRecord[] = [];
 
   for (let round = 0; round < 50; round += 1) {
     const pending = await handle.listPendingApprovals();
     if (pending.length === 0) {
-      return lastRun;
+      return resumedRuns;
     }
 
     for (const approval of pending) {
@@ -822,14 +827,17 @@ async function resolvePendingApprovals(
     }
 
     const resumeRun = await handle.resume();
-    lastRun = await resumeRun.wait();
+    const resumed = await resumeRun.wait();
+    if (resumed) {
+      resumedRuns.push(resumed);
+    }
   }
 
   writeLine(
     streams.stderr,
     "Stopped after 50 rounds of approvals without the session settling. Run the prompt again, or resolve the remaining approvals from another surface."
   );
-  return lastRun;
+  return resumedRuns;
 }
 
 /**
@@ -1676,13 +1684,13 @@ function writeLine(stream: CliStream, value: string): void {
  * message" keeps this from re-printing streamed narration that the operator
  * already watched arrive.
  */
-function extractCompletionSummary(snapshot: SessionSnapshot): string | null {
+function extractCompletionSummary(snapshot: SessionSnapshot, turnMessageIds: ReadonlySet<string>): string | null {
   const summaryMessage = snapshot.messages
     .slice()
     .reverse()
     // `tags` is schema-defaulted, but snapshots reach the CLI from fakes and
     // older persisted records too; an absent array must not throw here.
-    .find((message) => (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG));
+    .find((message) => turnMessageIds.has(message.id) && (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG));
 
   if (!summaryMessage) {
     return null;

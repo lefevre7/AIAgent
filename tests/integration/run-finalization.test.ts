@@ -267,4 +267,61 @@ describe("gateway run finalization", () => {
       }
     });
   });
+
+  // The CLI reads the answer out of the session snapshot, which holds every
+  // turn. Looked up session-wide, turn 1's answer came back as turn 2's, and
+  // its presence also hid the notice saying turn 2 never produced one.
+  describe("the interactive CLI only prints the answer the current turn produced", () => {
+    const answerTurn = (summary: string) => (request: never) =>
+      buildScriptedResponse({
+        request,
+        text: "Answering.",
+        toolCalls: [buildToolCall("attempt_complete", { summary })]
+      });
+
+    async function runTwoTurns(secondTurn: Array<(request: never) => unknown>) {
+      const adapter = new ScriptedLanguageModelAdapter({
+        modelId: "run-finalization-model",
+        providerId: "example_lm",
+        responses: [answerTurn("FIRST ANSWER: 391"), ...secondTurn] as never
+      });
+      const capture = createCaptureStreams();
+
+      await withExampleSdk({
+        name: "run-finalization-two-turns",
+        providers: {
+          languageModelAdapters: [{ adapter, defaultModel: "run-finalization-model", enabled: true }]
+        },
+        run: async ({ sdk, workspaceRoot }) => {
+          const exitCode = await runCli(["--cwd", workspaceRoot], capture.streams as never, {
+            createSdk: async () => sdk,
+            interactiveInput: lineSource(["What is 17 * 23?", "Now tell me a joke.", "/exit"]),
+            serveAttachEndpoint: async () => null
+          });
+          expect(exitCode).toBe(0);
+        }
+      });
+
+      return {
+        answerPrintCount: capture.getStdout().split("FIRST ANSWER: 391").length - 1,
+        stderr: capture.getStderr()
+      };
+    }
+
+    test("when the later turn is blocked by the no-progress guard", async () => {
+      const result = await runTwoTurns(
+        Array.from({ length: 6 }, () => (request: never) => buildScriptedResponse({ request, text: "Hmm." }))
+      );
+
+      expect(result.answerPrintCount).toBe(1);
+      expect(result.stderr).toContain("Turn ended: the agent stopped without completing the task");
+    });
+
+    test("when the later turn completes with a blank summary", async () => {
+      const result = await runTwoTurns([answerTurn("   ")]);
+
+      expect(result.answerPrintCount).toBe(1);
+      expect(result.stderr).toContain("Turn ended: the run finished");
+    });
+  });
 });

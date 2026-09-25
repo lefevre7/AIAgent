@@ -104,6 +104,8 @@ function createBufferedTestReader(initial: string[] = []): CliLineReader & {
   };
 }
 
+const FAKE_COMPLETION_SUMMARY_MESSAGE_ID = "message.test.completion-summary";
+
 function buildSnapshot(text: string, lastError?: string, completionSummary?: string): GatewaySessionSnapshot {
   return {
     snapshot: {
@@ -117,6 +119,7 @@ function buildSnapshot(text: string, lastError?: string, completionSummary?: str
         ...(completionSummary
           ? [
               {
+                id: FAKE_COMPLETION_SUMMARY_MESSAGE_ID,
                 parts: [{ kind: "text", text: completionSummary }],
                 role: "assistant",
                 tags: [COMPLETION_SUMMARY_MESSAGE_TAG]
@@ -236,7 +239,11 @@ function createFakeSdk(
       }
       return {
         async wait() {
-          return options.completionReason ? { completionReason: options.completionReason } : undefined;
+          // Like the real gateway, the run record lists the messages the run wrote.
+          return {
+            ...(options.completionReason ? { completionReason: options.completionReason } : {}),
+            messageIds: options.completionSummary ? [FAKE_COMPLETION_SUMMARY_MESSAGE_ID] : []
+          };
         }
       };
     },
