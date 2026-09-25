@@ -9,6 +9,9 @@ combine across layers), while arrays and scalars are replaced wholesale.
 1. Built-in defaults — `createDefaultAppConfig()` in `src/core/config/schema.ts`.
 2. User-global config — `~/.aia/config.jsonc`, then `~/.aia/aia.config.jsonc`.
 3. Workspace config — the nearest `aia.config.jsonc` found walking up from the cwd.
+   The directory holding it (or a lone `aia.approvals.jsonc`) is the workspace root; with
+   neither, the workspace root is the directory `aia` started in. Relative defaults such as
+   `./.aia` and `./memory` resolve against it, so `aia` started in `~` keeps its state in `~/.aia`.
 4. Environment overrides — `AIA_*` variables (see `src/core/config/env-overrides.ts`).
 
 Secret references (`{ "source": "env" | "file" | "exec", "id": "…" }`) are

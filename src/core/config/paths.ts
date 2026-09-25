@@ -41,9 +41,13 @@ export async function resolveConfigPaths(params: {
   const discoveredWorkspaceApprovals =
     explicitWorkspaceApprovals ?? (await findNearestFile(params.cwd, APPROVALS_CONFIG_FILE_NAME));
 
-  const workspaceRoot = path.dirname(
-    discoveredWorkspaceConfig ?? discoveredWorkspaceApprovals ?? path.resolve(params.cwd)
-  );
+  // The directory holding the discovered config (or approvals) file, or, with
+  // neither, the directory `aia` was started in. Taking `path.dirname` of the
+  // start directory itself named its parent, so a workspace without a config
+  // kept its state one level up: started from `~`, in the unwritable
+  // `/Users/.aia`.
+  const discoveredWorkspaceFile = discoveredWorkspaceConfig ?? discoveredWorkspaceApprovals;
+  const workspaceRoot = discoveredWorkspaceFile ? path.dirname(discoveredWorkspaceFile) : path.resolve(params.cwd);
 
   // An explicit AIA_USER_CONFIG_PATH fully replaces global discovery with that single file.
   // Otherwise we read every known global filename in `~/.aia` (base -> override) and write
