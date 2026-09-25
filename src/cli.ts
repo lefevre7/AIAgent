@@ -1009,10 +1009,14 @@ async function runAttachCli(args: string[], streams: CliStreams, deps: CliDepend
     // Prefer the listener published by a running interactive CLI: that is the
     // process actually hosting the PTY when the agent is driven from `aia`.
     // Fall back to the configured gateway, which is where a dev/prod server
-    // listens. An explicit --url always wins.
-    const published = await readAttachEndpoint(loaded.resolvedConfig.memory.stateRoot);
+    // listens. An explicit --url always wins, and a record published for that
+    // URL still supplies the listener's per-launch token.
+    const published = await readAttachEndpoint(
+      loaded.resolvedConfig.memory.stateRoot,
+      values.url ? { url: values.url } : {}
+    );
     const url = values.url ?? published?.url ?? `ws://${gateway.hostname}:${gateway.port}${gateway.websocketPath}`;
-    const token = typeof gateway.auth.token === "string" ? gateway.auth.token : undefined;
+    const token = published?.token ?? (typeof gateway.auth.token === "string" ? gateway.auth.token : undefined);
 
     writeLine(streams.stderr, `Attached to ${externalSessionId}. Press Ctrl-] to detach.`);
     const attach = deps.attachToExternalAgentSession ?? attachToExternalAgentSession;

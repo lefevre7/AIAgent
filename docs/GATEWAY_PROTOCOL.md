@@ -38,9 +38,10 @@ If a subscribe payload includes a cursor, the gateway replays matching persisted
 
 The dev/prod server (`src/server/start.ts`) attaches this WebSocket to its HTTP server on the configured
 host and port. The **interactive CLI also serves it**, on loopback with an ephemeral port, and publishes
-the URL to `.aia/attach-endpoint.json` — that is what lets `aia attach` join an external-agent terminal
-hosted by a bare `aia` REPL rather than only by a running server. `aia attach` prefers the published
-endpoint, falls back to the configured host/port, and honours an explicit `--url` above both. See
+the URL (and, when no `gateway.auth.token` is configured, a per-launch token) in an owner-readable record
+under `.aia/attach-endpoints/` — that is what lets `aia attach` join an external-agent terminal hosted by
+a bare `aia` REPL rather than only by a running server. `aia attach` prefers the published endpoint, falls
+back to the configured host/port, and honours an explicit `--url` above both. See
 `docs/EXTERNAL_AGENTS.md`.
 
 ### HTTP

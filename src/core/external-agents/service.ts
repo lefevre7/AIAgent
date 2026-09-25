@@ -34,6 +34,7 @@ import {
 } from "@/core/contracts";
 import { buildExternalAgentEnvironment } from "@/core/external-agents/environment";
 import { writeJsonAtomic, sleep } from "@/core/io/files";
+import { checkProcessLiveness } from "@/core/process/liveness";
 import type { FileSessionStore } from "@/core/sessions";
 import { stringifyArgv, type ApprovalEvaluationTarget } from "@/core/approvals/policy";
 import type { ToolApprovalDeciderParams } from "@/core/tools/runtime";
@@ -1760,15 +1761,8 @@ function externalAgentError(
 }
 
 async function isProcessAlive(pid: number): Promise<boolean> {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (isNodeError(error) && error.code === "EPERM") {
-      return true;
-    }
-    return false;
-  }
+  // A job may have changed credentials, so another user's pid still counts.
+  return checkProcessLiveness(pid) !== "dead";
 }
 
 function killProcess(mode: ExternalAgentExecutionMode, pid: number, signal: NodeJS.Signals): void {

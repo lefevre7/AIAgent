@@ -83,16 +83,22 @@ the only places that attached the gateway WebSocket — a window opened from a b
 `ECONNREFUSED` before showing anything.
 
 The interactive CLI therefore serves the gateway itself, on **loopback with an ephemeral port**, and
-publishes the URL to `.aia/attach-endpoint.json`. `aia attach` prefers that published endpoint, falls back
-to the configured `gateway` host/port, and an explicit `--url` always wins.
+publishes the URL in a record under `.aia/attach-endpoints/<pid>.json`. `aia attach` prefers the newest
+published endpoint, falls back to the configured `gateway` host/port, and an explicit `--url` always wins
+(a record published for that URL still supplies its token).
 
 - The ephemeral port means a running dev server on 3000 never blocks it.
-- The record carries the CLI's pid; a record whose process is gone is ignored, so a crashed CLI cannot
-  send a window to a dead listener.
-- The listener is removed on exit.
-- It is **loopback-only**, and — exactly like the dev server — unauthenticated unless `gateway.auth.token`
-  is set. Any process on the machine can reach it. That is the same trust boundary the dev server has
-  always had, but it now exists whenever you run `aia` interactively.
+- One record per CLI process, so two REPLs in the same workspace never replace or delete each other's.
+- A record is only trusted when it names a live process of yours and a loopback `ws://` URL. The state
+  root usually sits inside the workspace, which a cloned repository controls, and `aia attach` sends its
+  token to the URL it finds — so a record naming someone else's process (EPERM: the pid was reused) or
+  any other host is ignored.
+- The listener, and its record, are removed on exit. `/exit` tells an attached window the gateway is
+  going away (close code 1001) rather than waiting for it, and the window's `aia attach` then exits.
+- It is **loopback-only and always authenticated**. With `gateway.auth.token` set it uses that token;
+  otherwise it mints a random token for this launch and publishes it only in the owner-readable (0600)
+  record. Without that, any local process — or a web page, since browsers do not apply CORS to
+  WebSocket handshakes — could drive the whole gateway through it whenever `aia` ran.
 - If the listener cannot start, the REPL runs normally; only the shared window is unavailable.
 
 ### Auto-attach

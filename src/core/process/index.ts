@@ -12,3 +12,4 @@ export {
   type TerminalTurnWatcherOptions
 } from "@/core/process/turn-watcher";
 export { openTerminalWindow, type TerminalWindowLauncher } from "@/core/process/terminal-window";
+export { checkProcessLiveness, type ProcessLiveness } from "@/core/process/liveness";

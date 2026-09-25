@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createServer, type Server } from "node:http";
@@ -5,6 +6,7 @@ import { createServer, type Server } from "node:http";
 import { z } from "zod";
 
 import { writeJsonAtomic } from "@/core/io/files";
+import { checkProcessLiveness } from "@/core/process/liveness";
 import { attachGatewayWebSocketServer } from "@/gateway/websocket";
 import type { GatewayRuntimeLike } from "@/gateway/runtime";
 
@@ -24,12 +26,14 @@ import type { GatewayRuntimeLike } from "@/gateway/runtime";
  * agent's do, and the window keeps working over a tunnel.
  */
 
-const ATTACH_ENDPOINT_FILE_NAME = "attach-endpoint.json";
+const ATTACH_ENDPOINTS_DIRECTORY_NAME = "attach-endpoints";
 
 const attachEndpointSchema = z
   .object({
     createdAt: z.string().min(1),
     pid: z.number().int().positive(),
+    /** The per-launch token, present only when no gateway token is configured. */
+    token: z.string().min(1).optional(),
     url: z.string().min(1)
   })
   .strict();
@@ -41,8 +45,16 @@ export type ServedAttachEndpoint = {
   url: string;
 };
 
-export function attachEndpointFilePath(stateRoot: string): string {
-  return path.join(stateRoot, ATTACH_ENDPOINT_FILE_NAME);
+export function attachEndpointsDirectory(stateRoot: string): string {
+  return path.join(stateRoot, ATTACH_ENDPOINTS_DIRECTORY_NAME);
+}
+
+/**
+ * One record per serving process, so two REPLs in the same workspace never
+ * overwrite each other's endpoint (and token), or delete it on exit.
+ */
+export function attachEndpointFilePath(stateRoot: string, pid: number = process.pid): string {
+  return path.join(attachEndpointsDirectory(stateRoot), `${pid}.json`);
 }
 
 /**
@@ -52,6 +64,12 @@ export function attachEndpointFilePath(stateRoot: string): string {
  * already hold that port, and a failure to start the listener must never stop
  * the CLI from running. The chosen URL is written to the state root so
  * `aia attach` — a separate process — can find it.
+ *
+ * With no configured gateway token the listener used to be unauthenticated, so
+ * any local process could drive the whole gateway through it — and so could a
+ * web page, because browsers do not apply CORS to WebSocket handshakes. It now
+ * requires a token minted for this launch, published only in the
+ * owner-readable (0600) record that `aia attach` reads.
  */
 export async function serveAttachEndpoint(params: {
   requestTimeoutMs?: number;
@@ -60,6 +78,11 @@ export async function serveAttachEndpoint(params: {
   token?: string;
   websocketPath: string;
 }): Promise<ServedAttachEndpoint | null> {
+  const token = params.token ?? crypto.randomBytes(32).toString("base64url");
+  // A configured token already reaches `aia attach` through config; only a
+  // minted one needs publishing, and copying a configured secret into the
+  // workspace would spread it.
+  const publishToken = params.token === undefined;
   let server: Server | undefined;
   try {
     server = createServer((_request, response) => {
@@ -70,7 +93,7 @@ export async function serveAttachEndpoint(params: {
     });
 
     const socket = attachGatewayWebSocketServer({
-      ...(params.token ? { auth: { token: params.token } } : {}),
+      auth: { token },
       ...(params.requestTimeoutMs ? { requestTimeoutMs: params.requestTimeoutMs } : {}),
       runtime: params.runtime,
       server,
@@ -80,9 +103,7 @@ export async function serveAttachEndpoint(params: {
     const listening = server;
     await new Promise<void>((resolve, reject) => {
       listening.once("error", reject);
-      // Loopback only. This surface is unauthenticated when no token is
-      // configured, exactly like the dev server's, so it must not be reachable
-      // off this machine.
+      // Loopback only: this surface must not be reachable off this machine.
       listening.listen(0, "127.0.0.1", resolve);
     });
 
@@ -93,14 +114,15 @@ export async function serveAttachEndpoint(params: {
 
     const url = `ws://127.0.0.1:${address.port}${params.websocketPath}`;
     const filePath = attachEndpointFilePath(params.stateRoot);
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
     await writeJsonAtomic(
       filePath,
       attachEndpointSchema.parse({
         createdAt: new Date().toISOString(),
         pid: process.pid,
+        ...(publishToken ? { token } : {}),
         url
-      })
+      }),
+      { mode: 0o600 }
     );
 
     return {
@@ -111,12 +133,7 @@ export async function serveAttachEndpoint(params: {
             resolve();
           });
         });
-        // Only remove the file if it still describes this process; another CLI
-        // may have started meanwhile and published its own.
-        const current = await readAttachEndpoint(params.stateRoot);
-        if (current?.pid === process.pid) {
-          await fs.rm(filePath, { force: true });
-        }
+        await fs.rm(filePath, { force: true });
       },
       url
     };
@@ -127,29 +144,56 @@ export async function serveAttachEndpoint(params: {
 }
 
 /**
- * Reads the endpoint published by a running CLI, or null when there is none.
+ * Reads an endpoint published by a running CLI, or null when there is none.
  *
- * A record naming a process that is no longer alive is treated as absent: a
- * crashed CLI leaves its file behind, and attaching to a dead listener would
- * fail with a confusing connection error instead of a clear one.
+ * Every record is untrusted input: the state root usually sits inside the
+ * workspace, which a cloned repository controls, and `aia attach` sends the
+ * gateway token to the URL it finds. A record is only honoured when it names a
+ * live process of this user — EPERM means the pid now belongs to someone else,
+ * so the CLI that wrote it is gone — and a loopback `ws://` URL.
+ *
+ * With `url`, returns the record for that exact listener (so its token can be
+ * used); otherwise the most recently published one.
  */
-export async function readAttachEndpoint(stateRoot: string): Promise<AttachEndpointRecord | null> {
+export async function readAttachEndpoint(
+  stateRoot: string,
+  options: { url?: string } = {}
+): Promise<AttachEndpointRecord | null> {
+  const directory = attachEndpointsDirectory(stateRoot);
+  let names: string[];
   try {
-    const raw = await fs.readFile(attachEndpointFilePath(stateRoot), "utf8");
-    const record = attachEndpointSchema.parse(JSON.parse(raw) as unknown);
-    return isProcessAlive(record.pid) ? record : null;
+    names = await fs.readdir(directory);
+  } catch {
+    return null;
+  }
+
+  const records: AttachEndpointRecord[] = [];
+  for (const name of names.filter((entry) => entry.endsWith(".json"))) {
+    const record = await readAttachEndpointRecord(path.join(directory, name));
+    if (record && checkProcessLiveness(record.pid) === "alive" && isLoopbackWebSocketUrl(record.url)) {
+      records.push(record);
+    }
+  }
+
+  if (options.url !== undefined) {
+    return records.find((record) => record.url === options.url) ?? null;
+  }
+  return records.sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null;
+}
+
+async function readAttachEndpointRecord(filePath: string): Promise<AttachEndpointRecord | null> {
+  try {
+    return attachEndpointSchema.parse(JSON.parse(await fs.readFile(filePath, "utf8")) as unknown);
   } catch {
     return null;
   }
 }
 
-function isProcessAlive(pid: number): boolean {
+function isLoopbackWebSocketUrl(value: string): boolean {
   try {
-    // Signal 0 performs the permission/existence check without delivering it.
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means it exists but belongs to another user, which still counts.
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    const url = new URL(value);
+    return url.protocol === "ws:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+  } catch {
+    return false;
   }
 }

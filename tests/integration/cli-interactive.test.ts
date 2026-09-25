@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { runCli, type CliLineReader } from "@/cli";
+import { attachEndpointFilePath, attachEndpointsDirectory } from "@/gateway/attach-endpoint";
 import type { AIAgentSdk } from "@/sdk";
 import { COMPLETION_SUMMARY_MESSAGE_TAG } from "@/core/contracts";
 import type { ArtifactReference, GatewaySessionSnapshot, SessionRecord, VoiceService } from "@/core/contracts";
@@ -39,10 +40,10 @@ function createCaptureStreams(): { streams: CaptureStreams; getStderr: () => str
 }
 
 /**
- * Every REPL run would otherwise bind a real loopback port and write
- * `.aia/attach-endpoint.json` into the repo, so 28 tests would race on one
- * file and open 28 sockets. The listener has its own coverage in
- * `attach-endpoint.test.ts`; here it is stubbed out.
+ * Every REPL run would otherwise bind a real loopback port and publish a
+ * record under `.aia/attach-endpoints/` in the repo, opening a socket per
+ * test. The listener has its own coverage in `attach-endpoint.test.ts`; here
+ * it is stubbed out.
  */
 async function runCliWithStubbedEndpoint(
   argv: string[],
@@ -1338,19 +1339,37 @@ describe("CLI inspection commands and attach", () => {
     expect(capture.getStderr()).toContain("gateway unreachable");
   });
 
+  const attachRoots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(attachRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
+  });
+
+  // A workspace of its own, so attach never reads this repo's real `.aia/`.
+  async function attachWorkspace(): Promise<{ stateRoot: string; workspace: string }> {
+    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aia-cli-attach-")));
+    attachRoots.push(workspace);
+    await fs.writeFile(path.join(workspace, "aia.config.jsonc"), '{ "configVersion": 1 }\n', "utf8");
+    return { stateRoot: path.join(workspace, ".aia"), workspace };
+  }
+
   test("aia attach requires a session id and otherwise relays through the gateway", async () => {
     const missing = createCaptureStreams();
     expect(await runCliWithStubbedEndpoint(["attach"], missing.streams, {})).toBe(1);
     expect(missing.getStderr()).toContain("Usage: aia attach");
 
+    const { workspace } = await attachWorkspace();
     const calls: Array<{ externalSessionId: string; url: string }> = [];
     const capture = createCaptureStreams();
-    const exitCode = await runCliWithStubbedEndpoint(["attach", "external-agent-session.abc"], capture.streams, {
-      attachToExternalAgentSession: async (options) => {
-        calls.push({ externalSessionId: options.externalSessionId, url: options.url });
-        return 0;
+    const exitCode = await runCliWithStubbedEndpoint(
+      ["attach", "external-agent-session.abc", "--cwd", workspace],
+      capture.streams,
+      {
+        attachToExternalAgentSession: async (options) => {
+          calls.push({ externalSessionId: options.externalSessionId, url: options.url });
+          return 0;
+        }
       }
-    });
+    );
 
     expect(exitCode).toBe(0);
     expect(calls).toHaveLength(1);
@@ -1378,6 +1397,40 @@ describe("CLI inspection commands and attach", () => {
 
     expect(exitCode).toBe(0);
     expect(calls).toEqual(["ws://tunnel.example.com/api/gateway/ws"]);
+  });
+
+  // A REPL with no configured gateway token guards its listener with a token
+  // minted for that launch and published beside the URL.
+  test("aia attach presents the per-launch token the hosting CLI published", async () => {
+    const { stateRoot, workspace } = await attachWorkspace();
+    const url = "ws://127.0.0.1:1/api/gateway/ws";
+    await fs.mkdir(attachEndpointsDirectory(stateRoot), { recursive: true });
+    await fs.writeFile(
+      attachEndpointFilePath(stateRoot),
+      JSON.stringify({ createdAt: "2026-03-31T12:00:00.000Z", pid: process.pid, token: "launch-token", url }),
+      "utf8"
+    );
+
+    const calls: Array<{ token?: string; url: string }> = [];
+    const attach = async (argv: string[]) =>
+      runCliWithStubbedEndpoint(
+        ["attach", "external-agent-session.abc", "--cwd", workspace, ...argv],
+        createCaptureStreams().streams,
+        {
+          attachToExternalAgentSession: async (options) => {
+            calls.push({ token: options.token, url: options.url });
+            return 0;
+          }
+        }
+      );
+
+    expect(await attach([])).toBe(0);
+    // An explicit --url naming that listener still gets its token.
+    expect(await attach(["--url", url])).toBe(0);
+    expect(calls).toEqual([
+      { token: "launch-token", url },
+      { token: "launch-token", url }
+    ]);
   });
 
   test("aia attach reports a relay failure rather than throwing", async () => {
