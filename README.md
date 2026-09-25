@@ -51,7 +51,7 @@ Interactive commands: `/help`, `/compact` (summarize the transcript so far into 
 
 > If you use the linked `aia` command, it runs the built `dist/cli.js`. Rebuild after changing source (`npm run build:node`); `npm install`/`npm link` rebuild it automatically via the `prepare` script.
 
-Use `aia info` to print the runtime surfaces and providers without starting a session.
+Use `aia info` to print the version, the config files in effect, the chat model and provider, and whether the workspace config is trusted, without starting a session. It never resolves secrets, so it runs no secret provider, even in an untrusted checkout.
 
 The interactive session needs a reachable chat model (the configured default provider, e.g. LM Studio or Ollama). If it isn't running, `aia` prints a clear message and exits rather than opening a session that fails on every turn. If only the embedding provider is down, memory degrades to lexical search (with a warning) and the session still opens.
 

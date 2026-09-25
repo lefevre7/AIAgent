@@ -117,12 +117,13 @@ test("runs when invoked through a symlinked bin (linked `aia`)", async () => {
   await fs.symlink(path.resolve("src/cli.ts"), symlinkPath);
 
   try {
+    // `info` reads config now, so point HOME away from the developer's own ~/.aia.
     const result = await runCommand(process.execPath, ["--import", "tsx", symlinkPath, "info"], {
-      ...process.env
+      ...process.env,
+      HOME: binDir
     });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("Surfaces:");
-    expect(result.stdout).toContain("bootstrap is in place");
+    expect(result.stdout).toContain("Chat model:");
   } finally {
     await fs.rm(binDir, { force: true, recursive: true });
   }

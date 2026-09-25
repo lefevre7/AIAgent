@@ -394,22 +394,64 @@ describe("interactive CLI loop", () => {
     expect(capture.getStderr()).toContain("Failed to start AIAgent: runtime boot exploded");
   });
 
-  test("`aia info` prints runtime surfaces/providers without starting a session", async () => {
-    const capture = createCaptureStreams();
-    let sdkCreated = false;
+  // `aia info` used to print a hardcoded placeholder ("bootstrap is in
+  // place", fixed surface and provider lists) whatever the config said.
+  test("`aia info` describes the config in effect without starting a session or running a secret", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-cli-info-"));
+    try {
+      const home = path.join(root, "home");
+      const workspace = path.join(root, "workspace");
+      const marker = path.join(root, "secret-provider-ran");
+      await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+      await fs.mkdir(workspace, { recursive: true });
+      await fs.writeFile(
+        path.join(home, ".aia", "config.jsonc"),
+        JSON.stringify({
+          configVersion: 1,
+          gateway: { auth: { token: { id: "value", provider: "marker", source: "exec" } } },
+          secrets: {
+            providers: {
+              marker: { args: ["-c", `echo ran > '${marker}'; echo token`], command: "/bin/sh", source: "exec" }
+            }
+          }
+        }),
+        "utf8"
+      );
+      await fs.writeFile(
+        path.join(workspace, "aia.config.jsonc"),
+        JSON.stringify({
+          configVersion: 1,
+          providers: { lmStudio: { model: "workspace-chosen-model" } },
+          runtime: { defaultModel: "runtime-default-model" }
+        }),
+        "utf8"
+      );
+      const capture = createCaptureStreams();
+      let sdkCreated = false;
 
-    const exitCode = await runCliWithStubbedEndpoint(["info"], capture.streams, {
-      createSdk: async () => {
-        sdkCreated = true;
-        throw new Error("info must not create a session");
-      }
-    });
+      const exitCode = await runCliWithStubbedEndpoint(["info", "--cwd", workspace], capture.streams, {
+        createSdk: async () => {
+          sdkCreated = true;
+          throw new Error("info must not create a session");
+        },
+        userHomeDirectory: home
+      });
 
-    expect(exitCode).toBe(0);
-    expect(sdkCreated).toBe(false);
-    expect(capture.getStdout()).toContain("Surfaces:");
-    expect(capture.getStdout()).toContain("Providers:");
-    expect(capture.getStdout()).toContain("bootstrap is in place");
+      expect(exitCode).toBe(0);
+      expect(sdkCreated).toBe(false);
+      const stdout = capture.getStdout();
+      expect(stdout).toMatch(/^aia \d+\.\d+\.\d+/u);
+      expect(stdout).toContain(`Workspace config:   ${path.join(workspace, "aia.config.jsonc")}`);
+      expect(stdout).toContain(`User-global config: ${path.join(home, ".aia", "config.jsonc")}`);
+      // The provider's own model is what a turn asks for, not runtime.defaultModel.
+      expect(stdout).toContain("Chat model:         workspace-chosen-model (lm_studio at ");
+      expect(stdout).toContain("Config trust:       not needed");
+      expect(stdout).not.toContain("bootstrap is in place");
+      // Describing the config must not run a secret provider to do it.
+      await expect(fs.access(marker)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { force: true, recursive: true });
+    }
   });
 
   test("shows a thinking indicator and streams the response", async () => {

@@ -8,7 +8,6 @@ import { parseArgs } from "node:util";
 import {
   FileSessionStore,
   buildVoiceAudioArtifact,
-  createBootstrapInfo,
   createVoiceServiceFromConfig,
   loadAIAgentConfig,
   grantConfigTrust,
@@ -18,6 +17,7 @@ import {
   CLI_NAME,
   COMPLETION_SUMMARY_MESSAGE_TAG,
   DEFAULT_LM_STUDIO_MODEL,
+  type AppConfig,
   type ArtifactReference,
   type LoadedAIAgentConfig,
   type SecretProviderConfig,
@@ -120,7 +120,8 @@ function formatHelp(): string {
     "",
     "Available commands:",
     "  aia                  Start an interactive session (stays open until /exit or /quit)",
-    "  aia info             Print runtime surfaces and providers",
+    "  aia info [--cwd <path>]",
+    "                       Print the version, the config files in effect, and the chat model",
     "  aia attach <id>      Join a live interactive external-agent terminal (Ctrl-] to detach)",
     "  aia trust [--grant | --revoke] [--cwd <path>]",
     "                       Show, grant, or revoke trust for this workspace's config file",
@@ -163,8 +164,7 @@ export async function runCli(
   }
 
   if (argv[0] === "info") {
-    writeLine(streams.stdout, formatBootstrapInfo());
-    return 0;
+    return runInfoCli(argv.slice(1), streams, deps);
   }
 
   if (argv[0] === "attach") {
@@ -253,13 +253,86 @@ function readCliVersion(): string {
   return typeof manifest.version === "string" ? manifest.version : "unknown";
 }
 
-function formatBootstrapInfo(): string {
-  const info = createBootstrapInfo();
+/**
+ * Describes the configuration `aia` would run with here, without starting it.
+ *
+ * Secrets are left unresolved: describing the config must never run a secret
+ * provider (a password-manager CLI, say) just to print a path.
+ */
+async function runInfoCli(args: string[], streams: CliStreams, deps: CliDependencies): Promise<number> {
+  let parsed: { values: { cwd?: string; help?: boolean } };
+  try {
+    parsed = parseArgs({
+      args,
+      allowPositionals: false,
+      options: {
+        cwd: { type: "string" },
+        help: { short: "h", type: "boolean" }
+      }
+    });
+  } catch (error) {
+    writeLine(streams.stderr, renderCliError(error));
+    return 1;
+  }
+
+  if (parsed.values.help) {
+    writeLine(
+      streams.stdout,
+      "aia info [--cwd <path>] — print the version, the config files in effect, and the chat model, without starting a session."
+    );
+    return 0;
+  }
+
+  writeLine(streams.stdout, `${CLI_NAME} ${readCliVersion()}`);
+  try {
+    const loaded = await loadAIAgentConfig({
+      cwd: parsed.values.cwd ? path.resolve(parsed.values.cwd) : process.cwd(),
+      resolveSecrets: false,
+      userHomeDirectory: deps.userHomeDirectory
+    });
+    writeLine(streams.stdout, formatConfigInfo(loaded));
+    return 0;
+  } catch (error) {
+    writeLine(streams.stderr, `The config could not be loaded: ${renderCliError(error)}`);
+    return 1;
+  }
+}
+
+export function formatConfigInfo(loaded: LoadedAIAgentConfig): string {
+  const { config, sources, workspaceTrust } = loaded;
+  const approvals = [sources.approvals.global, sources.approvals.workspace].filter((file) => file !== null);
+  const gatewayHost = config.gateway.hostname.includes(":") ? `[${config.gateway.hostname}]` : config.gateway.hostname;
+  const trust = !workspaceTrust.required
+    ? "not needed (no exec/file secret providers in the workspace config)"
+    : workspaceTrust.trusted
+      ? "trusted"
+      : `not trusted, so ${workspaceTrust.untrustedProviderNames.join(", ")} will not run (see \`aia trust\`)`;
+
   return [
-    `${info.name} bootstrap is in place.`,
-    `Surfaces: ${info.surfaces.join(", ")}`,
-    `Providers: ${info.providers.join(", ")}`
+    `Workspace:          ${loaded.paths.workspaceRoot}`,
+    `Workspace config:   ${sources.config.workspace ?? `none (no ${APP_CONFIG_FILE_NAME} found from ${loaded.paths.workspaceRoot} upward)`}`,
+    `User-global config: ${sources.config.global.join(", ") || "none"}`,
+    `Approvals:          ${approvals.join(", ") || "built-in defaults"}`,
+    `Env overrides:      ${sources.config.env || sources.approvals.env ? "applied (AIA_* variables)" : "none"}`,
+    `Chat model:         ${describeDefaultChatModel(config)}`,
+    `State directory:    ${config.memory.stateRoot}`,
+    `Gateway:            ${gatewayHost}:${config.gateway.port}, WebSocket path ${config.gateway.websocketPath}`,
+    `Config trust:       ${trust}`
   ].join("\n");
+}
+
+/**
+ * The model a turn asks the default provider for when the session names none,
+ * and where that provider is. Mirrors LanguageModelRuntime.resolveRequest for
+ * the built-in adapters: the provider's own `model` wins over
+ * `runtime.defaultModel`.
+ */
+function describeDefaultChatModel(config: AppConfig): string {
+  const provider = config.runtime.defaultProvider;
+  const settings =
+    provider === "lm_studio" ? config.providers.lmStudio : provider === "ollama" ? config.providers.ollama : undefined;
+  const model = settings?.model ?? config.runtime.defaultModel;
+  return settings ? `${model} (${provider} at ${settings.baseUrl})` : `${model} (${provider})`;
 }
 
 async function runChatCli(
