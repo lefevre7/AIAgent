@@ -151,6 +151,31 @@ describe("attachGatewayWebSocketServer", () => {
     expect(fallback).toHaveBeenCalledOnce();
   });
 
+  // The listener resolved the request target against the client's Host header,
+  // so one malformed header threw out of it and took the process down before
+  // auth ran. The REPL's attach listener has no framework handler to catch it.
+  test.each(["localhost:99999", "a b", "[::1"])("survives an upgrade whose Host header is %s", (host) => {
+    const server = new EventEmitter();
+    const attached = attachGatewayWebSocketServer({
+      auth: { token: "secret" },
+      runtime: runtimeStub(),
+      server: server as unknown as http.Server,
+      websocketPath: "/api/gateway/ws"
+    });
+    cleanups.push(async () => attached.close());
+
+    const socket = fakeDuplex();
+    expect(() =>
+      server.emit(
+        "upgrade",
+        { headers: { host }, socket: { remoteAddress: "10.0.0.9" }, url: "/api/gateway/ws" },
+        socket,
+        Buffer.alloc(0)
+      )
+    ).not.toThrow();
+    expect(socket.write).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"));
+  });
+
   // ws reports the server closed only once every client has left, and nothing
   // ended them: an attached `aia attach` window held the REPL's /exit open.
   describe("close()", () => {

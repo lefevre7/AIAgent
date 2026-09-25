@@ -139,6 +139,14 @@ describe("gateway auth", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("reads an upgrade's query token whatever the Host header says", () => {
+    const result = authorizeGatewayUpgradeRequest(
+      upgradeRequest({ headers: { host: "localhost:99999" }, remoteAddress: "10.0.0.9", url: "/ws?token=secret" }),
+      { token: "secret" }
+    );
+    expect(result.ok).toBe(true);
+  });
+
   // A proxy or tunnel on this machine (cloudflared, ngrok, tailscale funnel,
   // nginx) connects over loopback. Dropping X-Forwarded-For entirely for H2
   // made every remote client it relays look local to an untokened gateway.

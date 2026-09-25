@@ -37,7 +37,7 @@ export function authorizeGatewayUpgradeRequest(
   request: IncomingMessage,
   options: GatewayAuthOptions = {}
 ): GatewayAuthorizationResult {
-  const url = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`) : null;
+  const url = parseUpgradeTarget(request.url);
   return authorizeGatewayAccess({
     configuredToken: options.token,
     forwarded: hasForwardingHeaders(request.headers),
@@ -48,6 +48,23 @@ export function authorizeGatewayUpgradeRequest(
       url?.searchParams.get("token") ??
       undefined
   });
+}
+
+/**
+ * Parses an upgrade request's target. Only its path and query are ever read, so
+ * the base is fixed: resolving against the client-supplied `Host` header let a
+ * single malformed one (`Host: localhost:99999`) throw out of the raw `upgrade`
+ * listener and take the process down before any auth check ran.
+ */
+export function parseUpgradeTarget(requestUrl: string | undefined): URL | null {
+  if (!requestUrl) {
+    return null;
+  }
+  try {
+    return new URL(requestUrl, "http://localhost");
+  } catch {
+    return null;
+  }
 }
 
 /**

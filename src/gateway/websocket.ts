@@ -8,7 +8,7 @@ import {
   gatewaySubscriptionSchema,
   type GatewaySubscription
 } from "@/core/contracts";
-import { authorizeGatewayUpgradeRequest, type GatewayAuthOptions } from "@/gateway/auth";
+import { authorizeGatewayUpgradeRequest, parseUpgradeTarget, type GatewayAuthOptions } from "@/gateway/auth";
 import { handleGatewayRequest } from "@/gateway/router";
 import { eventMatchesGatewaySubscription, type GatewayRuntimeLike } from "@/gateway/runtime";
 
@@ -57,9 +57,7 @@ export function attachGatewayWebSocketServer(options: AttachGatewayWebSocketServ
     noServer: true
   });
   const upgradeHandler = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const pathname = request.url
-      ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`).pathname
-      : null;
+    const pathname = parseUpgradeTarget(request.url)?.pathname ?? null;
     if (pathname !== options.websocketPath) {
       if (options.fallbackUpgradeHandler) {
         void Promise.resolve(options.fallbackUpgradeHandler(request, socket, head)).catch(() => {
