@@ -271,9 +271,11 @@ async function runChatCli(
     sdk = await resolveSdk(deps, input.cwd);
   } catch (error) {
     writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
+    await lineSource.close?.();
     return 1;
   }
 
+  let attachEndpoint: ServedAttachEndpoint | null = null;
   try {
     // A REPL with no reachable chat model is useless, so gate on it up front
     // and exit cleanly rather than opening a session that errors on every turn.
@@ -293,7 +295,7 @@ async function runChatCli(
     // dev/prod server used to listen, so a window opened from here died on
     // ECONNREFUSED. A failure to listen is not fatal: the REPL is still
     // perfectly usable without a shared terminal.
-    const attachEndpoint = deps.serveAttachEndpoint
+    attachEndpoint = deps.serveAttachEndpoint
       ? await deps.serveAttachEndpoint(sdk)
       : await serveAttachEndpoint({
           requestTimeoutMs: loadedConfig.resolvedConfig.gateway.requestTimeoutMs,
@@ -322,83 +324,84 @@ async function runChatCli(
     writeLine(streams.stdout, formatChatWelcome(created.session.id));
     const approvalState = createCliApprovalState();
 
-    try {
-      for (;;) {
-        streams.stdout.write(CHAT_PROMPT);
-        // The conversation prompt deliberately does *not* drain: lines typed
-        // while the agent worked are the operator's next message, queued on
-        // purpose. Only question prompts discard stale input.
-        const raw = await lineSource.next();
-        if (raw === null) {
-          return 0;
-        }
-        const line = raw.trim();
-        if (line.length === 0) {
-          continue;
-        }
-
-        const command = parseChatCommand(line);
-        if (command === "exit") {
-          writeLine(streams.stdout, "Goodbye.");
-          return 0;
-        }
-        if (command === "help") {
-          writeLine(streams.stdout, formatChatHelp());
-          continue;
-        }
-        if (command === "mcp") {
-          try {
-            const { servers } = await sdk.request("mcp.list", {});
-            writeLine(streams.stdout, formatMcpServers(servers));
-          } catch (error) {
-            writeLine(streams.stderr, `Failed to list MCP servers: ${renderCliError(error)}`);
-          }
-          continue;
-        }
-        if (command === "compact") {
-          await runCompactCommand(created.handle, streams);
-          continue;
-        }
-        if (command === "agents") {
-          try {
-            const { sessions } = await sdk.request("external_agent.session.list", {});
-            writeLine(streams.stdout, formatExternalAgentSessions(sessions));
-          } catch (error) {
-            writeLine(streams.stderr, `Failed to list interactive external-agent sessions: ${renderCliError(error)}`);
-          }
-          continue;
-        }
-        if (command === "attach") {
-          const externalSessionId = line.slice(1).trim().split(/\s+/u)[1];
-          if (!externalSessionId) {
-            writeLine(streams.stderr, "Usage: /attach <external-session-id> (see /agents)");
-            continue;
-          }
-          try {
-            const result = await sdk.request("external_agent.session.attach", {
-              externalSessionId
-            });
-            writeLine(streams.stdout, `Opened a terminal window running: ${result.command}`);
-          } catch (error) {
-            writeLine(streams.stderr, `Failed to attach to ${externalSessionId}: ${renderCliError(error)}`);
-          }
-          continue;
-        }
-        if (command === "unknown") {
-          writeLine(streams.stderr, `Unknown command "${line}". Type /help for options, or /exit to leave.`);
-          continue;
-        }
-
-        await runChatTurn(created.handle, line, streams, lineSource, approvalState, modelProvenance);
+    for (;;) {
+      streams.stdout.write(CHAT_PROMPT);
+      // The conversation prompt deliberately does *not* drain: lines typed
+      // while the agent worked are the operator's next message, queued on
+      // purpose. Only question prompts discard stale input.
+      const raw = await lineSource.next();
+      if (raw === null) {
+        return 0;
       }
-    } finally {
-      await lineSource.close?.();
-      await attachEndpoint?.close().catch(() => undefined);
+      const line = raw.trim();
+      if (line.length === 0) {
+        continue;
+      }
+
+      const command = parseChatCommand(line);
+      if (command === "exit") {
+        writeLine(streams.stdout, "Goodbye.");
+        return 0;
+      }
+      if (command === "help") {
+        writeLine(streams.stdout, formatChatHelp());
+        continue;
+      }
+      if (command === "mcp") {
+        try {
+          const { servers } = await sdk.request("mcp.list", {});
+          writeLine(streams.stdout, formatMcpServers(servers));
+        } catch (error) {
+          writeLine(streams.stderr, `Failed to list MCP servers: ${renderCliError(error)}`);
+        }
+        continue;
+      }
+      if (command === "compact") {
+        await runCompactCommand(created.handle, streams);
+        continue;
+      }
+      if (command === "agents") {
+        try {
+          const { sessions } = await sdk.request("external_agent.session.list", {});
+          writeLine(streams.stdout, formatExternalAgentSessions(sessions));
+        } catch (error) {
+          writeLine(streams.stderr, `Failed to list interactive external-agent sessions: ${renderCliError(error)}`);
+        }
+        continue;
+      }
+      if (command === "attach") {
+        const externalSessionId = line.slice(1).trim().split(/\s+/u)[1];
+        if (!externalSessionId) {
+          writeLine(streams.stderr, "Usage: /attach <external-session-id> (see /agents)");
+          continue;
+        }
+        try {
+          const result = await sdk.request("external_agent.session.attach", {
+            externalSessionId
+          });
+          writeLine(streams.stdout, `Opened a terminal window running: ${result.command}`);
+        } catch (error) {
+          writeLine(streams.stderr, `Failed to attach to ${externalSessionId}: ${renderCliError(error)}`);
+        }
+        continue;
+      }
+      if (command === "unknown") {
+        writeLine(streams.stderr, `Unknown command "${line}". Type /help for options, or /exit to leave.`);
+        continue;
+      }
+
+      await runChatTurn(created.handle, line, streams, lineSource, approvalState, modelProvenance);
     }
   } catch (error) {
     writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
     return 1;
   } finally {
+    // Every exit path releases what this REPL opened. A readline over a TTY and
+    // a bound listener each keep the process alive, so an early return (model
+    // unreachable, session creation failing) left `aia` running after it had
+    // already printed why it was stopping.
+    await lineSource.close?.();
+    await attachEndpoint?.close().catch(() => undefined);
     await sdk.close().catch(() => undefined);
   }
 }

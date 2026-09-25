@@ -155,6 +155,7 @@ function createFakeSdk(
     compactResult?: { hiddenMessageCount: number; summaryPath?: string };
     compactError?: string;
     completionReason?: string;
+    createError?: string;
     completionSummary?: string;
     lastError?: string;
     modelStatus?: string;
@@ -285,6 +286,9 @@ function createFakeSdk(
     },
     sessions: {
       async create() {
+        if (options.createError) {
+          throw new Error(options.createError);
+        }
         return {
           handle,
           session: { id: "session.test.cli.1" }
@@ -624,6 +628,75 @@ describe("interactive CLI loop", () => {
     expect(fake.getAttachEndpoint()).toBe("ws://127.0.0.1:54321/api/gateway/ws");
     // A leaked listener would keep a port bound for the life of the process.
     expect(closed).toBe(true);
+  });
+
+  // A readline over a terminal and a bound listener each keep the process
+  // alive, and only the post-welcome path released them: `aia` printed why it
+  // was stopping and then kept running.
+  describe("releases what it opened on every early exit", () => {
+    function closableReader(): { closed: () => boolean; reader: CliLineReader } {
+      let closed = false;
+      return {
+        closed: () => closed,
+        reader: {
+          close: () => {
+            closed = true;
+          },
+          discardBuffered: () => undefined,
+          next: async () => null
+        }
+      };
+    }
+
+    test("when the session cannot be created after the listener is served", async () => {
+      const fake = createFakeSdk({ createError: "session store unavailable" });
+      const capture = createCaptureStreams();
+      const input = closableReader();
+      let listenerClosed = false;
+
+      const exitCode = await runCli([], capture.streams, {
+        createSdk: async () => fake.sdk,
+        interactiveInput: input.reader,
+        serveAttachEndpoint: async () => ({
+          close: async () => {
+            listenerClosed = true;
+          },
+          url: "ws://127.0.0.1:54321/api/gateway/ws"
+        })
+      });
+
+      expect(exitCode).toBe(1);
+      expect(capture.getStderr()).toContain("session store unavailable");
+      expect(listenerClosed).toBe(true);
+      expect(input.closed()).toBe(true);
+    });
+
+    test("when the chat model is unavailable", async () => {
+      const fake = createFakeSdk({ modelStatus: "unavailable" });
+      const input = closableReader();
+
+      const exitCode = await runCliWithStubbedEndpoint([], createCaptureStreams().streams, {
+        createSdk: async () => fake.sdk,
+        interactiveInput: input.reader
+      });
+
+      expect(exitCode).toBe(1);
+      expect(input.closed()).toBe(true);
+    });
+
+    test("when the SDK cannot be created", async () => {
+      const input = closableReader();
+
+      const exitCode = await runCliWithStubbedEndpoint([], createCaptureStreams().streams, {
+        createSdk: async () => {
+          throw new Error("config exploded");
+        },
+        interactiveInput: input.reader
+      });
+
+      expect(exitCode).toBe(1);
+      expect(input.closed()).toBe(true);
+    });
   });
 
   test("keeps answering piped approval input in order, because a script supplies it deliberately", async () => {
