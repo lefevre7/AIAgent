@@ -139,6 +139,50 @@ describe("gateway auth", () => {
     expect(result.ok).toBe(false);
   });
 
+  // A proxy or tunnel on this machine (cloudflared, ngrok, tailscale funnel,
+  // nginx) connects over loopback. Dropping X-Forwarded-For entirely for H2
+  // made every remote client it relays look local to an untokened gateway.
+  describe("requests relayed by a local proxy or tunnel", () => {
+    const relayHeaders: Array<Record<string, string>> = [
+      { "x-forwarded-for": "203.0.113.7" },
+      { forwarded: "for=203.0.113.7;proto=https" },
+      { "x-real-ip": "203.0.113.7" },
+      { "cf-connecting-ip": "203.0.113.7" }
+    ];
+
+    test.each(relayHeaders)("refuses an untokened HTTP request on loopback carrying %o", (headers) => {
+      const request = httpMocks.createRequest({ headers, method: "GET", url: "/api/gateway/health" });
+      Object.defineProperty(request.socket, "remoteAddress", { value: "127.0.0.1" });
+
+      const result = authorizeGatewayHttpRequest(request);
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.statusCode).toBe(401);
+      expect(result.ok === false && result.error.message).toMatch(/proxy or tunnel/u);
+    });
+
+    test("refuses an untokened WebSocket upgrade on loopback carrying a forwarding header", () => {
+      const result = authorizeGatewayUpgradeRequest(
+        upgradeRequest({
+          headers: { host: "localhost", "x-forwarded-for": "203.0.113.7" },
+          remoteAddress: "127.0.0.1",
+          url: "/ws"
+        })
+      );
+      expect(result.ok).toBe(false);
+    });
+
+    test("accepts a relayed request that presents the configured token", () => {
+      const request = httpMocks.createRequest({
+        headers: { authorization: "Bearer secret", "x-forwarded-for": "203.0.113.7" },
+        method: "GET",
+        url: "/api/gateway/health"
+      });
+      Object.defineProperty(request.socket, "remoteAddress", { value: "127.0.0.1" });
+
+      expect(authorizeGatewayHttpRequest(request, { token: "secret" }).ok).toBe(true);
+    });
+  });
+
   // Security review M13: this used to be a warning, so the insecure
   // configuration still came up and served traffic.
   describe("assertGatewayExposureIsAuthenticated", () => {

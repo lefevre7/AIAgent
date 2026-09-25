@@ -26,6 +26,23 @@ describe("web access auth", () => {
     expect(result.ok).toBe(true);
   });
 
+  // A local proxy or tunnel reaches the web surface over loopback; its
+  // forwarding headers are what mark the request as remote.
+  test("rejects a loopback page request relayed by a proxy when no token is configured", () => {
+    const request = httpMocks.createRequest({
+      headers: { "x-forwarded-for": "203.0.113.7" },
+      method: "GET",
+      url: "/"
+    });
+    Object.defineProperty(request.socket, "remoteAddress", { value: "127.0.0.1" });
+
+    const result = authorizeWebAccessRequest(request);
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.statusCode).toBe(401);
+    expect(result.ok === false && result.error.message).toMatch(/proxy or tunnel/u);
+  });
+
   test("rejects remote page requests when no token is configured", () => {
     const request = httpMocks.createRequest({
       method: "GET",

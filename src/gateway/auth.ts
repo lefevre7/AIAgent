@@ -1,4 +1,4 @@
-import type { IncomingMessage } from "node:http";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 
 import type { Request } from "express";
 
@@ -24,6 +24,7 @@ export function authorizeGatewayHttpRequest(
 ): GatewayAuthorizationResult {
   return authorizeGatewayAccess({
     configuredToken: options.token,
+    forwarded: hasForwardingHeaders(request.headers),
     remoteAddress: request.socket.remoteAddress,
     presentedToken:
       extractAuthorizationToken(request.headers.authorization) ??
@@ -39,6 +40,7 @@ export function authorizeGatewayUpgradeRequest(
   const url = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`) : null;
   return authorizeGatewayAccess({
     configuredToken: options.token,
+    forwarded: hasForwardingHeaders(request.headers),
     remoteAddress: request.socket.remoteAddress,
     presentedToken:
       extractAuthorizationToken(request.headers.authorization) ??
@@ -46,6 +48,29 @@ export function authorizeGatewayUpgradeRequest(
       url?.searchParams.get("token") ??
       undefined
   });
+}
+
+/**
+ * Headers a reverse proxy or tunnel adds when it relays a request.
+ *
+ * A proxy running on this machine (cloudflared, ngrok, tailscale funnel, nginx)
+ * reaches us over the loopback socket, so the socket alone reads every remote
+ * client it relays as local. These headers are never trusted for their values
+ * (that was H2); their presence can only make a request *less* trusted, so a
+ * client that adds one merely loses the tokenless loopback allowance.
+ */
+const FORWARDING_HEADER_NAMES = [
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-real-ip",
+  "cf-connecting-ip",
+  "true-client-ip"
+] as const;
+
+export function hasForwardingHeaders(headers: IncomingHttpHeaders): boolean {
+  return FORWARDING_HEADER_NAMES.some((name) => headers[name] !== undefined);
 }
 
 /**
@@ -120,6 +145,7 @@ export function isLoopbackAddress(address: string | undefined): boolean {
 
 function authorizeGatewayAccess(params: {
   configuredToken?: string;
+  forwarded: boolean;
   presentedToken?: string;
   remoteAddress?: string;
 }): GatewayAuthorizationResult {
@@ -146,12 +172,13 @@ function authorizeGatewayAccess(params: {
   }
 
   // The peer address comes from the socket only. `X-Forwarded-For` is
-  // client-supplied: honouring it let any remote caller present
+  // client-supplied: honouring its value let any remote caller present
   // `X-Forwarded-For: 127.0.0.1` and be treated as loopback (security review
-  // H2). A real reverse-proxy deployment is not loopback and must configure
-  // `gateway.auth.token`, which `assertGatewayExposureIsAuthenticated`
-  // now requires up front.
-  if (isLoopbackAddress(params.remoteAddress)) {
+  // H2). A proxy or tunnel on this machine connects over loopback too, so a
+  // request that carries forwarding headers is treated as remote: an
+  // undeclared `cloudflared`/`ngrok` in front of an untokened gateway must not
+  // hand every remote client full access.
+  if (isLoopbackAddress(params.remoteAddress) && !params.forwarded) {
     return {
       ok: true
     };
@@ -160,7 +187,9 @@ function authorizeGatewayAccess(params: {
   return {
     error: createGatewayError(
       "authentication_required",
-      "Gateway authentication token is required for non-loopback access."
+      params.forwarded
+        ? "Gateway authentication token is required for requests relayed by a proxy or tunnel."
+        : "Gateway authentication token is required for non-loopback access."
     ),
     ok: false,
     statusCode: 401

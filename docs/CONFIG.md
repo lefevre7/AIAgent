@@ -184,9 +184,16 @@ server **refuses to start** without one when:
 This was previously a warning, so the insecure configuration still came up and served
 traffic (security review M13). It also covers the case header handling cannot: a tunnel
 or reverse proxy terminating in front of AIAgent forwards to the loopback socket, so
-remote requests _are_ genuinely loopback by the time the auth check sees them. Note that
-`X-Forwarded-For` is deliberately ignored everywhere — it is client-supplied, and
-trusting it was security review H2.
+remote requests _are_ genuinely loopback by the time the auth check sees them.
+
+Without a token, a request that carries proxy forwarding headers (`Forwarded`,
+`X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP`,
+`CF-Connecting-IP`, `True-Client-IP`) is refused even on the loopback socket: that is what
+an undeclared `cloudflared`, `ngrok`, `tailscale funnel`, or nginx in front of AIAgent
+looks like. The headers' _values_ are never trusted — honouring `X-Forwarded-For:
+127.0.0.1` was security review H2 — so their presence can only make a request less
+trusted. A raw TCP tunnel adds no headers and stays indistinguishable from local traffic:
+declare it with `tunnel.enabled` or set a token.
 
 ## Channel operator identities
 

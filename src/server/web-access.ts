@@ -1,6 +1,6 @@
 import type { Request, RequestHandler, Response } from "express";
 
-import { isLoopbackAddress } from "@/gateway/auth";
+import { hasForwardingHeaders, isLoopbackAddress } from "@/gateway/auth";
 import { createGatewayError } from "@/gateway/errors";
 
 export const WEB_ACCESS_COOKIE_NAME = "aia_access_token";
@@ -72,8 +72,10 @@ export function authorizeWebAccessRequest(
   }
 
   // Socket address only — see the matching note in `@/gateway/auth`. A
-  // client-supplied `X-Forwarded-For: 127.0.0.1` must never read as loopback.
-  if (isLoopbackAddress(request.socket.remoteAddress)) {
+  // client-supplied `X-Forwarded-For: 127.0.0.1` must never read as loopback,
+  // and a request relayed by a local proxy or tunnel is remote.
+  const forwarded = hasForwardingHeaders(request.headers);
+  if (isLoopbackAddress(request.socket.remoteAddress) && !forwarded) {
     return {
       ok: true
     };
@@ -82,7 +84,9 @@ export function authorizeWebAccessRequest(
   return {
     error: createGatewayError(
       "authentication_required",
-      "Remote access is disabled without gateway.auth.token. Use loopback access or configure a token."
+      forwarded
+        ? "Requests relayed by a proxy or tunnel need gateway.auth.token. Configure a token to expose the web surface."
+        : "Remote access is disabled without gateway.auth.token. Use loopback access or configure a token."
     ),
     ok: false,
     statusCode: 401
