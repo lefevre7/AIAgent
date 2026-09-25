@@ -40,7 +40,11 @@ Write endpoints return JSON by default and also support browser-form redirects t
 
 - Web/control-plane access uses the same shared-secret posture as the gateway:
   - if `gateway.auth.token` is configured, the token is required for remote web access
-  - if no token is configured, only loopback callers are allowed
+  - if no token is configured, only direct loopback callers are allowed. A loopback request carrying
+    proxy forwarding headers (`Forwarded`, `X-Forwarded-For`/`-Host`/`-Proto`, `X-Real-IP`,
+    `CF-Connecting-IP`, `True-Client-IP`) is treated as relayed by a proxy or tunnel and refused.
+  - without a token the server refuses to start on a routable or unspecified bind address, or with
+    `tunnel.enabled` (see `docs/CONFIG.md`)
 - Remote page access accepts:
   - `Authorization: Bearer <token>`
   - `x-aia-gateway-token`
@@ -97,7 +101,11 @@ Write endpoints return JSON by default and also support browser-form redirects t
   - first inbound contact auto-creates a tagged session and binds the channel identity to it
   - assistant replies are relayed back out as outbound bridge envelopes
   - pending approvals are rendered into channel prompts
-  - `/approve`, `/deny`, `/cancel`, `/steer`, and `/help` are handled directly from inbound channel text
+  - `/approve`, `/deny`, `/cancel`, `/steer`, and `/help` are handled directly from inbound channel text,
+    but only for senders listed in `channels.<kind>.operatorIdentities` (an empty list authorizes
+    nobody). Anyone else gets a refusal naming that setting, and the text never reaches the model.
+    The check trusts the sender identity the adapter reports, so it is only as strong as the channel's
+    own sender authentication.
   - approval decisions resume the normal session loop by materializing the paused tool result first
 
 ## WhatsApp Testing

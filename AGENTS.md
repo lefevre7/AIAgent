@@ -403,7 +403,7 @@ Rules for future work:
 - **Normalize anything that becomes a `JsonValue`.** Three layers: `toJsonValue`/`toJsonRecord` (`src/core/contracts/common.ts`) sanitize at the single boundary every tool result crosses (`ToolRuntime`); `jsonValueSchema`/`jsonRecordSchema` drop undefined-valued keys rather than rejecting the payload; and builders like `summarizeServers` spread optional fields in conditionally instead of assigning a possibly-undefined value. When adding a field to any record that reaches an event, prefer `...(value ? { key: value } : {})`.
 - **Emit progress while the run is running.** `AgentLoopOptions.onToolUpdated` fires as each tool call settles and the gateway emits `tool.updated` from it; `emitSessionRunEvents` deliberately no longer loops over `result.toolCalls` (re-emitting would duplicate the event id). The hook's host swallows its own failures — progress reporting must never abort the run it reports on.
 - **`runtime.maxIdenticalToolCalls`** (default 3) refuses the same tool with the same arguments past the cap with a `repeated_tool_call` error result. The no-progress nudge counter cannot catch this, because every repeated read _succeeds_. See `docs/SMALL_MODELS.md`.
-- **CLI must say why a turn ended.** `runChatTurn` keeps the terminal run record, prints `Turn ended: …` for anything other than `session_completed`, subscribes to `approval.requested` so a pause is announced when it happens, renders tool arguments alongside the tool name, and reports when the approval loop gives up after 50 rounds.
+- **CLI must say why a turn ended.** `runChatTurn` keeps the terminal run record, prints `Turn ended: …` for anything other than `session_completed`, subscribes to `approval.requested` so a pause is announced when it happens, renders tool arguments alongside the tool name, and reports when the approval loop gives up after 50 rounds. _Superseded in part (2026-09-25):_ since Group C a clean completion is silent only when this turn's answer was printed. A completion with no tagged summary also gets `Turn ended: the run finished …`, and only a summary one of the current turn's runs wrote counts as its answer.
 - **Test against the real gateway, not a fake SDK.** `tests/integration/run-finalization.test.ts` drives the real `runCli` over a real in-process runtime through an approval pause, and reproduces the original crash with an unreachable MCP server. Both hang (5s timeout) against the pre-fix code. Every `run.wait()` in tests passes `timeoutMs` so a non-terminating run fails the test instead of hanging the suite.
 - **`run.get`** reads a run record by id; the last `FINISHED_RUN_HISTORY_LIMIT` (100) terminal runs stay readable so `waitForRun` can re-check state after subscribing rather than waiting on an event that already fired.
 
@@ -858,14 +858,20 @@ have been worse than printing a command.
 
 - **Loopback, ephemeral port**, so a dev server already holding 3000 never blocks it.
 - The URL is published to `.aia/attach-endpoint.json`; `aia attach` prefers it, falls back to the
-  configured gateway, and `--url` always wins.
+  configured gateway, and `--url` always wins. _Superseded (2026-09-25):_ each REPL now writes its own
+  `.aia/attach-endpoints/<pid>.json` (mode 0600), and `aia attach` only uses a record whose process is
+  alive and whose URL is a loopback `ws:` address. One shared file let a second REPL take over the first
+  one's endpoint, and let anything that could write `.aia/` point `aia attach` at its own listener.
 - The record carries the CLI's pid, and `readAttachEndpoint` treats a record whose process is gone as
   absent — a crashed CLI must not send a window to a dead listener.
 - Failing to listen is **not fatal**: the REPL runs normally, only the shared window is unavailable.
   Likewise a window that will not open never fails the `start`; the result carries `attachError`.
 - Security note: this surface is unauthenticated unless `gateway.auth.token` is set, exactly like the dev
   server's, and any local process can reach it. Same trust boundary as before — but it now exists
-  whenever `aia` runs interactively, not only when a server is up.
+  whenever `aia` runs interactively, not only when a server is up. _Superseded (2026-09-25):_ that
+  turned out to include any web page, since browsers do not apply CORS to WebSocket handshakes. The
+  listener now always requires a token: the configured one, or a random per-launch token published only
+  in the 0600 record.
 
 Verified live end to end: the REPL publishes an endpoint, `aia attach` reaches it and gets a real runtime
 answer instead of a connection error, the record is cleaned up on exit, and `openTerminalWindow` opens a
@@ -905,3 +911,93 @@ Also asked and declined in the same pass: writing the `AIA_*` env-override defau
 discoverable through `src/core/config/env-overrides.ts`. If a future agent is asked to document them,
 note that 30 already have entries in the workspace config, 7 have no default worth writing, and 8 are
 credentials for the three unimplemented channels.
+
+## Addendum (2026-09-25): review of the completion-summary / security-hardening branch
+
+A full review of `review/completion-summary-and-security-hardening` found this branch had made several
+things worse than `main`. Operator scope: **fix only the regressions this branch introduced**, each in its
+own commit with a regression test that fails without it, plus three specific requests (`aia trust`
+shows by default, hermetic trust tests, and a list of small cleanups). Everything else found is under
+"Still open" below, deliberately untouched.
+
+### The Sep 23 fix groups (A–H) and `--version`
+
+Commits `7d8771b`..`1b7a868` (Group A external-agent reliability, B gateway races, C completion/loop UX,
+D memory/retrieval, E tools runtime/registry, F MCP pagination, G ComfyUI probe cache, H web control
+plane) and `75e584e` (`aia --version`) landed without an entry here. This is it. Group C's completion
+compaction caused the worst regression below.
+
+### Branch regressions fixed
+
+- **Every completed turn erased the conversation** (`4afed53`). Completion compaction moved the
+  compaction watermark to the last message, so the next turn's request carried one message instead of
+  the history (measured: 1 vs 4 before Group C). It still writes the summary but leaves the watermark to
+  threshold and manual `/compact` compaction. Covered by a two-turn test through the real runtime, and
+  the assertion Group C had flipped is restored.
+- **The REPL re-printed an earlier turn's answer as the current one** (`3bbaec9`). It now counts only
+  summaries written by this turn's runs (`messageIds`, including runs resumed after approvals).
+- **H2 stopped short of a local proxy or tunnel** (`92463b2`). An untokened request from loopback that
+  carries forwarding headers (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `CF-Connecting-IP`,
+  `True-Client-IP`) was trusted as local. Now refused, on the gateway and the web path.
+- **`/exit` hung ~29s while an attach window was connected** (`2a51116`). A noServer `ws` close waits
+  for every client; the gateway now sends 1001, terminates stragglers after 1s, and the attach client
+  releases stdin. `aia attach` also exits after Ctrl-] now.
+- **A malformed `Host` header crashed the REPL's listener** (`149befa`): `parseUpgradeTarget` never throws.
+- **Any web page could drive the REPL's listener, and a planted record received the token** (`0b83042`).
+  The listener always requires a token, per-launch unless one is configured, published in a 0600
+  `.aia/attach-endpoints/<pid>.json`. Records are only honoured when the pid is alive and the URL is loopback.
+- **Auto-attach windows opened with nothing to reach** (`fe0bd30`). A window opens only once a listener
+  is registered, and its `aia attach` arguments are shell-quoted for Terminal's `do script`. `--prompt`
+  and the SDK serve no listener, so they no longer open windows, and a listener that fails to start
+  warns (`AIA_ATTACH_ENDPOINT_UNAVAILABLE`).
+- **Early exits left `aia` running** (`b7fd975`): every REPL exit releases stdin, the listener and the SDK.
+- **Shutdown hung forever on a child that ignores SIGTERM** (`6e67744`): SIGKILL after a 5s grace.
+- **A server startup failure leaked its runtime context** (`b101f43`).
+- **The test suite wrote the developer's real `~/.aia/trust.json`** (`0b99f04`); CLI trust and attach
+  tests now use a temp home (`CliDependencies.userHomeDirectory`).
+
+### Requested alongside
+
+- **`aia trust` shows, it does not grant** (`8b16082`). Granting needs `--grant` or a `y` at a terminal
+  prompt. A `trust.json` that cannot be parsed warns (`AIA_TRUST_STORE_UNREADABLE`), still fails
+  closed, and grant/revoke refuse to rewrite it, which used to erase every other grant.
+- Cleanups: config read once at REPL start, so `exec` secret providers stop running three times
+  (`02bf553`). `aia info` prints the real config and never resolves secrets (`ddfbfa6`). `/help` lists
+  every approval answer (`7471a83`). `validate:penultimate` runs each test layer once (`185c96e`). The two
+  ledgers share `appendJsonlWithRotation`, which also queues writers so a double rotation cannot drop
+  the retained generation (`0bb69f4`). The compaction estimate uses `filterModelVisibleMessages`
+  (`ba02846`). The model live tests have room for a reasoning model (`d7d0f16`). `node:sqlite` loads
+  lazily without its ExperimentalWarning (`5be5c52`). A committed `chat-session-memory/` file is
+  untracked (`d426076`).
+
+### Still open (found, confirmed, and deferred by scope)
+
+- **Critical, pre-existing: compound shell commands skip the approval gate** under the shipped default
+  rules: `ls; curl … | sh`, `cat x | sh`, `find -exec`/`-delete`, `sed -i`, `rg --pre`.
+- **H3 is narrower than documented.** An untrusted repo config can still set provider `baseUrl`/`headers`
+  with env references (exfiltration) and MCP stdio servers. A repo `aia.approvals.jsonc` can relax
+  approvals. A symlinked config inherits its target's trust. The file is parsed from one read and
+  fingerprinted from another.
+- **H4:** the external-agent approval target renders the argv but not the instructions, which can carry flags.
+- **H6:** the docs imply `operatorIdentities` protects against anyone who can write the WhatsApp inbound
+  folder; it does not.
+- **Cross-site WebSocket on the dev/prod server** (`:3000`, no Origin/Host check without a token). Only
+  the REPL listener is closed.
+- Races: a status poll can flip a failed external job to succeeded; two runs can execute on one
+  session (`queueRun`); the WebSocket still sends some events twice (and a test asserts it).
+- CLI input: a half-typed line then `a` reads as deny; lines typed ahead are dropped at approval
+  prompts; `session.lastError` is never cleared, so an old `Error:` reprints after later turns.
+- Web: Enter in the approval note field approves; the dashboard loads every transcript per render (OOM on
+  real history); the answer never shows live and is cut at 220 characters.
+- Robustness: two log WriteStreams have no error listener (a full disk crashes the REPL); one malformed
+  message makes a session unreadable; the FTS query takes an arbitrary subset before ranking; LM
+  request/queue logs are never pruned; sessions stay `running_model` after a crash; `attempt_complete`'s
+  `partial`/`failed` status is ignored.
+- The chat-model provenance hint names `runtime.defaultModel`, but a turn asks for the provider's own
+  `model` first (see `describeDefaultChatModel` in `src/cli.ts`).
+- Tests and small gaps: one H6 test assertion can never fail; a branch test waits on a run with no
+  timeout; the global `externalAgents.passEnv` skips the env-name validation the per-agent list has;
+  `aia attach` subscribes to every session's `tool.output.delta` and filters client-side; the
+  external-agent `hydrateJob` takes a `locked` boolean describing its caller's lock state;
+  `TaskStateCard` shows `slice(-5)` against a cap of 3.
+- Security review M1–M5, M7–M12, and channels 25/27/28 (Discord, Teams, iMessage), as before.
