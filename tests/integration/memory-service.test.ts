@@ -284,6 +284,57 @@ describe("file-backed memory service", () => {
     expect(result.sourceTokenCount).toBeLessThan(20);
   });
 
+  // The estimate used its own copy of the watermark slice, which skipped the
+  // rest of the model-visible filter. It now goes through that filter, so
+  // anything a request would not carry, such as a hidden message, is not
+  // counted as in context either.
+  test("counts only what a model request would carry, so hidden messages are left out", async () => {
+    const root = await createTempRoot();
+    const stateRoot = path.join(root, "workspace", ".aia");
+    const sessions = new FileSessionStore(stateRoot);
+    const session = buildSession();
+    await sessions.saveSession(session);
+    await sessions.appendMessages([
+      {
+        createdAt: "2026-03-27T17:09:00.000Z",
+        id: "message.system.hidden-bookkeeping",
+        metadata: {},
+        parts: [{ kind: "text", text: "Bookkeeping the model never sees. ".repeat(200) }],
+        role: "system",
+        sessionId: session.id,
+        source: "system",
+        tags: [],
+        turnId: "turn.memory.hidden",
+        visibility: "hidden"
+      },
+      {
+        createdAt: "2026-03-27T17:10:00.000Z",
+        id: "message.assistant.visible",
+        metadata: {},
+        parts: [{ kind: "text", text: "A short visible reply." }],
+        role: "assistant",
+        sessionId: session.id,
+        source: "assistant",
+        tags: [],
+        turnId: "turn.memory.hidden",
+        visibility: "default"
+      }
+    ]);
+
+    const memory = new FileBackedMemoryService({
+      chatSessionRoot: path.join(root, "workspace", "chat-session-memory"),
+      sessions,
+      stateRoot,
+      userGlobalRoot: path.join(root, "home", ".aia", "memory"),
+      workspaceRoot: path.join(root, "workspace", "memory")
+    });
+
+    const result = await memory.compactSessionDetailed({ sessionId: session.id, trigger: "manual" });
+
+    // ~6,800 hidden characters would be ~1,700 tokens; the visible reply is a handful.
+    expect(result.sourceTokenCount).toBeLessThan(20);
+  });
+
   test("executes memory_write through the default runtime when the memory service is configured", async () => {
     const root = await createTempRoot();
     const workspaceRoot = path.join(root, "workspace", "memory");
