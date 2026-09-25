@@ -343,6 +343,12 @@ to the newest persisted message so `filterModelVisibleMessages` replays nothing
 older on the next turn. The summary reaches the model through the Durable Memory
 prompt section, exactly as after a threshold compaction.
 
+Completion compaction (trigger `"completion"`, run after an accepted `attempt_complete`)
+writes the same summary but deliberately does **not** move the watermark. Every chat
+turn ends that way, and the summary carries no user messages, so hiding the transcript
+there would make the next turn in a REPL, web, or channel session start with no memory
+of the conversation. Only threshold compaction and `/compact` hide history.
+
 Rules: the session must have no active gateway run and no pending approvals (the
 resume metadata that tracks pending tool calls is deliberately left untouched), the
 session status is preserved, and `session.updated` plus `memory.updated` events are

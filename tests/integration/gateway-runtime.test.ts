@@ -6,6 +6,7 @@ import {
   buildToolCall,
   withExampleSdk
 } from "../../examples/shared";
+import type { LanguageModelRequest } from "@/core/contracts";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -177,7 +178,7 @@ describe("gateway runtime request dispatch", () => {
           metadata: { surface: "example" },
           title: "Compact Session"
         });
-        await created.run!.wait();
+        await created.run!.wait({ timeoutMs: 10_000 });
         const before = await created.handle.snapshot();
         expect(before.snapshot.messages.length).toBeGreaterThan(0);
         const lastMessageId = before.snapshot.messages.at(-1)!.id;
@@ -190,12 +191,7 @@ describe("gateway runtime request dispatch", () => {
         const result = await created.handle.compact();
         unsubscribe();
 
-        // Completion-triggered compaction already ran and advanced the
-        // watermark to `lastMessageId` when the run finished, so this manual
-        // compact has nothing new to hide — it is exercising the same
-        // idempotent-rewrite path the "compacting again" case below covers,
-        // just as the *first* call instead of the second.
-        expect(result.hiddenMessageCount).toBe(0);
+        expect(result.hiddenMessageCount).toBeGreaterThan(0);
         expect(result.compactedThroughMessageId).toBe(lastMessageId);
         expect(result.summary).toContain("Session Summary");
         // The agent's narration and its accepted completion summary are
@@ -224,13 +220,50 @@ describe("gateway runtime request dispatch", () => {
     });
   });
 
-  test("session.compact hides real messages on a session completion-compaction never touched", async () => {
-    // Completion-triggered compaction only ever runs from the accepted
-    // attempt_complete branch, so a session that stops for any other reason
-    // (here: repeated turns with no tool use, hitting the no-progress guard)
-    // reaches manual /compact with genuinely uncompacted history — unlike the
-    // "compact a finished session" case above, which completion-compaction
-    // already caught up on by the time compact() is called.
+  // Every chat turn ends with attempt_complete. Completion compaction once
+  // moved the watermark past the whole transcript, so the second message in a
+  // REPL, web, or channel session reached the model with no trace of the first.
+  test("a completed turn stays visible to the next turn in the same session", async () => {
+    const respond = (summary: string) => (request: LanguageModelRequest) =>
+      buildScriptedResponse({
+        request,
+        text: "Finishing.",
+        toolCalls: [buildToolCall("attempt_complete", { summary })]
+      });
+    const adapter = new ScriptedLanguageModelAdapter({
+      modelId: "example-gw-multi-turn",
+      providerId: "example_lm",
+      responses: [respond("Noted."), respond("Your secret word is PAPAYA.")]
+    });
+
+    await withExampleSdk({
+      name: "gateway-runtime-multi-turn",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "example-gw-multi-turn", enabled: true }] },
+      run: async ({ sdk, workspaceRoot }) => {
+        const created = await sdk.sessions.create({
+          cwd: workspaceRoot,
+          goal: "Chat",
+          metadata: { surface: "example" },
+          title: "Multi-turn Session"
+        });
+
+        const first = await created.handle.sendMessage({ text: "Remember this: my secret word is PAPAYA." });
+        expect((await first.wait({ timeoutMs: 10_000 })).completionReason).toBe("session_completed");
+        const second = await created.handle.sendMessage({ text: "What is my secret word?" });
+        expect((await second.wait({ timeoutMs: 10_000 })).completionReason).toBe("session_completed");
+
+        const secondRequest = JSON.stringify(adapter.requests[1]?.messages ?? []);
+        expect(secondRequest).toContain("my secret word is PAPAYA");
+        expect(secondRequest).toContain("What is my secret word?");
+      }
+    });
+  });
+
+  test("session.compact hides real messages on a session that stopped without completing", async () => {
+    // A session that stops for a reason other than completion (here: repeated
+    // turns with no tool use, hitting the no-progress guard) reaches manual
+    // /compact with its whole history still replayed, exactly like a finished
+    // one: neither path moves the watermark on its own.
     const adapter = new ScriptedLanguageModelAdapter({
       modelId: "example-gw-compact-blocked",
       providerId: "example_lm",
@@ -250,7 +283,7 @@ describe("gateway runtime request dispatch", () => {
           metadata: { surface: "example" },
           title: "Compact Blocked Session"
         });
-        await created.run!.wait();
+        await created.run!.wait({ timeoutMs: 10_000 });
         const snapshot = await created.handle.snapshot();
         expect(snapshot.snapshot.session.status).toBe("completion_blocked");
 

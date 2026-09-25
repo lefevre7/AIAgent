@@ -642,14 +642,12 @@ describe("agent loop", () => {
     expect(initializeCalls).toEqual(["session.loop.1"]);
     expect(compactCalls).toEqual(["session.loop.1:completion"]);
 
-    // Unlike threshold and manual compaction, completion-triggered compaction
-    // never advanced the watermark, so a resumed completed session replayed
-    // the full raw transcript with none of the benefit the compaction that
-    // just ran was supposed to provide.
-    const snapshot = await store.getSessionSnapshot(result.session.id);
-    const latestMessageId = snapshot?.messages.at(-1)?.id;
-    expect(latestMessageId).toBeTruthy();
-    expect(result.session.metadata[COMPACTION_WATERMARK_METADATA_KEY]).toBe(latestMessageId);
+    // Completion compaction must not hide the transcript: every chat turn ends
+    // with attempt_complete, so moving the watermark here would make the next
+    // turn in the same session start with no memory of the conversation.
+    const persisted = await store.getSession(result.session.id);
+    expect(result.session.metadata[COMPACTION_WATERMARK_METADATA_KEY]).toBeUndefined();
+    expect(persisted?.metadata[COMPACTION_WATERMARK_METADATA_KEY]).toBeUndefined();
   });
 
   test("falls back to a failing default tool executor when none is configured", async () => {

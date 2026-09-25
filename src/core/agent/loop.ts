@@ -533,24 +533,16 @@ export class AgentLoop {
           session = await this.persistSession(session, "completed", {
             statusSummary: completionSummary ?? "The task completed successfully."
           });
-          if (this.options.memoryLifecycle) {
-            await this.options.memoryLifecycle.compactSession({
-              sessionId: session.id,
-              trigger: "completion"
-            });
-            // Unlike threshold and manual compaction, this path never advanced
-            // the watermark, so a resumed completed session replayed the full
-            // raw transcript to the model with none of the benefit the
-            // compaction that just ran was supposed to provide.
-            const latestMessageId = (await this.options.sessions.getSessionSnapshot(session.id))?.messages.at(-1)?.id;
-            if (latestMessageId) {
-              session = await this.persistSession(
-                { ...session, metadata: { ...session.metadata, [COMPACTION_WATERMARK_METADATA_KEY]: latestMessageId } },
-                "completed",
-                { statusSummary: completionSummary ?? "The task completed successfully." }
-              );
-            }
-          }
+          // Completion compaction writes the session summary but deliberately
+          // leaves the compaction watermark alone. Every chat turn ends here,
+          // and the summary carries no user messages, so hiding the transcript
+          // would make the next turn in the same session (REPL, web follow-up,
+          // channel thread) start with no memory of the conversation. Only
+          // threshold compaction and a manual /compact hide history.
+          await this.options.memoryLifecycle?.compactSession({
+            sessionId: session.id,
+            trigger: "completion"
+          });
           return {
             approvalRequests: appendedApprovalRequests,
             messages: appendedMessages,
