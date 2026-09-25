@@ -73,8 +73,9 @@ type CliDependencies = {
   // real gateway socket.
   attachToExternalAgentSession?: typeof attachToExternalAgentSession;
   // Overrides how the SDK is created. Lets tests drive the loop without a full
-  // runtime; defaults to createAIAgentSdkFromConfig.
-  createSdk?: (options: { cwd: string }) => Promise<AIAgentSdk>;
+  // runtime; defaults to createAIAgentSdkFromConfig. `loaded` is the config the
+  // caller already read, when it read one.
+  createSdk?: (options: { cwd: string; loaded?: LoadedAIAgentConfig }) => Promise<AIAgentSdk>;
   // Overrides how the voice context (voice service + session store) is built for
   // `aia voice` subcommands. Lets tests drive them without native voice adapters;
   // defaults to building from the loaded config.
@@ -271,9 +272,15 @@ async function runChatCli(
   lineSource: CliLineReader,
   deps: CliDependencies
 ): Promise<number> {
+  let loaded: LoadedAIAgentConfig;
   let sdk: AIAgentSdk;
   try {
-    sdk = await resolveSdk(deps, input.cwd);
+    // Read once for the whole REPL. The SDK, the attach listener and the
+    // model-provenance hint each used to load it again, which resolved every
+    // secret the config references three times per start: three runs of an
+    // `exec` provider such as a password-manager CLI, each of which may prompt.
+    loaded = await loadAIAgentConfig({ cwd: input.cwd, userHomeDirectory: deps.userHomeDirectory });
+    sdk = await resolveSdk(deps, input.cwd, loaded);
   } catch (error) {
     writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
     await lineSource.close?.();
@@ -290,10 +297,9 @@ async function runChatCli(
       return 1;
     }
 
-    // Resolved once, not per turn: it only changes if the config files do, and
-    // a failing turn is the worst moment to start reading the filesystem.
-    const modelProvenance = await resolveChatModelProvenance(input.cwd);
-    const loadedConfig = await loadAIAgentConfig({ cwd: input.cwd });
+    // Formatted once, not per turn: it only changes if the config files do,
+    // and a failing turn is the worst moment to start reading the filesystem.
+    const modelProvenance = formatChatModelProvenance(loaded);
 
     // Serve the gateway on loopback so a terminal window opened for an
     // interactive external-agent session has something to attach to. Only the
@@ -303,13 +309,13 @@ async function runChatCli(
     attachEndpoint = deps.serveAttachEndpoint
       ? await deps.serveAttachEndpoint(sdk)
       : await serveAttachEndpoint({
-          requestTimeoutMs: loadedConfig.resolvedConfig.gateway.requestTimeoutMs,
+          requestTimeoutMs: loaded.resolvedConfig.gateway.requestTimeoutMs,
           runtime: sdk.controlPlane,
-          stateRoot: loadedConfig.resolvedConfig.memory.stateRoot,
-          ...(typeof loadedConfig.resolvedConfig.gateway.auth.token === "string"
-            ? { token: loadedConfig.resolvedConfig.gateway.auth.token }
+          stateRoot: loaded.resolvedConfig.memory.stateRoot,
+          ...(typeof loaded.resolvedConfig.gateway.auth.token === "string"
+            ? { token: loaded.resolvedConfig.gateway.auth.token }
             : {}),
-          websocketPath: loadedConfig.resolvedConfig.gateway.websocketPath
+          websocketPath: loaded.resolvedConfig.gateway.websocketPath
         });
     // Only now can an interactive external-agent session open a window that
     // reaches this process; without a listener no window is opened at all.
@@ -475,20 +481,6 @@ export function formatChatModelProvenance(loaded: LoadedAIAgentConfig): string {
   );
 
   return lines.join("\n");
-}
-
-/**
- * Loads config purely to describe where the chat model id came from.
- *
- * Returns null on any failure: this exists to make an error clearer, so it must
- * never be able to turn one error into two.
- */
-async function resolveChatModelProvenance(cwd: string): Promise<string | undefined> {
-  try {
-    return formatChatModelProvenance(await loadAIAgentConfig({ cwd }));
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -1385,8 +1377,10 @@ async function appendVoiceUserMessage(params: {
   });
 }
 
-async function resolveSdk(deps: CliDependencies, cwd: string): Promise<AIAgentSdk> {
-  return deps.createSdk ? deps.createSdk({ cwd }) : createAIAgentSdkFromConfig({ cwd });
+async function resolveSdk(deps: CliDependencies, cwd: string, loaded?: LoadedAIAgentConfig): Promise<AIAgentSdk> {
+  return deps.createSdk
+    ? deps.createSdk({ cwd, loaded })
+    : createAIAgentSdkFromConfig({ cwd, loaded, userHomeDirectory: deps.userHomeDirectory });
 }
 
 function parseChatCommand(

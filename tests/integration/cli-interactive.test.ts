@@ -630,6 +630,55 @@ describe("interactive CLI loop", () => {
     expect(closed).toBe(true);
   });
 
+  // Startup used to read the config three times: for the SDK, for the
+  // model-provenance hint, and for the attach listener. Every secret the config
+  // references was resolved each time, so an `exec` provider such as a
+  // password-manager CLI ran, and possibly prompted, three times per start.
+  test("reads the config once at startup and hands that reading to the SDK", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-cli-config-once-"));
+    try {
+      const home = path.join(root, "home");
+      const workspace = path.join(root, "workspace");
+      const runs = path.join(root, "secret-provider-runs");
+      await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+      await fs.mkdir(workspace, { recursive: true });
+      await fs.writeFile(
+        path.join(home, ".aia", "config.jsonc"),
+        JSON.stringify({
+          configVersion: 1,
+          gateway: { auth: { token: { id: "value", provider: "counter", source: "exec" } } },
+          secrets: {
+            providers: {
+              counter: {
+                args: ["-c", `echo run >> '${runs}'; echo token-from-exec`],
+                command: "/bin/sh",
+                source: "exec"
+              }
+            }
+          }
+        }),
+        "utf8"
+      );
+      const fake = createFakeSdk();
+      let handed: unknown;
+
+      const exitCode = await runCliWithStubbedEndpoint(["--cwd", workspace], createCaptureStreams().streams, {
+        createSdk: async ({ loaded }) => {
+          handed = loaded?.resolvedConfig.gateway.auth.token;
+          return fake.sdk;
+        },
+        interactiveInput: lineSource(["/exit"]),
+        userHomeDirectory: home
+      });
+
+      expect(exitCode).toBe(0);
+      expect((await fs.readFile(runs, "utf8")).trim().split("\n")).toEqual(["run"]);
+      expect(handed).toBe("token-from-exec");
+    } finally {
+      await fs.rm(root, { force: true, recursive: true });
+    }
+  });
+
   // A readline over a terminal and a bound listener each keep the process
   // alive, and only the post-welcome path released them: `aia` printed why it
   // was stopping and then kept running.
@@ -682,6 +731,33 @@ describe("interactive CLI loop", () => {
 
       expect(exitCode).toBe(1);
       expect(input.closed()).toBe(true);
+    });
+
+    test("when the config cannot be loaded", async () => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-cli-bad-config-"));
+      try {
+        await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+        await fs.writeFile(path.join(home, ".aia", "config.jsonc"), '{ "configVersion": 1, "nope": true }', "utf8");
+        const capture = createCaptureStreams();
+        const input = closableReader();
+        let sdkCreated = false;
+
+        const exitCode = await runCliWithStubbedEndpoint(["--cwd", home], capture.streams, {
+          createSdk: async () => {
+            sdkCreated = true;
+            throw new Error("the SDK must not be created from a config that failed to load");
+          },
+          interactiveInput: input.reader,
+          userHomeDirectory: home
+        });
+
+        expect(exitCode).toBe(1);
+        expect(capture.getStderr()).toContain("Failed to start AIAgent");
+        expect(sdkCreated).toBe(false);
+        expect(input.closed()).toBe(true);
+      } finally {
+        await fs.rm(home, { force: true, recursive: true });
+      }
     });
 
     test("when the SDK cannot be created", async () => {
