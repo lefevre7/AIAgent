@@ -8,10 +8,11 @@ import { ControlPlaneService } from "@/server/control-plane/service";
 import {
   closeServerRuntimeContext,
   createServerRuntimeContext,
-  primeServerRuntimeContext
+  primeServerRuntimeContext,
+  type ServerRuntimeContext
 } from "@/server/runtime-context";
 import { createHttpApp } from "@/server/create-http-app";
-import { resolveServerRuntimeConfig } from "@/server/env";
+import { resolveServerRuntimeConfig, type ServerRuntimeConfig } from "@/server/env";
 
 export async function startServer(argv: string[] = process.argv.slice(2)) {
   const runtime = resolveServerRuntimeConfig(argv);
@@ -20,23 +21,28 @@ export async function startServer(argv: string[] = process.argv.slice(2)) {
   });
   primeServerRuntimeContext(context);
 
-  // Fail closed before anything binds. An exposed gateway with no token grants
-  // unauthenticated access to sessions, tools, and approvals, and a tunnel in
-  // front of loopback makes every remote request look local.
-  //
-  // The context is already up by this point (the token comes from it), and it
-  // owns pollers and MCP child processes that keep the event loop alive — so
-  // it has to be torn down explicitly, or the refusal hangs instead of exiting.
+  // The context is up from here on, and it owns pollers and MCP child processes
+  // that keep the event loop alive. Any failure past this point (the exposure
+  // refusal, Next failing to prepare, anything else) has to tear it down
+  // explicitly, or the process reports the failure and then hangs instead of
+  // exiting: the entry point only sets exitCode.
   try {
-    assertGatewayExposureIsAuthenticated({
-      hostname: runtime.hostname,
-      token: context.gatewayAuthToken,
-      tunnelEnabled: context.loaded.resolvedConfig.tunnel.enabled
-    });
+    return await serveWithContext(runtime, context);
   } catch (error) {
     await closeServerRuntimeContext().catch(() => undefined);
     throw error;
   }
+}
+
+async function serveWithContext(runtime: ServerRuntimeConfig, context: ServerRuntimeContext) {
+  // Fail closed before anything binds. An exposed gateway with no token grants
+  // unauthenticated access to sessions, tools, and approvals, and a tunnel in
+  // front of loopback makes every remote request look local.
+  assertGatewayExposureIsAuthenticated({
+    hostname: runtime.hostname,
+    token: context.gatewayAuthToken,
+    tunnelEnabled: context.loaded.resolvedConfig.tunnel.enabled
+  });
 
   const nextApp = next({
     dev: runtime.dev,
