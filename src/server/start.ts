@@ -3,7 +3,7 @@ import process from "node:process";
 
 import next from "next";
 
-import { assertGatewayExposureIsAuthenticated, attachGatewayWebSocketServer } from "@/gateway";
+import { assertGatewayExposureIsAuthenticated, attachGatewayWebSocketServer, serverAttachUrl } from "@/gateway";
 import { ControlPlaneService } from "@/server/control-plane/service";
 import {
   closeServerRuntimeContext,
@@ -100,6 +100,17 @@ export async function startServer(argv: string[] = process.argv.slice(2)) {
       resolve();
     });
   });
+
+  // Lets an interactive external-agent session started from the web UI or a
+  // channel open a desktop window that can reach this server.
+  const address = server.address();
+  context.gatewayRuntime.setAttachEndpoint(
+    serverAttachUrl({
+      hostname: runtime.hostname,
+      port: typeof address === "object" && address ? address.port : runtime.port,
+      websocketPath: context.loaded.resolvedConfig.gateway.websocketPath
+    })
+  );
 
   return { gatewayRuntime: context.gatewayRuntime, runtime, server };
 }

@@ -106,6 +106,14 @@ published endpoint, falls back to the configured `gateway` host/port, and an exp
 `externalAgents.interactive.autoAttachOnStart` (**default true**) controls whether `start` opens the
 window. Set it to `false` to keep sessions headless; `start` then prints the attach command as before.
 
+A window only opens while this process serves a listener it can reach: the interactive REPL (its
+loopback endpoint) or the dev/prod server (its configured host and port). `aia --prompt` and plain SDK
+hosts serve none, so they open no window rather than one that fails to connect while the model is told
+the terminal is shared; an explicit `attach` there fails with a message saying so. The window runs
+`aia attach <id> --url <listener> --cwd <workspace>`: the terminal app starts its shell in your home
+directory, not the workspace, so without `--cwd` it would read another state root and miss the
+listener's record and token.
+
 Opening a window is **never allowed to fail the start**. On a host with no window server, or off macOS,
 the session still starts and the result carries `attachError` alongside the normal session record — the
 window is a convenience, not the session.

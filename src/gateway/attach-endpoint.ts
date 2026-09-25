@@ -58,6 +58,17 @@ export function attachEndpointFilePath(stateRoot: string, pid: number = process.
 }
 
 /**
+ * The URL an `aia attach` window should dial for a server bound to
+ * `hostname:port`. An unspecified bind address also accepts on loopback, and is
+ * not itself something a client can dial.
+ */
+export function serverAttachUrl(params: { hostname: string; port: number; websocketPath: string }): string {
+  const host = params.hostname === "0.0.0.0" || params.hostname === "::" ? "127.0.0.1" : params.hostname;
+  const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `ws://${authority}:${params.port}${params.websocketPath}`;
+}
+
+/**
  * Starts a loopback-only gateway WebSocket and publishes its URL.
  *
  * Binds an **ephemeral** port rather than the configured one: a dev server may
@@ -137,8 +148,15 @@ export async function serveAttachEndpoint(params: {
       },
       url
     };
-  } catch {
+  } catch (error) {
     server?.close();
+    // Not fatal: the REPL is fully usable without a shared terminal. But never
+    // silent, or a missing window reads as the feature being broken.
+    const reason = error instanceof Error ? error.message : String(error);
+    process.emitWarning(
+      `The interactive CLI could not serve its gateway endpoint (${reason}), so external-agent terminal windows are unavailable this session.`,
+      { code: "AIA_ATTACH_ENDPOINT_UNAVAILABLE" }
+    );
     return null;
   }
 }

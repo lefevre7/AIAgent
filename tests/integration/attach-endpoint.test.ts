@@ -9,7 +9,8 @@ import {
   attachEndpointFilePath,
   attachEndpointsDirectory,
   readAttachEndpoint,
-  serveAttachEndpoint
+  serveAttachEndpoint,
+  serverAttachUrl
 } from "@/gateway/attach-endpoint";
 import type { GatewayRuntimeLike } from "@/gateway";
 
@@ -205,6 +206,38 @@ describe("CLI attach endpoint", () => {
     }
 
     await expect(readAttachEndpoint(stateRoot)).resolves.toBeNull();
+  });
+
+  // A failure to listen is not fatal, but it used to be silent too, so a
+  // missing window looked like the feature being broken.
+  test("warns when it cannot serve, and reports no endpoint", async () => {
+    const warnings: Array<{ code?: string; message: string }> = [];
+    const onWarning = (warning: Error & { code?: string }) =>
+      warnings.push({ code: warning.code, message: warning.message });
+    process.on("warning", onWarning);
+    try {
+      // A state root that cannot be created: /dev/null is a file.
+      const served = await serveAttachEndpoint({
+        runtime: stubRuntime(),
+        stateRoot: "/dev/null/aia-state",
+        websocketPath: "/api/gateway/ws"
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(served).toBeNull();
+      expect(warnings).toEqual([expect.objectContaining({ code: "AIA_ATTACH_ENDPOINT_UNAVAILABLE" })]);
+    } finally {
+      process.off("warning", onWarning);
+    }
+  });
+
+  test("serverAttachUrl dials loopback for an unspecified bind address", () => {
+    expect(serverAttachUrl({ hostname: "127.0.0.1", port: 3000, websocketPath: "/api/gateway/ws" })).toBe(
+      "ws://127.0.0.1:3000/api/gateway/ws"
+    );
+    expect(serverAttachUrl({ hostname: "0.0.0.0", port: 3000, websocketPath: "/ws" })).toBe("ws://127.0.0.1:3000/ws");
+    expect(serverAttachUrl({ hostname: "::", port: 3000, websocketPath: "/ws" })).toBe("ws://127.0.0.1:3000/ws");
+    expect(serverAttachUrl({ hostname: "::1", port: 3000, websocketPath: "/ws" })).toBe("ws://[::1]:3000/ws");
   });
 
   test("reports nothing when no CLI has published an endpoint", async () => {

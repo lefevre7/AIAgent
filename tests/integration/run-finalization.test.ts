@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   ScriptedLanguageModelAdapter,
@@ -264,6 +264,30 @@ describe("gateway run finalization", () => {
         expect(capture.getStderr()).toContain("· shell_command(command=which codex)");
         // The pause is announced while the run is still going.
         expect(capture.getStderr()).toContain("paused for approval: command → which codex");
+      }
+    });
+  });
+
+  // A desktop window for an interactive external-agent session can only reach
+  // a listener the runtime knows about; without it the window dialled nothing.
+  test("the interactive CLI registers the listener it serves with the runtime", async () => {
+    await withExampleSdk({
+      name: "run-finalization-attach-endpoint",
+      providers: {
+        languageModelAdapters: [{ adapter: scriptToolCalls([]), defaultModel: "run-finalization-model", enabled: true }]
+      },
+      run: async ({ sdk, workspaceRoot }) => {
+        const setAttachEndpoint = vi.spyOn(sdk.controlPlane as Required<typeof sdk.controlPlane>, "setAttachEndpoint");
+        const url = "ws://127.0.0.1:52011/api/gateway/ws";
+
+        const exitCode = await runCli(["--cwd", workspaceRoot], createCaptureStreams().streams as never, {
+          createSdk: async () => sdk,
+          interactiveInput: lineSource(["/exit"]),
+          serveAttachEndpoint: async () => ({ close: async () => undefined, url })
+        });
+
+        expect(exitCode).toBe(0);
+        expect(setAttachEndpoint).toHaveBeenCalledWith(url);
       }
     });
   });

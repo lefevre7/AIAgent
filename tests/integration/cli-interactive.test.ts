@@ -165,6 +165,7 @@ function createFakeSdk(
   } = {}
 ): {
   sdk: AIAgentSdk;
+  getAttachEndpoint: () => string | undefined;
   getCompactCalls: () => number;
   getResolved: () => ResolvedApprovalSpec[];
   getSent: () => string[];
@@ -175,6 +176,7 @@ function createFakeSdk(
   let pending = [...(options.pendingApprovals ?? [])];
   let closed = false;
   let compactCalls = 0;
+  let attachEndpointUrl: string | undefined;
   let listener: ((event: unknown) => void) | null = null;
 
   const emit = (delta: string): void => {
@@ -265,6 +267,11 @@ function createFakeSdk(
     async close() {
       closed = true;
     },
+    controlPlane: {
+      setAttachEndpoint(url: string | undefined) {
+        attachEndpointUrl = url;
+      }
+    },
     async request(topic: string) {
       if (topic === "model.health") {
         return {
@@ -287,6 +294,7 @@ function createFakeSdk(
   } as unknown as AIAgentSdk;
 
   return {
+    getAttachEndpoint: () => attachEndpointUrl,
     getCompactCalls: () => compactCalls,
     getResolved: () => resolved,
     getSent: () => sent,
@@ -612,6 +620,8 @@ describe("interactive CLI loop", () => {
 
     expect(exitCode).toBe(0);
     expect(servedFor).toBe(fake.sdk);
+    // The runtime has to know the listener, or no window can reach it.
+    expect(fake.getAttachEndpoint()).toBe("ws://127.0.0.1:54321/api/gateway/ws");
     // A leaked listener would keep a port bound for the life of the process.
     expect(closed).toBe(true);
   });

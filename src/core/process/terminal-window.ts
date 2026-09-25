@@ -9,9 +9,10 @@ export type TerminalWindowLauncher = (params: { command: string; terminalApp: st
  * session: the window runs `aia attach <id>`, which relays keystrokes over the
  * gateway into the very PTY the agent writes to.
  *
- * It is never called automatically. Matching the repo's "do not auto-open the
- * browser" posture, a window appears only when someone explicitly asks for it —
- * a background agent that spawns windows is hostile.
+ * It runs when an interactive session starts (`externalAgents.interactive.
+ * autoAttachOnStart`, and only while this process serves a listener the window
+ * can reach) and on an explicit attach. Starting a session is approval-gated,
+ * so a window only ever appears for a session the operator approved.
  */
 export async function openTerminalWindow(params: { command: string; terminalApp: string }): Promise<void> {
   if (process.platform !== "darwin") {

@@ -304,6 +304,11 @@ async function runChatCli(
             : {}),
           websocketPath: loadedConfig.resolvedConfig.gateway.websocketPath
         });
+    // Only now can an interactive external-agent session open a window that
+    // reaches this process; without a listener no window is opened at all.
+    if (attachEndpoint) {
+      sdk.controlPlane.setAttachEndpoint?.(attachEndpoint.url);
+    }
 
     const created = await sdk.sessions.create({
       cwd: input.cwd,

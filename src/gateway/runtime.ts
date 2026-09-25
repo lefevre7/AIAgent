@@ -125,8 +125,12 @@ type GatewayRuntimeEvents = {
   event: [GatewayEvent];
 };
 
+/** The listener an `aia attach` window can reach, known only once a surface serves one. */
+export type AttachEndpointHolder = { url?: string };
+
 type GatewayRuntimeOptions = {
   approvals: ApprovalSettings;
+  attachEndpoint?: AttachEndpointHolder;
   /**
    * Opens a desktop terminal window on an interactive external-agent session.
    * Injected rather than called directly so the gateway never depends on a
@@ -160,6 +164,11 @@ export interface GatewayRuntimeLike {
   listApprovalRecords(query: z.input<typeof gatewayApprovalListQuerySchema>): Promise<GatewayApprovalRecord[]>;
   replayEvents(query: GatewayEventReplayQuery): Promise<GatewayEventPage>;
   request(request: GatewayRequest): Promise<GatewayResponse>;
+  /**
+   * Records the gateway WebSocket an `aia attach` window can reach for this
+   * process, once a surface serves one. Until then no window is opened.
+   */
+  setAttachEndpoint?(url: string | undefined): void;
   subscribe(listener: (event: GatewayEvent) => void): () => void;
 }
 
@@ -604,6 +613,12 @@ export class GatewayRuntime
 
   registerLanguageModelAdapter(registration: LanguageModelAdapterRegistration): void {
     this.options.modelRuntime.registerAdapter(registration);
+  }
+
+  setAttachEndpoint(url: string | undefined): void {
+    if (this.options.attachEndpoint) {
+      this.options.attachEndpoint.url = url;
+    }
   }
 
   private async dispatch(request: GatewayRequest): Promise<unknown> {
@@ -2471,9 +2486,56 @@ export class GatewayRuntime
  * The window runs the same `aia attach` relay any operator could run by hand,
  * so the desktop window is a convenience over a documented command rather than
  * a private channel only the agent can open.
+ *
+ * It names the listener and the workspace explicitly. The window's shell is
+ * started by the terminal app, not by this process, so it never inherits this
+ * cwd: a bare `aia attach <id>` read a different state root, found no endpoint,
+ * and dialled a port nothing listened on. `--cwd` lets it load this workspace's
+ * config and the endpoint record that carries the listener's token.
+ * `do script` runs the command through a shell, so every argument is quoted.
  */
-function buildAttachCommand(externalSessionId: string): string {
-  return `aia attach ${externalSessionId}`;
+export function buildAttachCommand(externalSessionId: string, endpoint: { cwd: string; url: string }): string {
+  return ["aia", "attach", externalSessionId, "--url", endpoint.url, "--cwd", endpoint.cwd]
+    .map(quoteShellArgument)
+    .join(" ");
+}
+
+function quoteShellArgument(value: string): string {
+  return /^[A-Za-z0-9._:/=@+-]+$/u.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * Opens shared desktop windows for interactive external-agent sessions — but
+ * only while some surface of this process serves a listener the window can
+ * reach. A window with nothing to connect to is worse than no window: it fails
+ * with a connection error while the model is told the terminal is shared.
+ */
+export function createExternalAgentSessionHost(params: {
+  attachEndpoint: AttachEndpointHolder;
+  autoAttachOnStart: boolean;
+  cwd: string;
+  service: ExternalAgentSessionService;
+  terminalApp: string;
+}): ExternalAgentSessionHost {
+  return {
+    async attach(externalSessionId) {
+      const url = params.attachEndpoint.url;
+      if (!url) {
+        throw new Error(
+          "This process is not serving a gateway endpoint an `aia attach` window could reach, so no window was opened. " +
+            "Drive the agent from the interactive `aia` REPL or the server to share its terminal."
+        );
+      }
+      const command = buildAttachCommand(externalSessionId, { cwd: params.cwd, url });
+      await openTerminalWindow({ command, terminalApp: params.terminalApp });
+      await params.service.noteAttached(externalSessionId);
+      return { command };
+    },
+    get autoAttachOnStart() {
+      return params.autoAttachOnStart && params.attachEndpoint.url !== undefined;
+    },
+    service: params.service
+  };
 }
 
 export async function createGatewayRuntimeFromLoadedConfig(params: {
@@ -2579,20 +2641,17 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     summarize: async (input) => externalAgentSummarySink.summarize?.(input),
     workspaceRoot: params.cwd
   });
-  const externalAgentSessionHost: ExternalAgentSessionHost | undefined = externalAgentSessionService
-    ? {
-        async attach(externalSessionId) {
-          const command = buildAttachCommand(externalSessionId);
-          await openTerminalWindow({
-            command,
-            terminalApp: params.loaded.resolvedConfig.externalAgents.interactive.terminalApp
-          });
-          await externalAgentSessionService.noteAttached(externalSessionId);
-          return { command };
-        },
+  // Late-bound too: the interactive CLI serves its listener after boot and the
+  // server after it binds, while `--prompt` and plain SDK hosts serve none.
+  const attachEndpoint: AttachEndpointHolder = {};
+  const externalAgentSessionHost = externalAgentSessionService
+    ? createExternalAgentSessionHost({
+        attachEndpoint,
         autoAttachOnStart: params.loaded.resolvedConfig.externalAgents.interactive.autoAttachOnStart,
-        service: externalAgentSessionService
-      }
+        cwd: params.cwd,
+        service: externalAgentSessionService,
+        terminalApp: params.loaded.resolvedConfig.externalAgents.interactive.terminalApp
+      })
     : undefined;
   const toolRuntime = new ToolRuntime({
     approvalDecider: createToolApprovalDecider({
@@ -2626,6 +2685,7 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
   });
   const runtime = new GatewayRuntime({
     approvals,
+    attachEndpoint,
     ...(externalAgentSessionHost
       ? {
           attachExternalAgentSession: async (externalSessionId: string) =>
