@@ -50,6 +50,8 @@ export type ExternalAgentSessionServiceOptions = {
   passEnv?: readonly string[];
   rows?: number;
   sessionWarningThreshold?: number;
+  /** How long `shutdown()` waits after SIGTERM before sending SIGKILL. */
+  shutdownGraceMs?: number;
   stabilityMs?: number;
   startupTimeoutMs?: number;
   stateRoot: string;
@@ -71,6 +73,9 @@ const DEFAULT_HUMAN_LOCK_MS = 10_000;
 const DEFAULT_IDLE_MS = 2_000;
 const DEFAULT_ROWS = 40;
 const DEFAULT_SESSION_WARNING_THRESHOLD = 4;
+// Matches the grace the one-shot path gives a job before SIGKILL.
+const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
+const SHUTDOWN_KILL_WAIT_MS = 2_000;
 const DEFAULT_STABILITY_MS = 1_000;
 // A TUI needs a moment to boot and paint before it can accept input. Bounded so
 // an agent that prints nothing until spoken to still starts, just slower.
@@ -344,12 +349,22 @@ export class FileExternalAgentSessionService implements ExternalAgentSessionServ
     session.process.write(text, false);
   }
 
+  /**
+   * Stops every live session. `GatewayRuntime.close()` awaits this, so it has
+   * to be bounded: a child that handles or ignores SIGTERM (a TUI confirming
+   * exit, an agent run through an interactive shell) otherwise held the REPL's
+   * exit and server shutdown open forever. Escalates to SIGKILL after the same
+   * grace the one-shot path gives a job.
+   */
   async shutdown(): Promise<void> {
     const sessions = Array.from(this.live.values());
-    for (const session of sessions) {
-      session.process.kill("SIGTERM");
+    const finalized = Promise.all(sessions.map((session) => session.finalized));
+    signalAll(sessions, "SIGTERM");
+    if (await settlesWithin(finalized, this.options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS)) {
+      return;
     }
-    await Promise.all(sessions.map((session) => session.finalized));
+    signalAll(sessions, "SIGKILL");
+    await settlesWithin(finalized, SHUTDOWN_KILL_WAIT_MS);
   }
 
   private assertWritable(record: ExternalAgentSessionRecord): void {
@@ -538,4 +553,32 @@ export function createExternalAgentSessionServiceFromConfig(params: {
     ...(params.summarize ? { summarize: params.summarize } : {}),
     turnTimeoutMs: externalAgents.interactive.turnTimeoutMs
   });
+}
+
+function signalAll(sessions: LiveSession[], signal: NodeJS.Signals): void {
+  for (const session of sessions) {
+    try {
+      session.process.kill(signal);
+    } catch {
+      // Already gone: its exit handler finalizes it.
+    }
+  }
+}
+
+/** Whether `promise` settles within `timeoutMs`; never rejects. */
+async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then(
+        () => true,
+        () => true
+      ),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

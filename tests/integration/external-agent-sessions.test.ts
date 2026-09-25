@@ -195,4 +195,35 @@ describe("FileExternalAgentSessionService", () => {
     const { service } = await createService();
     await expect(service.startSession({ agentId: "nope" })).rejects.toThrow(/not configured/u);
   });
+
+  // GatewayRuntime.close() awaits shutdown(), so a child that handles or
+  // ignores SIGTERM (a TUI confirming exit, an agent run through an
+  // interactive shell) held the REPL's exit and server shutdown open forever.
+  test("shutdown() escalates to SIGKILL when a child ignores SIGTERM", async () => {
+    const stubborn: ExternalAgentConfig = {
+      args: ["-e", "process.on('SIGTERM', () => {}); process.stdout.write('> '); setInterval(() => {}, 1000);"],
+      command: process.execPath,
+      displayName: "SIGTERM-ignoring agent",
+      enabled: true,
+      env: {},
+      instructionMode: "arg",
+      interactive: { args: [], idleMs: 100, readyPattern: "^> $", stabilityMs: 50, turnTimeoutMs: 5_000 },
+      kind: "claude",
+      outputFormatFlag: "--output-format",
+      outputFormatValue: "json",
+      passEnv: [],
+      printFlag: "--print",
+      resumeFlag: "--resume"
+    };
+    const { service } = await createService({ agents: { stubborn }, shutdownGraceMs: 200 });
+    const record = await service.startSession({ agentId: "stubborn" });
+
+    const started = Date.now();
+    await service.shutdown();
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const [stored] = await service.listSessions();
+    expect(stored?.id).toBe(record.id);
+    expect(stored?.status).not.toBe("running");
+  });
 });
