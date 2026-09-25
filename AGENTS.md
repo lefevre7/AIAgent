@@ -746,7 +746,7 @@ Threat model and per-finding detail in `docs/SECURITY_REVIEW.md`; config surface
   `~/.aia/trust.json` — never in the workspace, which an attacker also controls. Editing a
   trusted file revokes trust. Untrusted `exec`/`file` providers are withheld with an
   `AIA_UNTRUSTED_CONFIG` warning and the load _continues_; only an actual reference fails.
-  `aia trust` grants/revokes.
+  `aia trust` shows; `--grant`/`--revoke` change it.
 - **An approval target must render what will actually run.** The external-agent `command`
   target now includes the model-supplied `args` (H4) via the same `stringifyArgv` the M6
   fix introduced — now exported, rather than written a second time. A model could

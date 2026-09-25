@@ -155,16 +155,25 @@ so merely running `aia` inside a cloned repo used to be enough to execute
 Those two provider kinds are therefore **inert until you trust the config**:
 
 ```bash
-aia trust              # review the file first, then grant
+aia trust              # show the state and what trusting would allow; asks y/N at a terminal
+aia trust --grant      # grant without asking (scripts, CI)
 aia trust --revoke     # take it back
 aia trust --cwd <path> # act on another workspace
 ```
 
+- Bare `aia trust` never grants on its own. It prints the file, its hash, and one line
+  per provider trusting would enable (`payload: runs /bin/sh -c '…'`,
+  `keyfile: reads /path`), then asks `Trust this exact file now? [y/N]` when stdin is a
+  terminal. Anything but `y`/`yes`, or no terminal at all, leaves it untrusted.
 - Trust is keyed on the config's **path and the SHA-256 of its exact contents**, so a
   repo you trusted cannot silently grow an `exec` provider later — any edit revokes trust
   until you grant it again. `aia trust` prints the hash it is acting on.
 - The record lives in `~/.aia/trust.json`, never in the workspace. A record stored inside
   the repo could simply be shipped pre-populated by whoever wrote the config.
+- A `trust.json` that cannot be read or parsed fails closed with an
+  `AIA_TRUST_STORE_UNREADABLE` warning: every workspace config is treated as untrusted,
+  and `--grant`/`--revoke` refuse to rewrite it (that would erase every other grant it
+  holds) until you fix or remove it.
 - `env` providers are unaffected: they can only read the environment the process already
   has.
 - Untrusted providers **fail closed and the load continues**, with one

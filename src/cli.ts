@@ -13,12 +13,14 @@ import {
   loadAIAgentConfig,
   grantConfigTrust,
   revokeConfigTrust,
+  stringifyArgv,
   APP_CONFIG_FILE_NAME,
   CLI_NAME,
   COMPLETION_SUMMARY_MESSAGE_TAG,
   DEFAULT_LM_STUDIO_MODEL,
   type ArtifactReference,
   type LoadedAIAgentConfig,
+  type SecretProviderConfig,
   type SessionRecord,
   type StructuredError,
   type VoiceCaptureRecord,
@@ -119,8 +121,8 @@ function formatHelp(): string {
     "  aia                  Start an interactive session (stays open until /exit or /quit)",
     "  aia info             Print runtime surfaces and providers",
     "  aia attach <id>      Join a live interactive external-agent terminal (Ctrl-] to detach)",
-    "  aia trust [--revoke] [--cwd <path>]",
-    "                       Show or change trust for this workspace's config file",
+    "  aia trust [--grant | --revoke] [--cwd <path>]",
+    "                       Show, grant, or revoke trust for this workspace's config file",
     "  aia --help",
     "  aia --version        Print the version and exit",
     "  aia --prompt <text> [--cwd <path>] [--goal <text>] [--title <text>]",
@@ -1775,13 +1777,14 @@ if (isDirectlyInvoked()) {
  * here as "not trusted" again rather than silently keeping the old grant.
  */
 async function runTrustCli(args: string[], streams: CliStreams, deps: CliDependencies = {}): Promise<number> {
-  let parsed: { values: { cwd?: string; help?: boolean; revoke?: boolean } };
+  let parsed: { values: { cwd?: string; grant?: boolean; help?: boolean; revoke?: boolean } };
   try {
     parsed = parseArgs({
       args,
       allowPositionals: false,
       options: {
         cwd: { type: "string" },
+        grant: { type: "boolean" },
         help: { short: "h", type: "boolean" },
         revoke: { type: "boolean" }
       }
@@ -1797,12 +1800,19 @@ async function runTrustCli(args: string[], streams: CliStreams, deps: CliDepende
       [
         "aia trust — allow this workspace's config to use secret providers that run commands or read files.",
         "",
-        "  aia trust                 Show the current trust state",
+        "  aia trust                 Show the trust state and what trusting the file would allow",
+        "                            (at a terminal, asks before granting)",
+        "  aia trust --grant         Trust this exact file without asking",
         "  aia trust --revoke        Remove trust for this workspace's config",
         "  aia trust --cwd <path>    Act on a different workspace"
       ].join("\n")
     );
     return 0;
+  }
+
+  if (parsed.values.grant && parsed.values.revoke) {
+    writeLine(streams.stderr, "Use either --grant or --revoke, not both.");
+    return 1;
   }
 
   const cwd = parsed.values.cwd ? path.resolve(parsed.values.cwd) : process.cwd();
@@ -1844,14 +1854,34 @@ async function runTrustCli(args: string[], streams: CliStreams, deps: CliDepende
       return 0;
     }
 
+    // Showing is the default, and granting is explicit. The command used to
+    // grant on sight, while its help said it only showed the state, so an
+    // operator checking an unfamiliar repo trusted exactly the file they had
+    // meant to inspect.
+    writeLine(
+      streams.stdout,
+      [
+        `Not trusted: ${fingerprint.path}`,
+        `sha256: ${fingerprint.sha256}`,
+        "Trusting this exact file would let these secret providers run:",
+        ...workspaceTrust.untrustedProviderNames.map((name) =>
+          describeTrustGatedProvider(name, loaded.resolvedConfig.secrets.providers[name])
+        )
+      ].join("\n")
+    );
+
+    if (!parsed.values.grant && !(await confirmTrustGrant(streams, deps))) {
+      writeLine(streams.stdout, "Not trusted. Review the file, then run `aia trust --grant` to allow them.");
+      return 0;
+    }
+
     await grantConfigTrust(paths.userStateDirectory, fingerprint);
     writeLine(
       streams.stdout,
       [
         `Trusted ${fingerprint.path}`,
-        `sha256: ${fingerprint.sha256}`,
         `Now allowed: ${workspaceTrust.untrustedProviderNames.join(", ")}`,
-        "Editing this file revokes trust until you run `aia trust` again."
+        "Editing this file revokes trust until you grant it again."
       ].join("\n")
     );
     return 0;
@@ -1859,4 +1889,36 @@ async function runTrustCli(args: string[], streams: CliStreams, deps: CliDepende
     writeLine(streams.stderr, renderCliError(error));
     return 1;
   }
+}
+
+/**
+ * Asks before granting, but only when someone is at a terminal to answer.
+ * Anything short of an explicit yes leaves the file untrusted.
+ */
+async function confirmTrustGrant(streams: CliStreams, deps: CliDependencies): Promise<boolean> {
+  const reader = deps.interactiveInput
+    ? toLineReader(deps.interactiveInput)
+    : process.stdin.isTTY
+      ? createStdinLineReader()
+      : null;
+  if (!reader) {
+    return false;
+  }
+
+  try {
+    const answer = await createOperatorPrompt(streams, reader)("Trust this exact file now? [y/N] ");
+    return /^(y|yes)$/iu.test(answer?.trim() ?? "");
+  } finally {
+    await reader.close?.();
+  }
+}
+
+function describeTrustGatedProvider(name: string, provider: SecretProviderConfig | undefined): string {
+  if (provider?.source === "exec") {
+    return `  - ${name}: runs ${stringifyArgv([provider.command, ...(provider.args ?? [])]) ?? provider.command}`;
+  }
+  if (provider?.source === "file") {
+    return `  - ${name}: reads ${provider.path}`;
+  }
+  return `  - ${name}`;
 }

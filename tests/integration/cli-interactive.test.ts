@@ -1237,6 +1237,7 @@ describe("CLI trust subcommand", () => {
     const exitCode = await runCliWithStubbedEndpoint(["trust", "--help"], capture.streams, {});
     expect(exitCode).toBe(0);
     expect(capture.getStdout()).toContain("aia trust");
+    expect(capture.getStdout()).toContain("--grant");
     expect(capture.getStdout()).toContain("--revoke");
   });
 
@@ -1256,46 +1257,94 @@ describe("CLI trust subcommand", () => {
     await expect(fs.access(path.join(home, ".aia", "trust.json"))).rejects.toThrow();
   });
 
-  test("grants trust, reports it as already trusted, then revokes it", async () => {
+  // Bare `aia trust` used to grant on sight while its help said it only showed
+  // the state, so an operator inspecting an unfamiliar repo trusted exactly
+  // the file they meant to review. Granting is now explicit.
+  test("shows what trusting would allow, and grants only on an explicit yes", async () => {
     const { home, workspace } = await createTrustWorkspace(
-      '{ "configVersion": 1, "secrets": { "providers": { "payload": { "source": "exec", "command": "/bin/sh" } } } }'
+      '{ "configVersion": 1, "secrets": { "providers": { "payload": { "source": "exec", "command": "/bin/sh", "args": ["-c", "echo hi"] } } } }'
     );
-
-    const granting = createCaptureStreams();
-    expect(
-      await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], granting.streams, { userHomeDirectory: home })
-    ).toBe(0);
-    expect(granting.getStdout()).toContain("Trusted ");
-    expect(granting.getStdout()).toContain("Now allowed: payload");
-    // The operator is shown the hash they are consenting to.
-    expect(granting.getStdout()).toMatch(/sha256: [0-9a-f]{64}/u);
-    // Recorded in this test's home, never the developer's real ~/.aia.
-    const store = JSON.parse(await fs.readFile(path.join(home, ".aia", "trust.json"), "utf8")) as {
-      trustedConfigs: Array<{ path: string }>;
+    const storePath = path.join(home, ".aia", "trust.json");
+    const trust = (argv: string[], answers?: string[]) => {
+      const capture = createCaptureStreams();
+      const exitCode = runCliWithStubbedEndpoint(["trust", "--cwd", workspace, ...argv], capture.streams, {
+        // Always supplied, so a test run from a real terminal never waits on stdin.
+        interactiveInput: lineSource(answers ?? []),
+        userHomeDirectory: home
+      });
+      return { capture, exitCode };
     };
+
+    const inspecting = trust([]);
+    expect(await inspecting.exitCode).toBe(0);
+    expect(inspecting.capture.getStdout()).toContain("Not trusted:");
+    // The operator sees the hash and exactly what would run before consenting.
+    expect(inspecting.capture.getStdout()).toMatch(/sha256: [0-9a-f]{64}/u);
+    expect(inspecting.capture.getStdout()).toContain("payload: runs /bin/sh -c 'echo hi'");
+    expect(inspecting.capture.getStdout()).toContain("aia trust --grant");
+    await expect(fs.access(storePath)).rejects.toThrow();
+
+    const declining = trust([], ["n"]);
+    expect(await declining.exitCode).toBe(0);
+    await expect(fs.access(storePath)).rejects.toThrow();
+
+    const accepting = trust([], ["y"]);
+    expect(await accepting.exitCode).toBe(0);
+    expect(accepting.capture.getStdout()).toContain("Trust this exact file now? [y/N]");
+    expect(accepting.capture.getStdout()).toContain("Now allowed: payload");
+    // Recorded in this test's home, never the developer's real ~/.aia.
+    const store = JSON.parse(await fs.readFile(storePath, "utf8")) as { trustedConfigs: Array<{ path: string }> };
     expect(store.trustedConfigs.map((entry) => entry.path)).toEqual([
       await fs.realpath(path.join(workspace, "aia.config.jsonc"))
     ]);
 
-    const repeat = createCaptureStreams();
-    expect(
-      await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], repeat.streams, { userHomeDirectory: home })
-    ).toBe(0);
-    expect(repeat.getStdout()).toContain("Already trusted");
+    const repeat = trust([]);
+    expect(await repeat.exitCode).toBe(0);
+    expect(repeat.capture.getStdout()).toContain("Already trusted");
 
-    const revoking = createCaptureStreams();
-    expect(
-      await runCliWithStubbedEndpoint(["trust", "--revoke", "--cwd", workspace], revoking.streams, {
+    const revoking = trust(["--revoke"]);
+    expect(await revoking.exitCode).toBe(0);
+    expect(revoking.capture.getStdout()).toContain("Revoked trust");
+
+    // --grant is the non-interactive way to consent.
+    const granting = trust(["--grant"]);
+    expect(await granting.exitCode).toBe(0);
+    expect(granting.capture.getStdout()).toContain("Trusted ");
+    expect(granting.capture.getStdout()).not.toContain("[y/N]");
+  });
+
+  test("refuses --grant together with --revoke", async () => {
+    const { home, workspace } = await createTrustWorkspace('{ "configVersion": 1 }');
+    const capture = createCaptureStreams();
+    const exitCode = await runCliWithStubbedEndpoint(
+      ["trust", "--grant", "--revoke", "--cwd", workspace],
+      capture.streams,
+      {
         userHomeDirectory: home
-      })
-    ).toBe(0);
-    expect(revoking.getStdout()).toContain("Revoked trust");
+      }
+    );
+    expect(exitCode).toBe(1);
+    expect(capture.getStderr()).toContain("either --grant or --revoke");
+  });
 
-    const afterRevoke = createCaptureStreams();
-    expect(
-      await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], afterRevoke.streams, { userHomeDirectory: home })
-    ).toBe(0);
-    expect(afterRevoke.getStdout()).toContain("Trusted ");
+  // Rewriting a store that could not be read replaced every grant it held
+  // with the one being changed.
+  test("refuses to rewrite a trust store it cannot read", async () => {
+    const { home, workspace } = await createTrustWorkspace(
+      '{ "configVersion": 1, "secrets": { "providers": { "payload": { "source": "exec", "command": "/bin/sh" } } } }'
+    );
+    const storePath = path.join(home, ".aia", "trust.json");
+    const damaged = '{ "trustedConfigs": [], "version": 1, "note": "added by hand" }';
+    await fs.writeFile(storePath, damaged, "utf8");
+
+    const capture = createCaptureStreams();
+    const exitCode = await runCliWithStubbedEndpoint(["trust", "--grant", "--cwd", workspace], capture.streams, {
+      userHomeDirectory: home
+    });
+
+    expect(exitCode).toBe(1);
+    expect(capture.getStderr()).toContain("Nothing was changed");
+    await expect(fs.readFile(storePath, "utf8")).resolves.toBe(damaged);
   });
 
   test("reports an unknown flag instead of silently ignoring it", async () => {

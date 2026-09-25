@@ -107,17 +107,70 @@ export async function fingerprintConfigFile(filePath: string): Promise<ConfigFin
   }
 }
 
-export async function readConfigTrustStore(userStateDirectory: string): Promise<ConfigTrustStore> {
+export class ConfigTrustStoreError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConfigTrustStoreError";
+  }
+}
+
+/** Reads the store, throwing when a file exists but cannot be used. */
+async function readConfigTrustStoreStrict(userStateDirectory: string): Promise<ConfigTrustStore> {
+  const filePath = configTrustFilePath(userStateDirectory);
+  let raw: string;
   try {
-    const raw = await fs.readFile(configTrustFilePath(userStateDirectory), "utf8");
-    return configTrustStoreSchema.parse(JSON.parse(raw) as unknown);
+    raw = await fs.readFile(filePath, "utf8");
   } catch (error) {
     if (isMissingFileError(error)) {
       return { trustedConfigs: [], version: 1 };
     }
+    throw new ConfigTrustStoreError(
+      `The trust store ${filePath} could not be read (${error instanceof Error ? error.message : String(error)}).`
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new ConfigTrustStoreError(`The trust store ${filePath} is not valid JSON.`);
+  }
+  const result = configTrustStoreSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new ConfigTrustStoreError(
+      `The trust store ${filePath} has an unexpected shape (${result.error.issues[0]?.message ?? "invalid"}).`
+    );
+  }
+  return result.data;
+}
+
+export async function readConfigTrustStore(userStateDirectory: string): Promise<ConfigTrustStore> {
+  try {
+    return await readConfigTrustStoreStrict(userStateDirectory);
+  } catch (error) {
     // A damaged or unparsable trust store must fail closed: treating it as
-    // "everything is trusted" would turn corruption into a bypass.
+    // "everything is trusted" would turn corruption into a bypass. Not
+    // silently, though, or every trusted workspace just stops working behind
+    // a warning that blames the workspace instead.
+    process.emitWarning(
+      `${error instanceof Error ? error.message : String(error)} Every workspace config is treated as untrusted until it is fixed or removed.`,
+      { code: "AIA_TRUST_STORE_UNREADABLE" }
+    );
     return { trustedConfigs: [], version: 1 };
+  }
+}
+
+/**
+ * Rewriting a store that could not be read would replace every grant it holds
+ * with just the one being changed, so an update refuses instead.
+ */
+async function readConfigTrustStoreForUpdate(userStateDirectory: string): Promise<ConfigTrustStore> {
+  try {
+    return await readConfigTrustStoreStrict(userStateDirectory);
+  } catch (error) {
+    throw new ConfigTrustStoreError(
+      `${error instanceof Error ? error.message : String(error)} Nothing was changed: rewriting it would drop every grant it holds. Fix or remove the file, then try again.`
+    );
   }
 }
 
@@ -133,7 +186,7 @@ export async function grantConfigTrust(
   userStateDirectory: string,
   fingerprint: ConfigFingerprint
 ): Promise<ConfigTrustStore> {
-  const store = await readConfigTrustStore(userStateDirectory);
+  const store = await readConfigTrustStoreForUpdate(userStateDirectory);
   const next: ConfigTrustStore = {
     trustedConfigs: [
       ...store.trustedConfigs.filter((entry) => entry.path !== fingerprint.path),
@@ -152,7 +205,7 @@ export async function grantConfigTrust(
 }
 
 export async function revokeConfigTrust(userStateDirectory: string, filePath: string): Promise<ConfigTrustStore> {
-  const store = await readConfigTrustStore(userStateDirectory);
+  const store = await readConfigTrustStoreForUpdate(userStateDirectory);
   // Match both spellings: entries granted before path canonicalization, and
   // callers that hand us an un-resolved path.
   const candidates = new Set([await canonicalConfigPath(filePath), path.resolve(filePath)]);

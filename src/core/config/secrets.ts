@@ -124,7 +124,7 @@ async function resolveSecretReference(
     throw new SecretResolutionError(
       `Secret provider "${ref.provider}" is declared by an untrusted workspace config and can run commands or ` +
         `read arbitrary files, so it was not used for ${ref.source}:${ref.id}. ` +
-        "Review the config file, then run `aia trust` in this workspace to allow it."
+        "Run `aia trust` in this workspace to see what it would do, then grant it if you agree."
     );
   }
   if (provider.source !== ref.source) {

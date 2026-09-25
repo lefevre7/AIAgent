@@ -35,9 +35,12 @@ export class ConfigValidationError extends Error {
 }
 
 export type WorkspaceConfigTrust = {
-  /** Fingerprint of the workspace config, or null when there is no such file. */
+  /**
+   * Fingerprint of the workspace config when it declares a trust-gated
+   * provider; null when it declares none, or when the file can no longer be read.
+   */
   fingerprint: ConfigFingerprint | null;
-  /** True when the workspace config declares no trust-gated provider at all. */
+  /** True when the workspace config declares a trust-gated (`exec`/`file`) secret provider. */
   required: boolean;
   trusted: boolean;
   /** Providers held back because this config is not trusted. */
@@ -260,7 +263,7 @@ async function resolveWorkspaceConfigTrust(params: {
   process.emitWarning(
     `The workspace config "${fingerprint.path}" declares secret provider(s) that can run commands or read ` +
       `arbitrary files (${gatedProviderNames.join(", ")}), and this exact file has not been trusted. ` +
-      "They will not be used. Review the file, then run `aia trust` in this workspace to allow them.",
+      "They will not be used. Run `aia trust` in this workspace to see what they would do, then grant it if you agree.",
     { code: "AIA_UNTRUSTED_CONFIG" }
   );
 

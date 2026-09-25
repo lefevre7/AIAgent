@@ -117,6 +117,38 @@ describe("workspace config trust (security review H3)", () => {
     expect(isConfigTrusted(store, fingerprintConfigContents("/anything", "x"))).toBe(false);
   });
 
+  // It also used to fail silently, and the next grant or revoke then rewrote
+  // the file from that empty reading, erasing every other grant. One unknown
+  // key (a newer build, a hand annotation) was enough.
+  test("a damaged trust store warns, and grant and revoke refuse to overwrite it", async () => {
+    const root = await tempRoot();
+    const storePath = path.join(root, "trust.json");
+    const damaged = JSON.stringify({
+      note: "reviewed by me",
+      trustedConfigs: [
+        { grantedAt: "2026-09-01T00:00:00.000Z", path: "/work/repo-a/aia.config.jsonc", sha256: "a".repeat(64) }
+      ],
+      version: 1
+    });
+    await fs.writeFile(storePath, damaged, "utf8");
+
+    const warnings: string[] = [];
+    const onWarning = (warning: Error & { code?: string }) => warnings.push(warning.code ?? "");
+    process.on("warning", onWarning);
+    try {
+      await readConfigTrustStore(root);
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("warning", onWarning);
+    }
+    expect(warnings).toEqual(["AIA_TRUST_STORE_UNREADABLE"]);
+
+    const fingerprint = fingerprintConfigContents("/work/repo-c/aia.config.jsonc", "x");
+    await expect(grantConfigTrust(root, fingerprint)).rejects.toThrow(/Nothing was changed/u);
+    await expect(revokeConfigTrust(root, "/work/repo-a/aia.config.jsonc")).rejects.toThrow(/Nothing was changed/u);
+    await expect(fs.readFile(storePath, "utf8")).resolves.toBe(damaged);
+  });
+
   // Caught by running `aia trust --revoke` for real: the grant was keyed on
   // the realpath while the revoke resolved the symlinked spelling, so revoke
   // printed success and removed nothing. A revoke that silently does nothing
