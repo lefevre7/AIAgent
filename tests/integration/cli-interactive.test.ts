@@ -958,6 +958,11 @@ describe("interactive CLI loop", () => {
     expect(exitCode).toBe(0);
     expect(capture.getStdout()).toContain("Interactive commands:");
     expect(capture.getStdout()).toContain("/compact");
+    // Every answer the approval prompt takes. `e` was missing, while the text
+    // described a denial "note" without saying how to attach one.
+    for (const answer of ["y", "a", "e", "N"]) {
+      expect(capture.getStdout()).toMatch(new RegExp(`^  ${answer}  \\S`, "mu"));
+    }
     expect(capture.getStderr()).toContain('Unknown command "/bogus"');
     expect(fake.getSent()).toEqual(["real message"]);
   });

@@ -1501,9 +1501,11 @@ function formatChatHelp(): string {
     "  /exit, /quit   End the session and return to the shell",
     "Anything else is sent to the agent as a message.",
     "",
-    "Approval prompts accept y (approve once), a (approve and auto-approve this target for the",
-    "rest of the session), or anything else to deny. A denial can carry an optional note that is",
-    'sent to the agent as steering, e.g. "use ls instead".'
+    "Approval prompts [y/N/a/e]:",
+    "  y  approve once",
+    "  a  approve, and auto-approve this exact target for the rest of the session",
+    '  e  deny, then say what to do instead; the note reaches the agent as steering ("use ls instead")',
+    "  N  deny (Enter, or any other answer, also denies)"
   ].join("\n");
 }
 
