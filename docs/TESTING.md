@@ -12,7 +12,11 @@ npm run lint
 npm run test:deterministic
 ```
 
-`npm run validate:penultimate` runs the full deterministic stack plus the live-suite runner in its default opt-in mode.
+`npm run validate:penultimate` runs the static checks, then each test layer once: unit
+and integration together under `test:coverage` (so the coverage floor is enforced on the
+same run), then e2e, then the live-suite runner in its default opt-in mode.
+`test:deterministic` stays the everyday command; the gate does not also run it, which
+used to execute unit and integration twice.
 
 ## Coverage
 
