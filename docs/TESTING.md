@@ -108,10 +108,12 @@ Current live commands and flags:
   Note: this starts the CLI with its approval-bypass flag — see `docs/EXTERNAL_AGENTS.md`.
 - LM Studio:
   `AIA_RUN_LIVE_LM_STUDIO_TESTS=1 npm run test:live:lm-studio`
-  Optional: `AIA_LIVE_LM_STUDIO_BASE_URL`, `AIA_LIVE_LM_STUDIO_MODEL`
+  Optional: `AIA_LIVE_LM_STUDIO_BASE_URL`, `AIA_LIVE_LM_STUDIO_MODEL`, `AIA_LIVE_LM_STUDIO_MAX_OUTPUT_TOKENS`
+  (default 2048, room for a reasoning model to think and still answer)
 - Ollama:
   `AIA_RUN_LIVE_OLLAMA_TESTS=1 npm run test:live:ollama`
-  Optional: `AIA_LIVE_OLLAMA_BASE_URL`, `AIA_LIVE_OLLAMA_MODEL`
+  Optional: `AIA_LIVE_OLLAMA_BASE_URL`, `AIA_LIVE_OLLAMA_MODEL`, `AIA_LIVE_OLLAMA_MAX_OUTPUT_TOKENS`
+  (default 2048, room for a reasoning model to think and still answer)
 - Memory embeddings:
   `AIA_RUN_LIVE_MEMORY_TESTS=1 npm run test:live:memory`
   Required: `AIA_LIVE_MEMORY_PROVIDER`, `AIA_LIVE_MEMORY_BASE_URL`

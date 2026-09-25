@@ -6,6 +6,9 @@ import { createLiveTestHarness, envFlag } from "./helpers";
 
 const baseUrl = process.env.AIA_LIVE_LM_STUDIO_BASE_URL ?? "http://127.0.0.1:1234/v1";
 const requestedModel = process.env.AIA_LIVE_LM_STUDIO_MODEL;
+// A reasoning model thinks before it answers, and that thinking counts against
+// this budget. At 64 tokens it never reached the answer.
+const maxOutputTokens = Number(process.env.AIA_LIVE_LM_STUDIO_MAX_OUTPUT_TOKENS ?? 2048);
 const { liveTest } = createLiveTestHarness({
   enabled: envFlag("AIA_RUN_LIVE_LM_STUDIO_TESTS"),
   prefix: "aiagent-live-lm-studio-"
@@ -46,7 +49,7 @@ describe("LM Studio adapter (live)", () => {
         modelId: requestedModel ?? models[0]!.modelId,
         provider: "lm_studio",
         settings: {
-          maxOutputTokens: 64,
+          maxOutputTokens,
           stopSequences: [],
           temperature: 0,
           toolChoice: "none"
@@ -54,8 +57,14 @@ describe("LM Studio adapter (live)", () => {
       })
     );
 
-    const firstPart = response.message?.parts[0];
     expect(response.provider).toBe("lm_studio");
-    expect(firstPart && "text" in firstPart ? firstPart.text.trim().length : 0).toBeGreaterThan(0);
+    // Any text part will do: a reasoning model's first part need not be the answer.
+    const answer = (response.message?.parts ?? [])
+      .flatMap((part) => (part.kind === "text" ? [part.text] : []))
+      .join("");
+    expect(
+      answer.trim().length,
+      `no answer within ${maxOutputTokens} output tokens (stop reason: ${response.stopReason})`
+    ).toBeGreaterThan(0);
   });
 });
