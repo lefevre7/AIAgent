@@ -1246,7 +1246,9 @@ describe("CLI trust subcommand", () => {
     );
     const capture = createCaptureStreams();
 
-    const exitCode = await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], capture.streams, {});
+    const exitCode = await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], capture.streams, {
+      userHomeDirectory: home
+    });
 
     expect(exitCode).toBe(0);
     expect(capture.getStdout()).toContain("No trust needed");
@@ -1255,27 +1257,44 @@ describe("CLI trust subcommand", () => {
   });
 
   test("grants trust, reports it as already trusted, then revokes it", async () => {
-    const { workspace } = await createTrustWorkspace(
+    const { home, workspace } = await createTrustWorkspace(
       '{ "configVersion": 1, "secrets": { "providers": { "payload": { "source": "exec", "command": "/bin/sh" } } } }'
     );
 
     const granting = createCaptureStreams();
-    expect(await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], granting.streams, {})).toBe(0);
+    expect(
+      await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], granting.streams, { userHomeDirectory: home })
+    ).toBe(0);
     expect(granting.getStdout()).toContain("Trusted ");
     expect(granting.getStdout()).toContain("Now allowed: payload");
     // The operator is shown the hash they are consenting to.
     expect(granting.getStdout()).toMatch(/sha256: [0-9a-f]{64}/u);
+    // Recorded in this test's home, never the developer's real ~/.aia.
+    const store = JSON.parse(await fs.readFile(path.join(home, ".aia", "trust.json"), "utf8")) as {
+      trustedConfigs: Array<{ path: string }>;
+    };
+    expect(store.trustedConfigs.map((entry) => entry.path)).toEqual([
+      await fs.realpath(path.join(workspace, "aia.config.jsonc"))
+    ]);
 
     const repeat = createCaptureStreams();
-    expect(await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], repeat.streams, {})).toBe(0);
+    expect(
+      await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], repeat.streams, { userHomeDirectory: home })
+    ).toBe(0);
     expect(repeat.getStdout()).toContain("Already trusted");
 
     const revoking = createCaptureStreams();
-    expect(await runCliWithStubbedEndpoint(["trust", "--revoke", "--cwd", workspace], revoking.streams, {})).toBe(0);
+    expect(
+      await runCliWithStubbedEndpoint(["trust", "--revoke", "--cwd", workspace], revoking.streams, {
+        userHomeDirectory: home
+      })
+    ).toBe(0);
     expect(revoking.getStdout()).toContain("Revoked trust");
 
     const afterRevoke = createCaptureStreams();
-    expect(await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], afterRevoke.streams, {})).toBe(0);
+    expect(
+      await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], afterRevoke.streams, { userHomeDirectory: home })
+    ).toBe(0);
     expect(afterRevoke.getStdout()).toContain("Trusted ");
   });
 
@@ -1427,12 +1446,17 @@ describe("CLI inspection commands and attach", () => {
     await Promise.all(attachRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
   });
 
-  // A workspace of its own, so attach never reads this repo's real `.aia/`.
-  async function attachWorkspace(): Promise<{ stateRoot: string; workspace: string }> {
-    const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aia-cli-attach-")));
-    attachRoots.push(workspace);
+  // A workspace and home of its own, so attach never reads this repo's real
+  // `.aia/` or the developer's `~/.aia/`.
+  async function attachWorkspace(): Promise<{ home: string; stateRoot: string; workspace: string }> {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aia-cli-attach-")));
+    attachRoots.push(root);
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(path.join(workspace, "aia.config.jsonc"), '{ "configVersion": 1 }\n', "utf8");
-    return { stateRoot: path.join(workspace, ".aia"), workspace };
+    return { home, stateRoot: path.join(workspace, ".aia"), workspace };
   }
 
   test("aia attach requires a session id and otherwise relays through the gateway", async () => {
@@ -1440,7 +1464,7 @@ describe("CLI inspection commands and attach", () => {
     expect(await runCliWithStubbedEndpoint(["attach"], missing.streams, {})).toBe(1);
     expect(missing.getStderr()).toContain("Usage: aia attach");
 
-    const { workspace } = await attachWorkspace();
+    const { home, workspace } = await attachWorkspace();
     const calls: Array<{ externalSessionId: string; url: string }> = [];
     const capture = createCaptureStreams();
     const exitCode = await runCliWithStubbedEndpoint(
@@ -1450,7 +1474,8 @@ describe("CLI inspection commands and attach", () => {
         attachToExternalAgentSession: async (options) => {
           calls.push({ externalSessionId: options.externalSessionId, url: options.url });
           return 0;
-        }
+        },
+        userHomeDirectory: home
       }
     );
 
@@ -1485,7 +1510,7 @@ describe("CLI inspection commands and attach", () => {
   // A REPL with no configured gateway token guards its listener with a token
   // minted for that launch and published beside the URL.
   test("aia attach presents the per-launch token the hosting CLI published", async () => {
-    const { stateRoot, workspace } = await attachWorkspace();
+    const { home, stateRoot, workspace } = await attachWorkspace();
     const url = "ws://127.0.0.1:1/api/gateway/ws";
     await fs.mkdir(attachEndpointsDirectory(stateRoot), { recursive: true });
     await fs.writeFile(
@@ -1503,7 +1528,8 @@ describe("CLI inspection commands and attach", () => {
           attachToExternalAgentSession: async (options) => {
             calls.push({ token: options.token, url: options.url });
             return 0;
-          }
+          },
+          userHomeDirectory: home
         }
       );
 

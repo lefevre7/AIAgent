@@ -83,6 +83,9 @@ type CliDependencies = {
   // Overrides the loopback gateway listener the REPL publishes for `aia attach`.
   // Tests substitute a recorder so they never bind a real port.
   serveAttachEndpoint?: (sdk: AIAgentSdk) => Promise<ServedAttachEndpoint | null>;
+  // Overrides the home directory whose `.aia/` holds the user-global config and
+  // the trust store, so tests never read or write the developer's real one.
+  userHomeDirectory?: string;
 };
 
 const CHAT_PROMPT = "› ";
@@ -166,7 +169,7 @@ export async function runCli(
   }
 
   if (argv[0] === "trust") {
-    return runTrustCli(argv.slice(1), streams);
+    return runTrustCli(argv.slice(1), streams, deps);
   }
 
   const { values } = parseArgs({
@@ -1011,7 +1014,8 @@ async function runAttachCli(args: string[], streams: CliStreams, deps: CliDepend
 
   try {
     const loaded = await loadAIAgentConfig({
-      cwd: values.cwd ? path.resolve(values.cwd) : process.cwd()
+      cwd: values.cwd ? path.resolve(values.cwd) : process.cwd(),
+      ...(deps.userHomeDirectory ? { userHomeDirectory: deps.userHomeDirectory } : {})
     });
     const gateway = loaded.resolvedConfig.gateway;
     // Prefer the listener published by a running interactive CLI: that is the
@@ -1770,7 +1774,7 @@ if (isDirectlyInvoked()) {
  * that it matches the file they just reviewed, and a later edit will show up
  * here as "not trusted" again rather than silently keeping the old grant.
  */
-async function runTrustCli(args: string[], streams: CliStreams): Promise<number> {
+async function runTrustCli(args: string[], streams: CliStreams, deps: CliDependencies = {}): Promise<number> {
   let parsed: { values: { cwd?: string; help?: boolean; revoke?: boolean } };
   try {
     parsed = parseArgs({
@@ -1807,7 +1811,11 @@ async function runTrustCli(args: string[], streams: CliStreams): Promise<number>
     // Skip secret resolution: the whole point is that we may not be allowed to
     // run these providers yet, and resolving would raise the very error the
     // operator is here to fix.
-    const loaded = await loadAIAgentConfig({ cwd, resolveSecrets: false });
+    const loaded = await loadAIAgentConfig({
+      cwd,
+      resolveSecrets: false,
+      ...(deps.userHomeDirectory ? { userHomeDirectory: deps.userHomeDirectory } : {})
+    });
     const { paths, workspaceTrust } = loaded;
     const configPath = loaded.sources.config.workspace ?? paths.workspaceConfigPath;
 
