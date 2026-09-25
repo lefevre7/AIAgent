@@ -69,6 +69,9 @@ export async function attachToExternalAgentSession(options: AttachOptions): Prom
       settled = true;
       restoreStdin();
       options.streams.stdin.removeListener("data", onStdinData);
+      // A flowing stdin keeps the process alive: without this the window sat
+      // on a finished relay after Ctrl-] or after its host went away.
+      options.streams.stdin.pause();
       if (socket.readyState === 1) {
         socket.close(1000, "detached");
       }

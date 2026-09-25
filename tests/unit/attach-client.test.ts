@@ -30,12 +30,24 @@ class FakeAttachSocket extends EventEmitter implements AttachWebSocketClient {
   }
 }
 
-function createStreams(): { streams: AttachStreams; stdin: EventEmitter; output: () => string } {
+function createStreams(): {
+  streams: AttachStreams;
+  stdin: EventEmitter;
+  output: () => string;
+  isFlowing: () => boolean;
+} {
   let output = "";
-  const stdin = new EventEmitter() as EventEmitter & { isTTY?: boolean; resume: () => void };
-  stdin.resume = () => undefined;
+  let flowing = false;
+  const stdin = new EventEmitter() as EventEmitter & { isTTY?: boolean; pause: () => void; resume: () => void };
+  stdin.resume = () => {
+    flowing = true;
+  };
+  stdin.pause = () => {
+    flowing = false;
+  };
 
   return {
+    isFlowing: () => flowing,
     output: () => output,
     stdin,
     streams: {
@@ -123,6 +135,30 @@ describe("attachToExternalAgentSession", () => {
     const sentAfterDetach = socket.sent.length;
     stdin.emit("data", Buffer.from("rm -rf /\r", "utf8"));
     expect(socket.sent).toHaveLength(sentAfterDetach);
+  });
+
+  // A flowing stdin keeps the process alive, so `aia attach` sat on a finished
+  // relay after Ctrl-] or once the REPL hosting the session exited.
+  test.each([
+    ["Ctrl-] detaches", (socket: FakeAttachSocket, stdin: EventEmitter) => stdin.emit("data", Buffer.from("\u001d"))],
+    ["the host closes the socket", (socket: FakeAttachSocket) => socket.emit("close")]
+  ])("stops reading stdin when %s", async (_label, end) => {
+    const socket = new FakeAttachSocket();
+    const { isFlowing, stdin, streams } = createStreams();
+
+    const exitCode = attachToExternalAgentSession({
+      createWebSocket: () => socket,
+      externalSessionId: "external-agent-session.abc",
+      streams,
+      url: "ws://127.0.0.1:3000/api/gateway/ws"
+    });
+    socket.emit("open");
+    expect(isFlowing()).toBe(true);
+
+    end(socket, stdin);
+
+    await expect(exitCode).resolves.toBe(0);
+    expect(isFlowing()).toBe(false);
   });
 
   // The addendum claims an attached terminal "cannot see another session's

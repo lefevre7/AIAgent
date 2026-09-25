@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import http from "node:http";
 import { createRequire } from "node:module";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -149,5 +149,64 @@ describe("attachGatewayWebSocketServer", () => {
       Buffer.alloc(0)
     );
     expect(fallback).toHaveBeenCalledOnce();
+  });
+
+  // ws reports the server closed only once every client has left, and nothing
+  // ended them: an attached `aia attach` window held the REPL's /exit open.
+  describe("close()", () => {
+    async function listen() {
+      const server = http.createServer();
+      const attached = attachGatewayWebSocketServer({
+        runtime: runtimeStub(),
+        server,
+        websocketPath: "/api/gateway/ws"
+      });
+      cleanups.push(async () => new Promise<void>((resolve) => server.close(() => resolve())));
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      return { attached, port: (server.address() as AddressInfo).port };
+    }
+
+    test("tells connected clients the gateway is going away instead of waiting on them", async () => {
+      const { attached, port } = await listen();
+      const client = new WebSocket(`ws://127.0.0.1:${port}/api/gateway/ws`);
+      await new Promise<void>((resolve, reject) => {
+        client.on("open", () => resolve());
+        client.on("error", reject);
+      });
+      const closeCode = new Promise<unknown>((resolve) => client.on("close", (code) => resolve(code)));
+
+      const started = Date.now();
+      await attached.close();
+
+      expect(Date.now() - started).toBeLessThan(3_000);
+      await expect(closeCode).resolves.toBe(1001);
+    });
+
+    test("drops a client that never answers the close handshake", async () => {
+      const { attached, port } = await listen();
+      const raw = net.connect(port, "127.0.0.1");
+      cleanups.push(() => {
+        raw.destroy();
+      });
+      await new Promise<void>((resolve) => raw.once("connect", () => resolve()));
+      raw.write(
+        [
+          "GET /api/gateway/ws HTTP/1.1",
+          "Host: 127.0.0.1",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          "Sec-WebSocket-Version: 13",
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+          "",
+          ""
+        ].join("\r\n")
+      );
+      await new Promise<void>((resolve) => raw.once("data", () => resolve()));
+
+      const started = Date.now();
+      await attached.close();
+
+      expect(Date.now() - started).toBeLessThan(3_000);
+    });
   });
 });

@@ -17,6 +17,9 @@ const { WebSocketServer } = require("ws") as {
   WebSocketServer: new (options: { noServer: true }) => GatewayWebSocketServer;
 };
 
+/** How long a client gets to finish the close handshake before shutdown drops it. */
+const CLIENT_CLOSE_GRACE_MS = 1_000;
+
 export type GatewayWebSocketLike = {
   close(code?: number, reason?: string): void;
   on(event: "close", listener: () => void): void;
@@ -27,6 +30,7 @@ export type GatewayWebSocketLike = {
 };
 
 type GatewayWebSocketServer = {
+  clients: Set<GatewayWebSocketLike & { terminate(): void }>;
   close(callback?: () => void): void;
   emit(event: "connection", socket: GatewayWebSocketLike, request: IncomingMessage): void;
   handleUpgrade(
@@ -88,7 +92,22 @@ export function attachGatewayWebSocketServer(options: AttachGatewayWebSocketServ
     close: async () =>
       await new Promise<void>((resolve) => {
         options.server.off("upgrade", upgradeHandler);
-        server.close(() => resolve());
+        // ws reports the server closed only once every client is gone, and
+        // nothing else ends them: an attached `aia attach` window would hold
+        // shutdown (and the REPL's /exit) open indefinitely. Ask each client to
+        // leave, then drop whoever is still there after a short grace.
+        for (const client of server.clients) {
+          client.close(1001, "The gateway is shutting down.");
+        }
+        const dropStragglers = setTimeout(() => {
+          for (const client of server.clients) {
+            client.terminate();
+          }
+        }, CLIENT_CLOSE_GRACE_MS);
+        server.close(() => {
+          clearTimeout(dropStragglers);
+          resolve();
+        });
       })
   };
 }
