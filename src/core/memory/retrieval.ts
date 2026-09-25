@@ -25,8 +25,45 @@ interface SqliteDatabase {
 // the `node:` prefix and then resolves the unrelated `sqlite` npm package, which
 // has no DatabaseSync export. Loading it through createRequire keeps a real
 // runtime require to the builtin in both the tsx dev path and the bundled CLI.
+//
+// It is also loaded on first use rather than at import. This module sits under
+// `@/core`, so a module-scope require ran for every `aia` command.
 const loadNodeModule = createRequire(import.meta.url);
-const { DatabaseSync } = loadNodeModule("node:sqlite") as typeof import("node:sqlite");
+let databaseSync: typeof import("node:sqlite").DatabaseSync | undefined;
+
+/**
+ * Loading node:sqlite makes Node print "SQLite is an experimental feature and
+ * might change at any time". Nobody running `aia` can act on that, so that one
+ * notice is dropped while the module loads. Every other warning goes through.
+ */
+function loadDatabaseSync(): typeof import("node:sqlite").DatabaseSync {
+  if (databaseSync) {
+    return databaseSync;
+  }
+  const emitWarning = process.emitWarning;
+  process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
+    if (!isSqliteExperimentalWarning(warning, rest[0])) {
+      (emitWarning as (...args: unknown[]) => void).call(process, warning, ...rest);
+    }
+  }) as typeof process.emitWarning;
+  try {
+    databaseSync = (loadNodeModule("node:sqlite") as typeof import("node:sqlite")).DatabaseSync;
+  } finally {
+    process.emitWarning = emitWarning;
+  }
+  return databaseSync;
+}
+
+function isSqliteExperimentalWarning(warning: string | Error, typeOrOptions: unknown): boolean {
+  const type =
+    warning instanceof Error
+      ? warning.name
+      : typeof typeOrOptions === "string"
+        ? typeOrOptions
+        : (typeOrOptions as { type?: unknown } | undefined)?.type;
+  const message = warning instanceof Error ? warning.message : warning;
+  return type === "ExperimentalWarning" && message.startsWith("SQLite ");
+}
 
 const RETRIEVAL_SCHEMA_VERSION = 1;
 const EMBEDDING_MODEL_HINTS = [
@@ -650,6 +687,7 @@ export class MemoryRetrievalEngine {
 
 function openSqliteStore(sqlitePath: string): { db: SqliteDatabase; usingFallbackStore: boolean } {
   try {
+    const DatabaseSync = loadDatabaseSync();
     return { db: new DatabaseSync(sqlitePath), usingFallbackStore: false };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
