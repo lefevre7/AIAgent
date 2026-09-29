@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 
 import httpMocks from "node-mocks-http";
 
@@ -91,5 +93,46 @@ describe("createHttpApp", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response._getData()).toBe("handled-by-next");
+  });
+
+  // Malformed JSON used to get Express's HTML error page (with a stack trace in
+  // development) instead of the JSON envelope API clients parse.
+  it("answers an unreadable body with the JSON error envelope", async () => {
+    const app = createHttpApp(
+      (_request, response) => {
+        response.status(200).send("next-handler");
+      },
+      { gateway: { runtime: gatewayRuntimeStub } }
+    );
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const post = async (body: string) =>
+        fetch(`http://127.0.0.1:${port}/api/gateway/request`, {
+          body,
+          headers: { "content-type": "application/json" },
+          method: "POST"
+        });
+
+      const malformed = await post('{"topic": "gateway.health", ');
+      expect(malformed.status).toBe(400);
+      expect(malformed.headers.get("content-type")).toContain("application/json");
+      expect(await malformed.json()).toEqual({
+        error: {
+          code: "invalid_request",
+          details: {},
+          message: "The request body is not valid JSON.",
+          retriable: false
+        },
+        ok: false
+      });
+
+      const oversized = await post(JSON.stringify({ padding: "x".repeat(1_100_000) }));
+      expect(oversized.status).toBe(413);
+      expect((await oversized.json()).error.code).toBe("invalid_request");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

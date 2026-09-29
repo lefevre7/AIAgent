@@ -39,4 +39,21 @@ describe("server runtime context singleton", () => {
     // after close, a second close is a no-op again
     await expect(closeServerRuntimeContext()).resolves.toBeUndefined();
   });
+
+  // Next compiles pages into their own bundle, with its own copy of this
+  // module. The page's copy found no context and built a second runtime: a
+  // second gateway, MCP manager (duplicate MCP processes) and channel pollers.
+  test("every copy of the module shares the context", async () => {
+    const first = fakeContext();
+    primeServerRuntimeContext(first.context);
+    vi.resetModules();
+    const secondCopy = await import("@/server/runtime-context");
+
+    await secondCopy.closeServerRuntimeContext();
+    expect(first.gatewayClose).toHaveBeenCalledOnce();
+
+    const second = fakeContext();
+    secondCopy.primeServerRuntimeContext(second.context);
+    await expect(getServerRuntimeContext()).resolves.toBe(second.context);
+  });
 });

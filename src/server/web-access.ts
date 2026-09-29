@@ -1,6 +1,14 @@
+import type { IncomingMessage } from "node:http";
+
 import type { Request, RequestHandler, Response } from "express";
 
-import { hasForwardingHeaders, isLoopbackAddress } from "@/gateway/auth";
+import {
+  checkTokenlessBrowserAccess,
+  hasForwardingHeaders,
+  isLoopbackAddress,
+  parseUpgradeTarget,
+  type GatewayAuthorizationResult
+} from "@/gateway/auth";
 import { createGatewayError } from "@/gateway/errors";
 
 export const WEB_ACCESS_COOKIE_NAME = "aia_access_token";
@@ -76,9 +84,11 @@ export function authorizeWebAccessRequest(
   // and a request relayed by a local proxy or tunnel is remote.
   const forwarded = hasForwardingHeaders(request.headers);
   if (isLoopbackAddress(request.socket.remoteAddress) && !forwarded) {
-    return {
-      ok: true
-    };
+    // A form on another site posting to /api/control-plane (resolving an
+    // approval, say) and a DNS-rebound page reading the dashboard both arrive
+    // over loopback; see checkTokenlessBrowserAccess.
+    const refusal = checkTokenlessBrowserAccess(request.headers);
+    return refusal ? { error: createGatewayError("forbidden", refusal), ok: false, statusCode: 403 } : { ok: true };
   }
 
   return {
@@ -91,6 +101,31 @@ export function authorizeWebAccessRequest(
     ok: false,
     statusCode: 401
   };
+}
+
+/**
+ * The page check for a WebSocket upgrade outside the gateway path (Next's dev
+ * hot-reload socket), so the browser's access cookie counts the way it does
+ * for the page that opened it.
+ */
+export function authorizeWebAccessUpgrade(
+  request: IncomingMessage,
+  options: WebAccessOptions = {}
+): GatewayAuthorizationResult {
+  const token = parseUpgradeTarget(request.url)?.searchParams.get("token") ?? undefined;
+  const result = authorizeWebAccessRequest(
+    {
+      headers: request.headers,
+      originalUrl: request.url,
+      query: token ? { token } : {},
+      secure: false,
+      socket: request.socket,
+      url: request.url
+    } as unknown as Request,
+    options,
+    "api"
+  );
+  return result.ok ? { ok: true } : result;
 }
 
 export function createControlPlaneAccessMiddleware(options: WebAccessOptions = {}): RequestHandler {

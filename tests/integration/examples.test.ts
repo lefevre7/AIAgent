@@ -27,6 +27,10 @@ describe("examples", () => {
     const result = await runMemorySkillsMcpTaskExample();
 
     expect(result.runStatus).toBe("completed");
+    // The run alone ends "completed" even when it paused for an approval, which
+    // is how this passed while the task never finished.
+    expect(result.sessionStatus).toBe("completed");
+    expect(result.assistantSummaries.join("\n")).toContain("The memory/skills/MCP example is complete");
     expect(result.toolCalls).toEqual(expect.arrayContaining(["memory_search", "mcp_search", "mcp_docs_docs_lookup"]));
     expect(result.promptPreview).toContain("release-readiness");
   });

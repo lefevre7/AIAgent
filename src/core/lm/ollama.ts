@@ -1,5 +1,6 @@
 import type {
   LanguageModelAdapter,
+  LanguageModelCallOptions,
   LanguageModelDescriptor,
   LanguageModelRequest,
   LanguageModelResponse,
@@ -63,9 +64,13 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     this.providerId = options.providerId ?? "ollama";
   }
 
-  async generate(request: LanguageModelRequest): Promise<LanguageModelResponse> {
+  async generate(
+    request: LanguageModelRequest,
+    options: LanguageModelCallOptions = {}
+  ): Promise<LanguageModelResponse> {
     const response = await fetchJson<OllamaChatResponse>({
       body: await this.buildPayload(request, false),
+      ...(options.signal ? { cancelSignal: options.signal } : {}),
       fetchImpl: this.options.fetchImpl,
       headers: this.options.headers,
       maxAttempts: 2,
@@ -142,7 +147,10 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     }
   }
 
-  async *stream(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent> {
+  async *stream(
+    request: LanguageModelRequest,
+    options: LanguageModelCallOptions = {}
+  ): AsyncIterable<LanguageModelStreamEvent> {
     const guard = createStreamGuard({
       firstTokenTimeoutMs: this.options.streamFirstTokenTimeoutMs,
       idleTimeoutMs: this.options.streamIdleTimeoutMs,
@@ -152,6 +160,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
       body: await this.buildPayload(request, true),
       fetchImpl: this.options.fetchImpl,
       headers: this.options.headers,
+      ...(options.signal ? { cancelSignal: options.signal } : {}),
       maxAttempts: 1,
       signal: guard.signal,
       timeoutMs: this.options.timeoutMs,

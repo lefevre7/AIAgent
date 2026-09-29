@@ -9,7 +9,7 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   DEFAULT_APPROVAL_SETTINGS,
@@ -223,6 +223,60 @@ describe("MCP manager", () => {
 
     const status = manager.getServerStatuses().find((entry) => entry.serverName === "mandatory");
     expect(status?.state).toBe("failed");
+  });
+
+  // One after another, startup took the sum of every server's handshake, so a
+  // single slow or unreachable server held all the others up. Here the first
+  // server cannot finish until the second has started, which only works if
+  // they connect at the same time.
+  test("connects every server at once instead of one after another", async () => {
+    const config = createDefaultAppConfig({
+      userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
+    });
+    for (const serverName of ["first", "second"]) {
+      config.mcp.servers[serverName] = {
+        args: [],
+        command: process.execPath,
+        enabled: true,
+        env: {},
+        required: false,
+        stderr: "pipe",
+        tags: [],
+        type: "stdio"
+      };
+    }
+    const started: string[] = [];
+    let markSecondStarted!: () => void;
+    const secondStarted = new Promise<void>((resolve) => {
+      markSecondStarted = resolve;
+    });
+    const connect = vi
+      .spyOn(MCPManager.prototype as unknown as { connectServer(serverName: string): Promise<never> }, "connectServer")
+      .mockImplementation(async (serverName: string) => {
+        started.push(serverName);
+        if (serverName === "first") {
+          await secondStarted;
+        } else {
+          markSecondStarted();
+        }
+        throw new Error(`${serverName} refused the connection`);
+      });
+    const manager = new MCPManager({ config, watch: false });
+    cleanups.push(async () => {
+      connect.mockRestore();
+      await manager.close();
+    });
+
+    await Promise.race([
+      manager.initialize(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("servers were connected one at a time")), 5_000))
+    ]);
+
+    expect(started).toEqual(["first", "second"]);
+    expect(manager.getServerStatuses().map((status) => `${status.serverName}:${status.state}`)).toEqual([
+      "first:failed",
+      "second:failed"
+    ]);
   });
 
   test("keeps a tools-only server connected instead of failing on missing resources/prompts", async () => {

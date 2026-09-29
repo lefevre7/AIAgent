@@ -19,6 +19,9 @@ describe("HomePage", () => {
     // document root — otherwise every relative path the agent touches lands
     // inside `memory/`.
     expect(screen.getByLabelText("Working directory")).toHaveValue("/tmp/workspace");
+    // The settings card labelled the memory folder "Workspace root".
+    expect(screen.getByText("Workspace root").nextElementSibling).toHaveTextContent(/^\/tmp\/workspace$/u);
+    expect(screen.getByText("Memory folder").nextElementSibling).toHaveTextContent("/tmp/workspace/memory");
   });
 
   it("renders placeholders, flash messages, and token/tunnel badges for an empty dashboard", () => {
@@ -64,6 +67,9 @@ describe("HomePage", () => {
     // Exactly one open, non-question approval in this fixture — so exactly
     // one Deny button, not one per open approval regardless of kind.
     expect(html.match(/name="decision" value="denied"/gu)).toHaveLength(1);
+    // Every target the policy weighed is shown, the whole command line included.
+    expect(html).toContain("<code>git status; rm -rf build</code>");
+    expect(html).toContain("<code>shell_command</code>");
     // question approvals offer each option as a radio plus a free-text
     // "Other", and (unlike a regular approval) no Deny button — a question
     // has no operator-facing "denied" concept, only an answer
@@ -203,9 +209,15 @@ function populatedDashboard(): ControlPlaneDashboard {
       request: {
         id: "approval.open",
         justification: "needs approval",
+        metadata: {
+          evaluatedTargets: [
+            { kind: "command", label: "command", value: "git status; rm -rf build" },
+            { kind: "tool", label: "Run Command", value: "shell_command" }
+          ]
+        },
         sessionId: "session.populated",
         status: "pending",
-        target: { label: "shell_command" }
+        target: { kind: "command", label: "shell_command", value: "git status; rm -rf build" }
       },
       resolution: null
     },

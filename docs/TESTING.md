@@ -18,6 +18,12 @@ same run), then e2e, then the live-suite runner in its default opt-in mode.
 `test:deterministic` stays the everyday command; the gate does not also run it, which
 used to execute unit and integration twice.
 
+Two integration tests need a local toolchain and skip without it. `browser-service-tsx.test.ts`
+drives real Chromium under tsx, the way `npm run dev` runs: vitest compiles without esbuild's
+keepNames, so no other test sees what tsx does to functions sent into a page.
+`voice-apple-helper-compile.test.ts` needs macOS with `/usr/bin/swiftc`. It compiles the Swift voice
+helper with the adapter's flags and runs nothing that reaches the microphone or speech recognition.
+
 ## Coverage
 
 ```bash
@@ -100,12 +106,25 @@ Current live commands and flags:
 
 - Browser automation:
   `AIA_RUN_LIVE_BROWSER_TESTS=1 npm run test:live:browser`
+- The `aia` CLI against your real config and model (workspace and `.aia` placement from a folder with
+  no config and from below one, a scripted REPL, and the REPL at a real terminal):
+  `AIA_RUN_LIVE_CLI_TESTS=1 npm run test:live:cli`
+  Optional: `AIA_LIVE_CLI_TARGET=dist` or `=src` (default: both). The `dist` run fails fast when
+  `dist/cli.js` is older than `src/`, since the linked `aia` would be running old code: run
+  `npm run build:node` first. It uses your HOME, so `~/.aia/config.jsonc` must point at a reachable model.
+- Command tools (`exec_command` / PTY sessions against real processes):
+  `AIA_RUN_LIVE_COMMAND_TESTS=1 npm run test:live:commands`
 - Codex external-agent flow:
   `AIA_RUN_LIVE_CODEX_TEST=1 npm run test:live:external-agents`
 - Interactive external-agent terminal (real PTY against a real CLI):
   `AIA_LIVE_EXTERNAL_AGENT_INTERACTIVE=1 npm run test:live:external-agents-interactive`
   Optional: `AIA_LIVE_EXTERNAL_AGENT_COMMAND` (default `codex`), `AIA_LIVE_EXTERNAL_AGENT_READY`
-  Note: this starts the CLI with its approval-bypass flag — see `docs/EXTERNAL_AGENTS.md`.
+  Note: this starts the CLI with its approval-bypass flag — see `docs/EXTERNAL_AGENTS.md`. It reads the
+  screen before writing: if the CLI opens on a screen that needs a person (an update offer, a folder-trust
+  question), the send is refused and the test fails showing that screen: it never answers a consent
+  question for you. Codex asks whether to trust every new folder, so against Codex the test trusts the
+  temporary folder it created, for that run only (`-c projects={"<folder>"={trust_level="trusted"}}`,
+  which Codex does not save).
 - LM Studio:
   `AIA_RUN_LIVE_LM_STUDIO_TESTS=1 npm run test:live:lm-studio`
   Optional: `AIA_LIVE_LM_STUDIO_BASE_URL`, `AIA_LIVE_LM_STUDIO_MODEL`, `AIA_LIVE_LM_STUDIO_MAX_OUTPUT_TOKENS`
@@ -120,7 +139,9 @@ Current live commands and flags:
   Optional: `AIA_LIVE_MEMORY_MODEL`
 - MCP manager:
   `AIA_RUN_LIVE_MCP_TESTS=1 npm run test:live:mcp`
-  Required: `AIA_LIVE_MCP_CONFIG_JSON`
+  Required: `AIA_LIVE_MCP_CONFIG_JSON`, `{ "servers": { … } }` in the same shape as `mcp.servers` in
+  `aia.config.jsonc`. It is parsed like a config file, so the same fields are required (`enabled`,
+  `required`, `tags`, `type`, and `command` or `url`) and the rest get their defaults.
   Optional: `AIA_LIVE_MCP_SERVER_NAME`, `AIA_LIVE_MCP_TOOL_NAME`, `AIA_LIVE_MCP_TOOL_ARGS_JSON`
 - Voice:
   `AIA_RUN_LIVE_VOICE_TESTS=1 npm run test:live:voice`

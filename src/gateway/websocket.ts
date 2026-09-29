@@ -8,7 +8,12 @@ import {
   gatewaySubscriptionSchema,
   type GatewaySubscription
 } from "@/core/contracts";
-import { authorizeGatewayUpgradeRequest, parseUpgradeTarget, type GatewayAuthOptions } from "@/gateway/auth";
+import {
+  authorizeGatewayUpgradeRequest,
+  parseUpgradeTarget,
+  type GatewayAuthOptions,
+  type GatewayAuthorizationResult
+} from "@/gateway/auth";
 import { handleGatewayRequest } from "@/gateway/router";
 import { eventMatchesGatewaySubscription, type GatewayRuntimeLike } from "@/gateway/runtime";
 
@@ -41,11 +46,20 @@ type GatewayWebSocketServer = {
   ): void;
 };
 
-export type GatewayUpgradeHandler = (request: IncomingMessage, socket: Duplex, head: Buffer) => void | Promise<void>;
-
 export type AttachGatewayWebSocketServerOptions = {
   auth?: GatewayAuthOptions;
-  fallbackUpgradeHandler?: GatewayUpgradeHandler;
+  /**
+   * Next's dev hot-reload socket (`/_next/…`). Next's custom server adds its
+   * own upgrade listener to this HTTP server on its first request and answers
+   * these itself, so here they are only checked, with `authorize` (the server
+   * passes the page check, which reads the browser's access cookie). A refused
+   * one is closed before Next's listener sees it, because this listener is
+   * added first; an allowed one is left alone. Handing it to
+   * `nextApp.getUpgradeHandler()` as well did nothing: that is Next's
+   * production handler, which is empty. Without this option `/_next/`
+   * upgrades get 404 like any other path.
+   */
+  nextUpgrades?: { authorize: (request: IncomingMessage) => GatewayAuthorizationResult };
   requestTimeoutMs?: number;
   runtime: GatewayRuntimeLike;
   server: Server;
@@ -59,13 +73,15 @@ export function attachGatewayWebSocketServer(options: AttachGatewayWebSocketServ
   const upgradeHandler = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const pathname = parseUpgradeTarget(request.url)?.pathname ?? null;
     if (pathname !== options.websocketPath) {
-      if (options.fallbackUpgradeHandler) {
-        void Promise.resolve(options.fallbackUpgradeHandler(request, socket, head)).catch(() => {
-          socket.destroy();
-        });
-      } else {
-        socket.destroy();
+      if (!options.nextUpgrades || !pathname?.startsWith("/_next/")) {
+        writeUpgradeRejection(socket, 404, "Not found.");
+        return;
       }
+      const authorization = options.nextUpgrades.authorize(request);
+      if (!authorization.ok) {
+        writeUpgradeRejection(socket, authorization.statusCode, authorization.error.message);
+      }
+      // Allowed: Next's own upgrade listener answers it.
       return;
     }
 
@@ -149,8 +165,16 @@ export function bindGatewayWebSocketConnection(
     void handleGatewayWebSocketMessage(websocket, normalizeWebSocketMessage(data), {
       onSubscriptionChanged: async (nextSubscription) => {
         subscription = nextSubscription;
-        liveGateActive = true;
         const generation = ++sweepGeneration;
+        // Without a cursor the subscription is live-only. Replaying from the
+        // start of the log instead flooded a fresh `aia attach` (or any
+        // client that only wanted what happens next) with the whole history
+        // that matched its filter.
+        if (!nextSubscription.cursor) {
+          liveGateActive = false;
+          return;
+        }
+        liveGateActive = true;
         try {
           let cursor = nextSubscription.cursor;
           while (true) {
@@ -162,7 +186,8 @@ export function bindGatewayWebSocketConnection(
               })
             );
             for (const event of replay.events) {
-              if (websocket.readyState !== 1) {
+              // A newer subscribe replaced this filter: stop sending its backlog.
+              if (websocket.readyState !== 1 || sweepGeneration !== generation) {
                 return;
               }
               websocket.send(JSON.stringify(event));
@@ -257,9 +282,15 @@ function normalizeWebSocketMessage(data: unknown): string | null {
   return null;
 }
 
+const UPGRADE_REJECTION_REASONS: Record<number, string> = {
+  401: "Unauthorized",
+  403: "Forbidden",
+  404: "Not Found"
+};
+
 function writeUpgradeRejection(socket: Duplex, statusCode: number, message: string): void {
   socket.write(
-    `HTTP/1.1 ${statusCode} ${statusCode === 401 ? "Unauthorized" : "Forbidden"}\r\n` +
+    `HTTP/1.1 ${statusCode} ${UPGRADE_REJECTION_REASONS[statusCode] ?? "Forbidden"}\r\n` +
       "Connection: close\r\n" +
       "Content-Type: text/plain; charset=utf-8\r\n" +
       `Content-Length: ${Buffer.byteLength(message, "utf8")}\r\n` +

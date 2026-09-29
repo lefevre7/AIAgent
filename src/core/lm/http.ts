@@ -19,6 +19,10 @@ export type JsonHttpResult<T> = {
 
 type JsonRequestOptions = {
   body?: unknown;
+  // The caller's cancellation (a cancelled run). It is combined with each
+  // attempt's own timeout or stream guard, and a cancelled request is never
+  // retried.
+  cancelSignal?: AbortSignal;
   fetchImpl?: FetchLike;
   headers?: Record<string, string>;
   maxAttempts?: number;
@@ -90,12 +94,13 @@ async function fetchWithRetries(options: JsonRequestOptions): Promise<Response> 
   let lastError: ProviderRequestError | null = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const attemptSignal = options.signal ?? AbortSignal.timeout(options.timeoutMs);
     try {
       const response = await (options.fetchImpl ?? fetch)(options.url, {
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
         headers: buildHeaders(options.headers, options.body),
         method: options.method ?? (options.body === undefined ? "GET" : "POST"),
-        signal: options.signal ?? AbortSignal.timeout(options.timeoutMs)
+        signal: options.cancelSignal ? AbortSignal.any([options.cancelSignal, attemptSignal]) : attemptSignal
       });
 
       if (!response.ok) {
@@ -105,13 +110,23 @@ async function fetchWithRetries(options: JsonRequestOptions): Promise<Response> 
 
       return response;
     } catch (error) {
+      if (options.cancelSignal?.aborted) {
+        throw new ProviderRequestError({
+          code: "provider_request_cancelled",
+          details: { url: options.url },
+          message: "The request was cancelled.",
+          retriable: false
+        });
+      }
+      const networkFailure = describeNetworkFailure(error, options.url);
       const normalizedError = normalizeUnknownProviderError(error, {
         code: "provider_request_error",
         details: {
           attempt,
           method: options.method ?? (options.body === undefined ? "GET" : "POST"),
           url: options.url
-        }
+        },
+        ...(networkFailure ? { message: networkFailure } : {})
       });
       lastError = new ProviderRequestError(normalizedError);
 
@@ -134,6 +149,22 @@ async function fetchWithRetries(options: JsonRequestOptions): Promise<Response> 
       retriable: false
     })
   );
+}
+
+/**
+ * Node's fetch reports every connection-level failure as a bare
+ * "fetch failed", with the useful part (ECONNREFUSED, ENOTFOUND, …) hidden in
+ * `cause`. That text reached sessions verbatim, naming neither the address
+ * nor what went wrong.
+ */
+function describeNetworkFailure(error: unknown, url: string): string | null {
+  if (!(error instanceof TypeError) || !/fetch failed/iu.test(error.message)) {
+    return null;
+  }
+  const cause = (error as { cause?: { code?: unknown; message?: unknown } }).cause;
+  const reason =
+    typeof cause?.code === "string" ? cause.code : typeof cause?.message === "string" ? cause.message : error.message;
+  return `Could not reach ${url} (${reason}). Check that the provider is running and that its base URL is right.`;
 }
 
 function buildHttpError(status: number, url: string, rawText: string): StructuredError {

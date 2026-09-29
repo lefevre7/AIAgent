@@ -1,5 +1,6 @@
 import type {
   LanguageModelAdapter,
+  LanguageModelCallOptions,
   LanguageModelDescriptor,
   LanguageModelRequest,
   LanguageModelResponse,
@@ -64,10 +65,14 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     this.providerId = options.providerId ?? "lm_studio";
   }
 
-  async generate(request: LanguageModelRequest): Promise<LanguageModelResponse> {
+  async generate(
+    request: LanguageModelRequest,
+    options: LanguageModelCallOptions = {}
+  ): Promise<LanguageModelResponse> {
     const payload = await this.buildPayload(request, false);
     const response = await fetchJson<LMStudioChatResponse>({
       body: payload,
+      ...(options.signal ? { cancelSignal: options.signal } : {}),
       fetchImpl: this.options.fetchImpl,
       headers: this.options.headers,
       maxAttempts: 2,
@@ -160,7 +165,10 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
     }
   }
 
-  async *stream(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent> {
+  async *stream(
+    request: LanguageModelRequest,
+    options: LanguageModelCallOptions = {}
+  ): AsyncIterable<LanguageModelStreamEvent> {
     const guard = createStreamGuard({
       firstTokenTimeoutMs: this.options.streamFirstTokenTimeoutMs,
       idleTimeoutMs: this.options.streamIdleTimeoutMs,
@@ -170,6 +178,7 @@ export class LMStudioLanguageModelAdapter implements LanguageModelAdapter {
       body: await this.buildPayload(request, true),
       fetchImpl: this.options.fetchImpl,
       headers: this.options.headers,
+      ...(options.signal ? { cancelSignal: options.signal } : {}),
       maxAttempts: 1,
       signal: guard.signal,
       timeoutMs: this.options.timeoutMs,

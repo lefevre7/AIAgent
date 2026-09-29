@@ -229,15 +229,24 @@ export interface EmbeddingAdapter {
   listModels?(): Promise<EmbeddingModelDescriptor[]>;
 }
 
+/**
+ * Per-call options for a model request. `signal` aborts the request itself (a
+ * cancelled run stops the generation instead of waiting for it to finish);
+ * an adapter that cannot abort may ignore it.
+ */
+export type LanguageModelCallOptions = {
+  signal?: AbortSignal;
+};
+
 export interface LanguageModelAdapter {
   readonly provider: LanguageModelProvider;
   readonly providerId: string;
 
-  generate(request: LanguageModelRequest): Promise<LanguageModelResponse>;
+  generate(request: LanguageModelRequest, options?: LanguageModelCallOptions): Promise<LanguageModelResponse>;
   getModelContextWindow?(modelId: string): Promise<number | undefined>;
   health(): Promise<ProviderHealth>;
   listModels(): Promise<LanguageModelDescriptor[]>;
-  stream?(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent>;
+  stream?(request: LanguageModelRequest, options?: LanguageModelCallOptions): AsyncIterable<LanguageModelStreamEvent>;
 }
 
 export type EmbeddingRequest = z.infer<typeof embeddingRequestSchema>;

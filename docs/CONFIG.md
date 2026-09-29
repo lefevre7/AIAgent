@@ -14,6 +14,13 @@ combine across layers), while arrays and scalars are replaced wholesale.
    `./.aia` and `./memory` resolve against it, so `aia` started in `~` keeps its state in `~/.aia`.
 4. Environment overrides — `AIA_*` variables (see `src/core/config/env-overrides.ts`).
 
+The state directory (`memory.stateRoot`, `./.aia` by default) is created and checked for write access
+before anything else starts, on every surface. When that fails, `aia` stops with the reason and where
+the directory came from: the workspace config that set the workspace root, or, with no config found,
+the directory `aia` started in, plus what to do instead (start somewhere writable, or set
+`memory.stateRoot` / `AIA_MEMORY_STATE_ROOT`). It used to fail later, often after MCP servers had been
+started, with an `EACCES` from wherever the first write happened.
+
 Secret references (`{ "source": "env" | "file" | "exec", "id": "…" }`) are
 resolved after merging; any string-valued field, including MCP `headers`, accepts
 either a literal string or a secret reference.
@@ -83,6 +90,12 @@ HTTP server (`type` is one of `auto`, `sse`, `streamable-http`):
 }
 ```
 
+Servers connect in parallel at startup, so one slow server no longer delays the others. A stdio
+server runs in its own process group (on macOS and Linux), so the Ctrl-C that stops a turn in the
+REPL reaches `aia` only, not the servers it started. With `stderr: "pipe"` (the default) a server's
+stderr is read continuously and only its last few KB kept; before, it was left unread, and a server
+that writes stderr synchronously stalled once the pipe filled.
+
 Optional per-server fields:
 
 - `timeoutMs` — request timeout (ms) applied to every SDK call to the server (connect,
@@ -90,7 +103,10 @@ Optional per-server fields:
 - `trust` — `"prompt"` (default) or `"trusted"`. A trusted server's tools are
   auto-approved via a synthesized `mcp_server` allow rule; an explicit operator deny rule
   still wins, whether it targets the server (`mcp_server`) or a specific tool
-  (`mcp_tool`/`tool`), so you can trust a server yet deny one of its tools. Otherwise every
+  (`mcp_tool`/`tool`), so you can trust a server yet deny one of its tools. An `mcp_tool` rule
+  matches `<server>.<tool>`, the server's name and the tool's own name as the server lists it
+  (`docs.lookup` for the `lookup` tool of server `docs`); a `tool` rule matches the invocation name
+  the model sees (`mcp_docs_lookup`). Otherwise every
   MCP tool call is gated by the approval policy — MCP tools are never silently executed on
   the strength of a server's `readOnlyHint`. See `docs/MCP.md`.
 
@@ -139,8 +155,16 @@ floor, a starter list, and why there is no inherit-everything switch.
 | `autoAttachOnStart`       | `true`       | Open the shared terminal window as soon as a session starts.    |
 
 Each agent in `externalAgents.agents` may carry its own `interactive` block (`args`,
-`idleMs`, `readyPattern?`, `stabilityMs`, `turnTimeoutMs`) which wins over the defaults.
-An agent with no `interactive` block can still run one-shot jobs but cannot start a session.
+`idleMs`, `inputPattern?`, `readyPattern?`, `stabilityMs`, `turnTimeoutMs`) which wins over the
+defaults. An agent with no `interactive` block can still run one-shot jobs but cannot start a session.
+
+A send is refused while the bottom of the screen shows something that answers to Enter by choosing:
+"Enter to confirm", "Press enter to continue", or a numbered menu with a selection cursor. The model
+is told a person needs to attach and answer it. `inputPattern` (a regex source) goes further: when set,
+a send is refused unless the bottom of the screen matches it, the CLI's own input prompt. The Codex
+preset sets it to `Ask Codex to do anything`, and adds `-c check_for_update_on_startup=false` so Codex
+does not open on its update screen, where a send once chose "Update now" and started `brew upgrade`.
+If a Codex update changes that prompt, sends are refused with a message naming this key.
 
 **The shipped `args` include the external agent's own approval-bypass flag**
 (`--dangerously-skip-permissions` for Claude, `--dangerously-bypass-approvals-and-sandbox`
@@ -206,6 +230,20 @@ looks like. The headers' _values_ are never trusted — honouring `X-Forwarded-F
 127.0.0.1` was security review H2 — so their presence can only make a request less
 trusted. A raw TCP tunnel adds no headers and stays indistinguishable from local traffic:
 declare it with `tunnel.enabled` or set a token.
+
+Without a token, being on this machine is the only credential, and every web page the operator opens
+is on this machine too. So a tokenless request must also name this machine in its `Host` header
+(`localhost`, `*.localhost`, `127.x.x.x` or `[::1]`), which keeps DNS-rebinding pages out, and a
+browser request (one that sends `Origin`) must come from a page this server served (a loopback origin
+on the same port). This covers the gateway WebSocket, the gateway HTTP API, the control-plane API and
+the dashboard pages. It closes two holes: a page on another site opening a WebSocket to the gateway
+(WebSockets are exempt from CORS), and a form on another site posting to `/api/control-plane`
+(security review M1). Clients that are not browsers (the CLI, the SDK, `aia attach`, curl) send no
+`Origin` and are unaffected. With a token, the token is the check, so a tunnel's own `Host` works.
+
+The server's `hostname` and `port` default to `gateway.hostname` / `gateway.port`; `--hostname` /
+`--port` and the `HOSTNAME` / `PORT` environment variables override them. A port already in use stops
+the server with that reason instead of an uncaught error.
 
 ## Channel operator identities
 

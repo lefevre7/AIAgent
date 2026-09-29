@@ -237,6 +237,13 @@ keystroke is interpreted against it**. Consequences to design around:
 
 - Read before you write. The first `send` after `start` should be preceded by a `read`, and the model
   should be told to check what is on screen rather than assume a prompt.
+- **`send` now enforces this.** It reads the bottom of the screen first and refuses, sending nothing,
+  while it shows "Enter to confirm", "Press enter to continue", or a numbered menu with a selection
+  cursor (both screens above). The error tells the model a person needs to attach and answer it. An
+  agent can also name its own input prompt (`interactive.inputPattern`), and then `send` is refused
+  until that prompt is on screen. The Codex preset names `Ask Codex to do anything` and starts Codex
+  with `-c check_for_update_on_startup=false`, so it no longer opens on the update screen. Keystrokes
+  a human types in an attached window are never checked: answering these screens is their job.
 - A modal an agent cannot understand is exactly what `attach` is for — open the window and answer it
   yourself.
 - Whatever the outer approval policy says, the external agent's blast radius is its own `cwd` **plus

@@ -103,6 +103,10 @@ an advisory, untrusted annotation (per the MCP spec) and never grants silent exe
 or bypasses operator deny rules. Each MCP tool call is evaluated by the approval policy,
 which sees `mcp_server` and `mcp_tool` targets (`extractApprovalTargets`).
 
+An `mcp_tool` target's value is `<server>.<tool>`: the configured server name and the tool's own name
+as the server lists it (`docs.lookup` for the `lookup` tool of server `docs`). The `tool` target is
+the invocation name the model sees (`mcp_docs_lookup`), and the `mcp_server` target is the server name.
+
 To auto-approve a server you trust, set `trust: "trusted"` on it. The gateway
 synthesizes an `mcp_server` **allow** rule for each trusted server and appends it _after_
 your configured rules (`withMcpTrustRules` in `src/core/approvals/policy.ts`). An explicit
@@ -116,7 +120,13 @@ one of its tools with an `mcp_tool` or `tool` deny rule.
 `connectClient` (`src/core/mcp/manager.ts`) picks the transport from `type`:
 
 - `stdio` — spawns the command; env is the SDK allowlist (`getDefaultEnvironment`) merged
-  with the server's `env`.
+  with the server's `env`. On macOS and Linux it uses `ProcessGroupStdioClientTransport`
+  (`src/core/mcp/stdio-transport.ts`) rather than the SDK's: the server leads its own process group,
+  so the SIGINT a terminal sends aia's whole group on Ctrl-C (which the REPL now uses to cancel a
+  turn) does not kill it, and nothing reconnects a stdio server that died. `close()` ends stdin, then
+  signals the whole group (a server launched through `npx` is a grandchild). Piped stderr is drained
+  into a short tail (`recentStderr`); the SDK left it unread, so a server writing stderr synchronously
+  blocked once the pipe filled. Windows keeps the SDK transport.
 - `sse` — legacy SSE. Custom `headers` are injected via a `fetch` wrapper so they reach
   **both** the SSE stream open (GET) and the message POSTs (`eventSourceInit` alone would
   miss the GET).
@@ -136,6 +146,9 @@ one of its tools with an `mcp_tool` or `tool` deny rule.
 - **`refresh()` is serialized** (`refreshQueue`) so overlapping reloads cannot orphan
   clients or spawn duplicate stdio processes. A connect/enumeration failure closes the
   client so no transport/child process leaks.
+- **Servers connect in parallel.** Within a refresh every server that needs connecting is
+  connected at once, so startup waits for the slowest server rather than the sum of all of them.
+  Required-server failures are still reported in config order.
 - **Injective invocation names.** Names are de-duplicated per server and across servers
   with a `-2`/`-3` suffix (`disambiguateInvocationName`), and the MCP registry skips (and
   logs) a duplicate rather than throwing — one misbehaving server can't take down the

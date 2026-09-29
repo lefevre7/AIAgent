@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { applyEdits, format, modify } from "jsonc-parser";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { UriTemplate } from "@modelcontextprotocol/sdk/shared/uriTemplate.js";
 
@@ -38,6 +38,7 @@ import { BUILT_IN_MCP_SERVER_TEMPLATES } from "@/core/mcp/templates";
 import { loadImportedMcpServers } from "@/core/mcp/imports";
 import { disambiguateInvocationName, sanitizeMcpInvocationName } from "@/core/mcp/names";
 import { MCPCapabilityCatalog } from "@/core/mcp/catalog";
+import { createStdioClientTransport } from "@/core/mcp/stdio-transport";
 
 type ManagedMCPServer = {
   capabilities: MCPCapability[];
@@ -220,7 +221,10 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
 
     const resolved = await this.resolveConfig();
     const previousConnections = new Map(this.connections);
-    const nextConnections = new Map<string, ManagedMCPServer>();
+    // Filled in config order, so the resulting map keeps that order even
+    // though the connections below settle in whatever order they finish.
+    const plannedConnections = new Map<string, ManagedMCPServer | null>();
+    const serversToConnect: Array<[string, AppConfig["mcp"]["servers"][string]]> = [];
     const requiredFailures: Error[] = [];
 
     for (const [serverName, serverConfig] of Object.entries(resolved.servers)) {
@@ -233,7 +237,7 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       // transient failure (server not yet up, brief network/5xx) is retried on
       // the next refresh instead of being pinned as "failed" until restart.
       if (previous && previousSignature === configSignature && previous.status.state === "connected") {
-        nextConnections.set(serverName, previous);
+        plannedConnections.set(serverName, previous);
         previousConnections.delete(serverName);
         continue;
       }
@@ -244,57 +248,39 @@ export class MCPManager extends EventEmitter<MCPManagerEvents> {
       }
 
       if (!serverConfig.enabled) {
-        nextConnections.set(serverName, {
-          capabilities: [],
-          client: newMcpClient(),
-          config: serverConfig,
-          rawToolNamesByInvocationName: new Map(),
-          status: mcpServerStatusSchema.parse({
-            capabilities: {
-              prompts: 0,
-              resourceTemplates: 0,
-              resources: 0,
-              tools: 0
-            },
-            checkedAt: new Date().toISOString(),
-            serverName,
-            state: "disabled",
-            transport: serverConfig.type
-          }),
-          transport: serverConfig.type
-        });
+        plannedConnections.set(serverName, buildUnconnectedServer(serverName, serverConfig, "disabled"));
         continue;
       }
 
-      try {
-        const connected = await this.connectServer(serverName, serverConfig);
-        nextConnections.set(serverName, connected);
-      } catch (error) {
-        const structured = normalizeMcpError(error);
-        const failedEntry: ManagedMCPServer = {
-          capabilities: [],
-          client: newMcpClient(),
-          config: serverConfig,
-          rawToolNamesByInvocationName: new Map(),
-          status: mcpServerStatusSchema.parse({
-            capabilities: {
-              prompts: 0,
-              resourceTemplates: 0,
-              resources: 0,
-              tools: 0
-            },
-            checkedAt: new Date().toISOString(),
-            error: structured,
-            serverName,
-            state: "failed",
-            transport: serverConfig.type
-          }),
-          transport: serverConfig.type
-        };
-        nextConnections.set(serverName, failedEntry);
-        if (serverConfig.required) {
-          requiredFailures.push(new Error(`${serverName}: ${structured.message}`));
+      plannedConnections.set(serverName, null);
+      serversToConnect.push([serverName, serverConfig]);
+    }
+
+    // Connect every server at once. One after another, startup took the sum of
+    // every handshake, so a single slow or unreachable server (an `npx`
+    // download, a host that times out) held up all the others.
+    const connectionOutcomes = await Promise.all(
+      serversToConnect.map(async ([serverName, serverConfig]) => {
+        try {
+          return { connection: await this.connectServer(serverName, serverConfig) };
+        } catch (error) {
+          const structured = normalizeMcpError(error);
+          return { connection: buildUnconnectedServer(serverName, serverConfig, "failed", structured), structured };
         }
+      })
+    );
+    for (const [index, [serverName, serverConfig]] of serversToConnect.entries()) {
+      const outcome = connectionOutcomes[index]!;
+      plannedConnections.set(serverName, outcome.connection);
+      if (outcome.structured && serverConfig.required) {
+        requiredFailures.push(new Error(`${serverName}: ${outcome.structured.message}`));
+      }
+    }
+
+    const nextConnections = new Map<string, ManagedMCPServer>();
+    for (const [serverName, connection] of plannedConnections) {
+      if (connection) {
+        nextConnections.set(serverName, connection);
       }
     }
 
@@ -798,7 +784,7 @@ async function connectClient(params: {
   const connectOptions = requestOptions(params.serverConfig.timeoutMs);
 
   if (params.serverConfig.type === "stdio") {
-    const transport = new StdioClientTransport({
+    const transport = createStdioClientTransport({
       args: params.serverConfig.args,
       command: params.serverConfig.command,
       cwd: params.serverConfig.cwd,
@@ -1032,6 +1018,36 @@ function requestOptions(timeoutMs: number | undefined): { resetTimeoutOnProgress
 
 function newMcpClient(): Client {
   return new Client({ name: "AIAgent", version: "0.1.0" }, { capabilities: {} });
+}
+
+// The entry for a server that has no live connection: disabled in config, or
+// failed to connect (with the error it failed on).
+function buildUnconnectedServer(
+  serverName: string,
+  serverConfig: AppConfig["mcp"]["servers"][string],
+  state: "disabled" | "failed",
+  error?: StructuredError
+): ManagedMCPServer {
+  return {
+    capabilities: [],
+    client: newMcpClient(),
+    config: serverConfig,
+    rawToolNamesByInvocationName: new Map(),
+    status: mcpServerStatusSchema.parse({
+      capabilities: {
+        prompts: 0,
+        resourceTemplates: 0,
+        resources: 0,
+        tools: 0
+      },
+      checkedAt: new Date().toISOString(),
+      ...(error ? { error } : {}),
+      serverName,
+      state,
+      transport: serverConfig.type
+    }),
+    transport: serverConfig.type
+  };
 }
 
 async function connectOrClose(

@@ -24,7 +24,20 @@ async function createService(
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-ext-session-"));
   roots.push(root);
 
-  const agent: ExternalAgentConfig = {
+  const agent = mockAgentConfig();
+
+  const service = new FileExternalAgentSessionService({
+    agents: { mock: agent },
+    defaultCwd: root,
+    stateRoot: path.join(root, "external-agents"),
+    ...overrides
+  });
+  services.push(service);
+  return { root, service };
+}
+
+function mockAgentConfig(): ExternalAgentConfig {
+  return {
     args: [MOCK_CLI, "interactive"],
     command: process.execPath,
     displayName: "Mock Interactive Agent",
@@ -45,15 +58,59 @@ async function createService(
     printFlag: "--print",
     resumeFlag: "--resume"
   };
+}
 
-  const service = new FileExternalAgentSessionService({
-    agents: { mock: agent },
-    defaultCwd: root,
-    stateRoot: path.join(root, "external-agents"),
-    ...overrides
+// Text sent to a consent or menu screen chooses one of its options: a real
+// Codex opened on "Update available", and the first send picked "Update now"
+// and started `brew upgrade`. Sends now wait for the agent's own prompt.
+describe("FileExternalAgentSessionService send guard", () => {
+  test("refuses to send while a consent screen is showing, and sends once a person has answered it", async () => {
+    // The mock opens on an update screen when asked to.
+    const { service: modalService } = await createService({
+      agents: {
+        mock: { ...mockAgentConfig(), interactive: { ...mockAgentConfig().interactive!, args: ["--mock-modal"] } }
+      },
+      humanLockMs: 0
+    });
+    const modal = await modalService.startSession({ agentId: "mock" });
+
+    await expect(
+      modalService.sendToSession({ externalSessionId: modal.id, noWait: false, text: "hello" })
+    ).rejects.toThrow(/needs a person \("Press enter to continue"\)/u);
+    expect(
+      (await modalService.readSession({ externalSessionId: modal.id, includeScrollback: false })).screen
+    ).not.toContain("chose:");
+
+    // A person answers it from an attached window; then sends go through.
+    await modalService.writeHumanInput(modal.id, "2\r");
+    await waitForScreen(modalService, modal.id, "chose: 2");
+    const turn = await modalService.sendToSession({ externalSessionId: modal.id, noWait: false, text: "hello" });
+    expect(turn.screen).toContain("answer: hello");
   });
-  services.push(service);
-  return { root, service };
+
+  test("refuses to send until the agent shows the input prompt it names", async () => {
+    const { service } = await createService({
+      agents: {
+        mock: { ...mockAgentConfig(), interactive: { ...mockAgentConfig().interactive!, inputPattern: "READY>" } }
+      }
+    });
+    const record = await service.startSession({ agentId: "mock" });
+
+    await expect(service.sendToSession({ externalSessionId: record.id, noWait: true, text: "hello" })).rejects.toThrow(
+      /is not at its input prompt/u
+    );
+  });
+});
+
+async function waitForScreen(service: FileExternalAgentSessionService, id: string, text: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if ((await service.readSession({ externalSessionId: id, includeScrollback: false })).screen.includes(text)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`The session screen never showed "${text}".`);
 }
 
 describe("FileExternalAgentSessionService", () => {

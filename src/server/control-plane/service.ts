@@ -381,12 +381,29 @@ export class ControlPlaneService {
     decision: "approved" | "cancelled" | "denied" | "expired";
     requestId: string;
   }): Promise<z.infer<(typeof gatewayResponsePayloadSchemas)["approval.resolve"]>> {
-    return this.dispatch("approval.resolve", {
+    const resolved = await this.dispatch("approval.resolve", {
       actor: "web",
       comment: input.comment,
       decision: input.decision,
       requestId: input.requestId
     });
+
+    // Resolving alone left the session paused: an approved action never ran
+    // (and a denial never reached the agent) until the operator happened to
+    // send another message. Once nothing is left to answer, carry on, the way
+    // the CLI and channel `/approve` already do.
+    const sessionId = resolved.approval.request.sessionId;
+    const { approvals } = await this.dispatch("approval.list", { pendingOnly: true, sessionId });
+    if (approvals.length === 0) {
+      await this.dispatch("session.resume", { sessionId }).catch((error: unknown) => {
+        // Another surface already resumed it; that run carries the decision.
+        if (normalizeGatewayError(error).code !== "busy") {
+          throw error;
+        }
+      });
+    }
+
+    return resolved;
   }
 
   async sendSessionMessage(input: {

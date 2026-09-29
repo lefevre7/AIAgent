@@ -17,6 +17,7 @@ import {
   type AgentLoopToolExecutionResult,
   type ApprovalRequest,
   type ApprovalResolution,
+  type LanguageModelCallOptions,
   type LanguageModelRequest,
   type LanguageModelResponse,
   type Message,
@@ -1309,6 +1310,216 @@ describe("agent loop", () => {
     expect(metricsSeen.map((metric) => metric.tokensUsed)).toEqual([5, 10]);
   });
 });
+
+// Cancel used to be a flag checked only before and after a whole run: a
+// cancelled run kept generating and kept executing tools until it finished on
+// its own, and steering sent mid-run waited for the next run.
+describe("agent loop run control", () => {
+  test("a run whose signal is already aborted starts no turn", async () => {
+    const { loop, store } = await createLoop([]);
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      session: buildSession(),
+      signal: controller.signal,
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("cancelled");
+    expect(result.turns).toHaveLength(0);
+    const snapshot = await store.getSessionSnapshot(result.session.id);
+    expect(snapshot?.session.status).toBe("cancelled");
+    expect(snapshot?.resumeMetadata?.statusSummary).toBe("Cancelled by the operator.");
+  });
+
+  test("cancelling during the model call aborts the request and ends the run as cancelled", async () => {
+    const root = await createTempRoot();
+    const store = new FileSessionStore(path.join(root, ".aia"));
+    const session = buildSession();
+    await store.saveSession(session);
+    const controller = new AbortController();
+    const seenSignals: Array<AbortSignal | undefined> = [];
+    const model = new ScriptedModel(async (_index, _request, options) => {
+      seenSignals.push(options?.signal);
+      // Stands in for a provider that only returns when the request is aborted.
+      return await new Promise<LanguageModelResponse>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          reject(new Error("The request was cancelled."));
+        });
+        controller.abort();
+      });
+    });
+    const loop = new AgentLoop({ model, sessions: store });
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      session,
+      signal: controller.signal,
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(seenSignals).toEqual([controller.signal]);
+    expect(result.stopReason).toBe("cancelled");
+    expect(result.session.status).toBe("cancelled");
+    expect(result.turns.map((turn) => turn.status)).toEqual(["cancelled"]);
+    expect(result.turns[0]?.summary).toBe("Cancelled by the operator while the model was generating.");
+  });
+
+  test("a cancel while a tool runs lets that call finish and starts none of the rest", async () => {
+    const controller = new AbortController();
+    const executedPaths: string[] = [];
+    const { loop, store } = await createLoop(
+      [
+        buildModelResponse({
+          sessionId: "session.loop.1",
+          toolCalls: [
+            { arguments: { path: "a.md" }, callId: "tool.read.a", toolName: "read_file" },
+            { arguments: { path: "b.md" }, callId: "tool.read.b", toolName: "read_file" }
+          ]
+        })
+        // No second response: a second model turn would fail the run.
+      ],
+      {
+        toolExecutor: {
+          async execute(call): Promise<AgentLoopToolExecutionResult> {
+            executedPaths.push(String(call.arguments.path));
+            controller.abort();
+            return {
+              toolCall: {
+                ...call,
+                completedAt: new Date().toISOString(),
+                result: { content: "file contents" },
+                status: "succeeded"
+              }
+            };
+          }
+        }
+      }
+    );
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool(), buildReadFileTool()],
+      maxTurns: 4,
+      session: buildSession(),
+      signal: controller.signal,
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(executedPaths).toEqual(["a.md"]);
+    expect(result.stopReason).toBe("cancelled");
+    expect(result.toolCalls.map((toolCall) => toolCall.status)).toEqual(["succeeded", "cancelled"]);
+    expect(result.toolCalls[1]?.error?.code).toBe("tool_call_cancelled");
+    // Every proposed call keeps a result in the transcript.
+    const snapshot = await store.getSessionSnapshot(result.session.id);
+    const toolResults = snapshot?.messages.filter((message) => message.role === "tool") ?? [];
+    expect(toolResults).toHaveLength(2);
+    expect(JSON.stringify(toolResults[1]?.parts)).toContain("tool_call_cancelled");
+  });
+
+  test("delivers steering that arrives while tools run at the next tool boundary", async () => {
+    const root = await createTempRoot();
+    const store = new FileSessionStore(path.join(root, ".aia"));
+    const session = buildSession();
+    await store.saveSession(session);
+    const steering = buildSteering(session.id);
+    const model = new ScriptedModel(async (index) =>
+      index === 0
+        ? buildModelResponse({
+            sessionId: session.id,
+            toolCalls: [{ arguments: { path: "a.md" }, callId: "tool.read.a", toolName: "read_file" }]
+          })
+        : buildModelResponse({
+            sessionId: session.id,
+            toolCalls: [{ arguments: {}, callId: "tool.complete.steered", toolName: "attempt_complete" }]
+          })
+    );
+    const loop = new AgentLoop({
+      model,
+      sessions: store,
+      toolExecutor: {
+        async execute(call): Promise<AgentLoopToolExecutionResult> {
+          // The operator steers while this tool is running.
+          await store.appendSteeringInjections([steering]);
+          return {
+            toolCall: {
+              ...call,
+              completedAt: new Date().toISOString(),
+              result: { content: "file contents" },
+              status: "succeeded"
+            }
+          };
+        }
+      }
+    });
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool(), buildReadFileTool()],
+      maxTurns: 4,
+      session,
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+    expect(result.turns.map((turn) => turn.trigger)).toEqual(["user", "steering"]);
+    expect(JSON.stringify(model.requests[1]?.messages)).toContain(steering.message);
+    const snapshot = await store.getSessionSnapshot(session.id);
+    expect(snapshot?.steeringInjections.at(-1)?.state).toBe("applied");
+  });
+
+  test("holds attempt_complete when steering arrived during the final model call", async () => {
+    const root = await createTempRoot();
+    const store = new FileSessionStore(path.join(root, ".aia"));
+    const session = buildSession();
+    await store.saveSession(session);
+    const steering = buildSteering(session.id);
+    const model = new ScriptedModel(async (index) => {
+      if (index === 0) {
+        // The operator steers while the model is producing its final answer.
+        await store.appendSteeringInjections([steering]);
+      }
+      return buildModelResponse({
+        sessionId: session.id,
+        toolCalls: [{ arguments: {}, callId: `tool.complete.${index}`, toolName: "attempt_complete" }]
+      });
+    });
+    const loop = new AgentLoop({ model, sessions: store });
+
+    const result = await loop.run({
+      availableTools: [buildAttemptCompleteTool()],
+      maxTurns: 4,
+      session,
+      userMessages: [buildUserMessage()]
+    });
+
+    expect(result.stopReason).toBe("completed");
+    expect(result.turns).toHaveLength(2);
+    expect(result.turns[0]?.summary).toBe("The runtime held `attempt_complete` because operator steering arrived.");
+    expect(result.turns[1]?.trigger).toBe("steering");
+    expect(JSON.stringify(model.requests[1]?.messages)).toContain(steering.message);
+  });
+});
+
+class ScriptedModel implements AgentLoopModel {
+  readonly requests: Parameters<AgentLoopModel["generate"]>[0][] = [];
+
+  constructor(
+    private readonly respond: (
+      index: number,
+      request: Parameters<AgentLoopModel["generate"]>[0],
+      options: LanguageModelCallOptions | undefined
+    ) => Promise<LanguageModelResponse>
+  ) {}
+
+  async generate(
+    request: Parameters<AgentLoopModel["generate"]>[0],
+    options?: LanguageModelCallOptions
+  ): Promise<LanguageModelResponse> {
+    this.requests.push(request);
+    return this.respond(this.requests.length - 1, request, options);
+  }
+}
 
 async function createLoop(
   responses: LanguageModelResponse[],

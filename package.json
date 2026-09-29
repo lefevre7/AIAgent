@@ -55,6 +55,8 @@
     "test:coverage": "vitest run --coverage --config vitest.coverage.config.ts",
     "test:live": "vitest run --config vitest.live.config.ts",
     "test:live:browser": "vitest run --config vitest.live.config.ts tests/live/browser-service.live.test.ts",
+    "test:live:cli": "vitest run --config vitest.live.config.ts tests/live/cli-workspace.live.test.ts",
+    "test:live:commands": "vitest run --config vitest.live.config.ts tests/live/command-tools.live.test.ts",
     "test:live:external-agents": "vitest run --config vitest.live.config.ts tests/live/external-agent-codex.live.test.ts",
     "test:live:external-agents-interactive": "vitest run --config vitest.live.config.ts tests/live/external-agent-interactive.live.test.ts",
     "test:live:image": "vitest run --config vitest.live.config.ts tests/live/image-service.live.test.ts",

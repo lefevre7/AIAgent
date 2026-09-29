@@ -432,3 +432,65 @@ explicitly a detached job. Consequences the loop has to respect:
   being blocked by that lock.
 
 See [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md) for the full design.
+
+## Cancel, mid-run steering, and approval resumes — 2026-09-28
+
+Found by running a real model, not by reading: cancel stopped nothing, steering sent mid-run waited
+for the next run, and approving one direct tool call handed the session to the model.
+
+**Cancel is real.** Each gateway run owns an `AbortController`. `run.cancel` / `session.cancel` abort
+it, and the signal reaches `AgentLoop.run` (`signal`), the model call, the LM queue (a queued job is
+dropped, a running one aborted) and the provider's `fetch`. A cancelled request is never retried. The
+loop checks the signal before every turn and before every tool call: a call already running finishes,
+the rest are recorded as `cancelled` (each still gets a result, so the transcript keeps one result per
+proposed call), and no further turn starts. The session ends `cancelled`. `GatewayRuntime.close()`
+(REPL `/exit`, SDK `close()`, server stop) cancels active runs first, then drains; draining alone
+waited for a generation that was still going.
+
+**Steering is delivered at the next tool boundary.** At the start of every turn after the first, the
+loop reads queued steering, marks it applied, and hands it to the model with trigger `steering`. It
+used to be read only when a run started. Steering that is queued when the model calls
+`attempt_complete` holds the completion: the model gets a system message saying steering arrived and
+to act on it before completing again, and that turn does not count toward the no-progress guard.
+Steering that arrives after a completion was accepted waits for the next run. A channel `/steer` sent
+while the session is busy is now queued with "the running task will read it before its next step"
+instead of being refused.
+
+**A direct `tool.execute` approval resumes only that call.** When every approval being resumed belongs
+to calls made by `tool.execute` (turn trigger `gateway_request`) and no message came with the resume,
+the gateway runs the approved calls and completes the run (`tool_succeeded`, `tool_failed`, or
+`tool_awaiting_approval` if more remain) with the session back at `awaiting_user`. No model turn
+starts. Approvals of calls the model made still continue the model, as before. The web dashboard now
+resumes the session once its last pending approval is resolved, as the CLI and channel `/approve`
+already did.
+
+**A provider that answers with another model is reported once per session**: a `log.emitted` warning
+with `metadata.code: "model_mismatch"`, `requestedModel` and `answeredModel` (LM Studio serves
+whatever model is loaded when the requested one is unknown). Spellings of one model are not reported:
+a `:latest` or `:2` suffix, or the id with or without its publisher. The REPL prints it dimmed with the
+chat-model provenance.
+
+### The REPL at a terminal
+
+- The prompt comes up as soon as the config files are read, and the state directory checked. MCP
+  servers, memory, the model check and the session start behind it. A message typed meanwhile is held
+  ("Still starting up…") and sent once the session exists, announced as `· Sending: …`. `/help` and an
+  unknown command are answered at once. `/exit`, Ctrl-D and Ctrl-C stop startup and leave, and a
+  startup failure (an unreachable model included) prints the error; either way, held lines are
+  printed under "Not sent:". The session id is printed on its own line when startup finishes.
+- **Piped input keeps the old order.** Nothing is read until startup is done, so a script's lines,
+  approval answers included, mean what they always did.
+- Line mode stays: the terminal echoes typing. Output nobody typed for (startup finishing, a Node
+  warning) starts on its own line and the prompt is put back; a half-typed line is still sent whole on
+  Enter.
+- **Ctrl-C** during a turn cancels it (as above) and the REPL carries on; a second Ctrl-C while it is
+  still cancelling exits, as does Ctrl-C at the prompt (exit code 130). Once exiting, a further Ctrl-C
+  ends the process without waiting for cleanup. At an approval or question prompt, Ctrl-C cancels the
+  turn and resolves every pending approval with the `cancelled` decision and the note "Cancelled by
+  the operator (Ctrl-C)". Unlike a denial, that note is not turned into steering, and nothing is
+  resumed.
+- An approval prompt lists every target the policy weighed (the full command line with its argv, each
+  path, the tool), from the request's `metadata.evaluatedTargets`, and `a` says what it covers: this
+  exact command line, every request for a path, every tool on an MCP server, or every call of a tool.
+- A completion summary that only repeats text that already streamed is not printed again (and not
+  relayed to a channel twice).

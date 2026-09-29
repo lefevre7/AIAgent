@@ -324,6 +324,12 @@ const externalAgentInteractiveConfigSchema = z
     args: z.array(z.string().min(1)).max(64),
     /** Milliseconds of byte silence before a turn is considered finished. */
     idleMs: z.number().int().positive().max(600_000),
+    /**
+     * Regex (source form) the bottom of the rendered screen must match before
+     * the agent may send: the CLI's own input prompt. Without it, only a
+     * consent or menu screen blocks a send.
+     */
+    inputPattern: z.string().min(1).max(512).optional(),
     /** Regex (source form) matched against the rendered screen to detect the input prompt. */
     readyPattern: z.string().min(1).max(512).optional(),
     /** Milliseconds the rendered screen must stay unchanged before the turn ends. */
@@ -780,8 +786,18 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
             // `--no-alt-screen` keeps Codex in inline mode, preserving scrollback;
             // the alternate screen is the single biggest obstacle to reliable
             // capture, so avoiding it helps both the model and the human window.
-            args: ["--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"],
+            // `check_for_update_on_startup=false` keeps Codex from opening on
+            // its "Update available" screen, where the first send chose
+            // "Update now" and started `brew upgrade`.
+            args: [
+              "--no-alt-screen",
+              "--dangerously-bypass-approvals-and-sandbox",
+              "-c",
+              "check_for_update_on_startup=false"
+            ],
             idleMs: 2_000,
+            // Codex's input box; nothing is sent until it is on screen.
+            inputPattern: "Ask Codex to do anything",
             stabilityMs: 1_000,
             turnTimeoutMs: 600_000
           },
@@ -971,6 +987,39 @@ export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
   // and silently disabled the destructive-command deny rule (security review
   // H1). tests/unit/approval-defaults.test.ts exercises the shipped rules.
   rules: [
+    // These come before the read-only allow: the first matching allow/ask rule
+    // decides, and each is an inspection command used in a way that writes
+    // files or runs other programs. Commands are matched one at a time, so a
+    // pattern anchored at ^ sees each command of a pipeline or `;` list.
+    {
+      id: "rule.command.read.sed-writes.ask",
+      mode: "ask",
+      notes: "sed that edits in place, runs a script file, or whose script writes files (w) or runs commands (e).",
+      pattern: "^sed\\b.*(\\s-[A-Za-z]*[if]|\\s--(in-place|file)\\b|[\\s'\";{}0-9$/=!][ewW]\\b)",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.read.find-actions.ask",
+      mode: "ask",
+      notes:
+        "find that runs commands (-exec, -execdir, -ok, -okdir), deletes (-delete), or writes files (-fprint, -fls).",
+      pattern: "^find\\b.*\\s-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)\\b",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.read.rg-preprocessor.ask",
+      mode: "ask",
+      notes: "rg --pre runs a program on every file it searches.",
+      pattern: "^rg\\b.*\\s--pre\\b",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.read.git-diff-writes.ask",
+      mode: "ask",
+      notes: "git diff that runs an external diff program (--ext-diff) or writes a file (--output).",
+      pattern: "^git\\s+diff\\b.*\\s--(ext-diff|output)\\b",
+      targetKind: "command"
+    },
     {
       id: "rule.command.read.allow",
       mode: "allow",

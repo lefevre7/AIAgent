@@ -12,6 +12,7 @@ import {
   createExternalAgentApprovalTargetResolver,
   externalAgentToolDefinition,
   extractApprovalTargets,
+  readApprovalTargets,
   toolCallRecordSchema,
   toolDefinitionSchema,
   turnRecordSchema,
@@ -534,6 +535,37 @@ describe("approval policy", () => {
     expect(deniedWriteDecision.metadata?.matchedApprovalRuleId).toBe("rule.path.secret.deny");
     expect(deniedWriteDecision.metadata?.matchedApprovalTargetKind).toBe("path");
     expect(deniedWriteDecision.error.details.targetValue).toBe("/workspace/secrets/token.txt");
+  });
+
+  // A write_file prompt used to carry only the deciding target ("write_file"),
+  // so neither the CLI nor the dashboard could say which file it would write.
+  test("records every evaluated target on the approval request", async () => {
+    const registry = createDefaultToolRegistry({
+      stateRoot: "/workspace/.aia",
+      workspaceRoot: "/workspace"
+    });
+    const decider = createToolApprovalDecider({ settings: DEFAULT_APPROVAL_SETTINGS });
+
+    const decision = await decider({
+      call: createCall({
+        arguments: { content: "hello\n", path: "notes/today.md" },
+        toolName: "write_file"
+      }),
+      definition: requireDefinition(registry, "write_file"),
+      session: buildSession(),
+      turn: buildTurn()
+    });
+
+    expect(decision.mode).toBe("request");
+    if (decision.mode !== "request") {
+      throw new Error(`Expected an approval request, received ${decision.mode}.`);
+    }
+    expect(readApprovalTargets(decision.request)).toEqual([
+      { kind: "path", label: "path", value: path.join(buildSession().cwd, "notes/today.md") },
+      { kind: "tool", label: "Write File", value: "write_file" }
+    ]);
+    // A request recorded before targets were kept still shows its deciding one.
+    expect(readApprovalTargets({ metadata: {}, target: decision.request.target })).toEqual([decision.request.target]);
   });
 
   test("bypasses read-only external-agent actions and resolves agent targets for run actions", async () => {

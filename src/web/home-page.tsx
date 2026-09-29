@@ -1,5 +1,6 @@
 import React from "react";
 
+import { readApprovalTargets } from "@/core/contracts";
 import type { ChannelDeliveryRecord, GatewayEvent, Message, TaskStateSnapshot } from "@/core/contracts";
 import type { ControlPlaneDashboard } from "@/server/control-plane/service";
 
@@ -207,8 +208,13 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
               <dt>Embeddings</dt>
               <dd>{dashboard.settings.memory.embeddingsEnabled ? "enabled" : "disabled"}</dd>
             </div>
+            {/* This label used to show the memory folder, which is a different directory. */}
             <div>
               <dt>Workspace root</dt>
+              <dd>{dashboard.settings.runtime.workspaceRoot}</dd>
+            </div>
+            <div>
+              <dt>Memory folder</dt>
               <dd>{dashboard.settings.memory.workspaceRoot}</dd>
             </div>
           </dl>
@@ -355,6 +361,17 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
                             <span>{approval.resolution ? approval.resolution.decision : approval.request.status}</span>
                           </header>
                           <p>{approval.request.justification}</p>
+                          {approval.request.target.kind === "question" ? null : (
+                            // Everything the policy weighed (the full command line, each
+                            // path, the tool), not only the label of the target that decided.
+                            <ul className="approval-targets">
+                              {readApprovalTargets(approval.request).map((target) => (
+                                <li key={`${target.kind}:${target.value}`}>
+                                  <span>{target.kind}</span> <code>{target.value}</code>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                           {!approval.resolution ? (
                             <form
                               action={`/api/control-plane/approvals/${encodeURIComponent(approval.request.id)}/resolve`}

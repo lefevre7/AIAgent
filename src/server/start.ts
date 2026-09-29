@@ -13,9 +13,9 @@ import {
 } from "@/server/runtime-context";
 import { createHttpApp } from "@/server/create-http-app";
 import { resolveServerRuntimeConfig, type ServerRuntimeConfig } from "@/server/env";
+import { authorizeWebAccessUpgrade } from "@/server/web-access";
 
 export async function startServer(argv: string[] = process.argv.slice(2)) {
-  const runtime = resolveServerRuntimeConfig(argv);
   const context = await createServerRuntimeContext({
     cwd: process.cwd()
   });
@@ -23,10 +23,13 @@ export async function startServer(argv: string[] = process.argv.slice(2)) {
 
   // The context is up from here on, and it owns pollers and MCP child processes
   // that keep the event loop alive. Any failure past this point (the exposure
-  // refusal, Next failing to prepare, anything else) has to tear it down
-  // explicitly, or the process reports the failure and then hangs instead of
-  // exiting: the entry point only sets exitCode.
+  // refusal, Next failing to prepare, the port being taken, anything else) has
+  // to tear it down explicitly, or the process reports the failure and then
+  // hangs instead of exiting: the entry point only sets exitCode.
   try {
+    // Resolved after the config so gateway.hostname/gateway.port are the
+    // defaults; flags and HOSTNAME/PORT still win.
+    const runtime = resolveServerRuntimeConfig(argv, process.env, context.loaded.resolvedConfig.gateway);
     return await serveWithContext(runtime, context);
   } catch (error) {
     await closeServerRuntimeContext().catch(() => undefined);
@@ -82,11 +85,16 @@ async function serveWithContext(runtime: ServerRuntimeConfig, context: ServerRun
   );
 
   const server = createServer(httpApp);
+  // Attached before the server takes a request, so this listener runs before
+  // the one Next's custom server adds on its first request: an upgrade it
+  // refuses is closed before Next sees it.
   const gatewayWebSocket = attachGatewayWebSocketServer({
     auth: {
       token: context.gatewayAuthToken
     },
-    fallbackUpgradeHandler: nextApp.getUpgradeHandler(),
+    nextUpgrades: {
+      authorize: (request) => authorizeWebAccessUpgrade(request, { token: context.gatewayAuthToken })
+    },
     requestTimeoutMs: context.loaded.resolvedConfig.gateway.requestTimeoutMs,
     runtime: context.gatewayRuntime,
     server,
@@ -98,14 +106,25 @@ async function serveWithContext(runtime: ServerRuntimeConfig, context: ServerRun
     void closeServerRuntimeContext().catch(() => undefined);
   });
 
-  await new Promise<void>((resolve) => {
-    server.listen(runtime.port, runtime.hostname, () => {
-      console.log(
-        `AIAgent server listening on http://${runtime.hostname}:${runtime.port} (${runtime.dev ? "dev" : "prod"})`
-      );
-      resolve();
+  // A taken port is emitted as an 'error' event, not thrown, so without this
+  // listener it became an uncaught exception: Next's dev server logs those and
+  // keeps running, and the process hung with the runtime context alive.
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(runtime.port, runtime.hostname, () => {
+        server.off("error", reject);
+        console.log(
+          `AIAgent server listening on http://${runtime.hostname}:${runtime.port} (${runtime.dev ? "dev" : "prod"})`
+        );
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    await gatewayWebSocket.close().catch(() => undefined);
+    await nextApp.close().catch(() => undefined);
+    throw describeListenFailure(error, runtime);
+  }
 
   // Lets an interactive external-agent session started from the web UI or a
   // channel open a desktop window that can reach this server.
@@ -119,6 +138,21 @@ async function serveWithContext(runtime: ServerRuntimeConfig, context: ServerRun
   );
 
   return { gatewayRuntime: context.gatewayRuntime, runtime, server };
+}
+
+function describeListenFailure(error: unknown, runtime: ServerRuntimeConfig): Error {
+  const code = typeof error === "object" && error !== null ? (error as NodeJS.ErrnoException).code : undefined;
+  const address = `${runtime.hostname}:${runtime.port}`;
+  if (code === "EADDRINUSE") {
+    return new Error(
+      `Cannot listen on ${address}: the port is already in use. Stop whatever holds it, or start on another port with --port <n> (or PORT, or gateway.port in aia.config.jsonc).`,
+      { cause: error }
+    );
+  }
+  if (code === "EACCES") {
+    return new Error(`Cannot listen on ${address}: permission denied. Use a port above 1023.`, { cause: error });
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 const isDirectExecution =

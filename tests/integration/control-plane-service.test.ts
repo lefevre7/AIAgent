@@ -124,7 +124,63 @@ describe("control-plane service over a real runtime context", () => {
       service.resolveApproval({ decision: "approved", requestId: "approval.does-not-exist" })
     ).rejects.toBeTruthy();
   });
+
+  // Approving from the dashboard used to only record the decision: the session
+  // stayed paused and the approved action never ran until someone sent another
+  // message.
+  test("resumes the session once the dashboard resolves its last pending approval", async () => {
+    const { service, context } = await createService();
+    const created = await service.createSession({
+      cwd: context.cwd,
+      goal: "Write a file after approval",
+      title: "Web Approval"
+    });
+    const sessionId = created.session.id;
+
+    const executed = await context.gatewayRuntime.request({
+      createdAt: new Date().toISOString(),
+      id: "gateway-request.test.write",
+      metadata: {},
+      payload: {
+        arguments: { content: "approved from the web\n", path: "web-note.txt" },
+        metadata: {},
+        sessionId,
+        toolName: "write_file"
+      },
+      topic: "tool.execute"
+    });
+    expect(executed.ok).toBe(true);
+
+    const pending = await waitForValue(async () =>
+      (await service.listApprovals()).find(
+        (record) => record.request.sessionId === sessionId && record.resolution === undefined
+      )
+    );
+    await service.resolveApproval({ decision: "approved", requestId: pending.request.id });
+
+    await waitForValue(async () => {
+      const text = await fs.readFile(path.join(context.cwd, "web-note.txt"), "utf8").catch(() => null);
+      return text === "approved from the web\n" ? text : undefined;
+    });
+    const view = await waitForValue(async () => {
+      const current = await service.getSessionView(sessionId);
+      return current.snapshot.snapshot.session.status === "awaiting_user" ? current : undefined;
+    });
+    expect(view.snapshot.snapshot.toolCalls.at(-1)?.status).toBe("succeeded");
+  });
 });
+
+async function waitForValue<T>(read: () => Promise<T | undefined>, timeoutMs = 5_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await read();
+    if (value !== undefined) {
+      return value;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for the expected state.");
+}
 
 async function createService(): Promise<{ context: ServerRuntimeContext; service: ControlPlaneService }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-control-plane-"));

@@ -4,6 +4,7 @@ import type {
   ApprovalRequest,
   ApprovalResolution,
   JsonValue,
+  LanguageModelCallOptions,
   LanguageModelRequest,
   LanguageModelProvider,
   LanguageModelResponse,
@@ -45,7 +46,7 @@ export type AgentLoopRunResult = {
   approvalRequests: ApprovalRequest[];
   messages: Message[];
   session: SessionRecord;
-  stopReason: "awaiting_approval" | "completed" | "completion_blocked" | "failed";
+  stopReason: "awaiting_approval" | "cancelled" | "completed" | "completion_blocked" | "failed";
   toolCalls: ToolCallRecord[];
   turns: TurnRecord[];
 };
@@ -61,6 +62,9 @@ export type AgentLoopRunParams = {
   maxTurns?: number | "unlimited";
   reasoningContextTurns?: number;
   session: SessionRecord;
+  // Aborting it cancels the run: the in-flight model request is aborted and no
+  // further tool call or turn starts.
+  signal?: AbortSignal;
   steeringInjections?: SteeringInjection[];
   taskSummary?: string;
   userMessages?: Message[];
@@ -72,10 +76,11 @@ type AgentLoopModelRequest = Omit<LanguageModelRequest, "modelId" | "provider"> 
 };
 
 export interface AgentLoopModel {
-  generate(request: AgentLoopModelRequest): Promise<LanguageModelResponse>;
+  generate(request: AgentLoopModelRequest, options?: LanguageModelCallOptions): Promise<LanguageModelResponse>;
   stream?(
     request: AgentLoopModelRequest,
-    onEvent: (event: LanguageModelStreamEvent) => void
+    onEvent: (event: LanguageModelStreamEvent) => void,
+    options?: LanguageModelCallOptions
   ): Promise<LanguageModelResponse>;
 }
 
@@ -268,7 +273,45 @@ export class AgentLoop {
     // status metric reports cumulative work (like context, which accumulates
     // until compaction) rather than just the latest turn.
     let cumulativeOutputTokens = 0;
+    const isCancelled = () => params.signal?.aborted === true;
+    const finishCancelled = async (): Promise<AgentLoopRunResult> => {
+      session = await this.persistSession(session, "cancelled", {
+        activeTurnId: undefined,
+        statusSummary: "Cancelled by the operator."
+      });
+      return {
+        approvalRequests: appendedApprovalRequests,
+        messages: appendedMessages,
+        session,
+        stopReason: "cancelled",
+        toolCalls: appendedToolCalls,
+        turns: appendedTurns
+      };
+    };
+
     for (let sequence = 0; maxTurns === "unlimited" || sequence < maxTurns; sequence += 1) {
+      // Checked before every turn: a cancelled run starts no new model turn.
+      if (isCancelled()) {
+        return finishCancelled();
+      }
+
+      // Steering that arrived while the previous turn's model call or tools were
+      // running is delivered here, at the tool boundary. It used to be read only
+      // when a run started, so an operator's "stop, do this instead" reached the
+      // model only after the run had already finished the old plan.
+      if (sequence > 0) {
+        const lateSteering = await this.listQueuedSteering(session.id);
+        if (lateSteering.length > 0) {
+          const applied = lateSteering.map((injection) => ({ ...injection, state: "applied" as const }));
+          await this.options.sessions.appendSteeringInjections(applied);
+          const steeringMessages = applied.map((injection) => createSteeringMessage(session.id, injection));
+          await this.options.sessions.appendMessages(steeringMessages);
+          appendedMessages.push(...steeringMessages);
+          pendingInputMessages = [...pendingInputMessages, ...steeringMessages];
+          nextTrigger = "steering";
+        }
+      }
+
       const turnId = `turn.${session.id}.${sequence + 1}.${crypto.randomUUID()}`;
       const startedAt = new Date().toISOString();
       const statusMessage = createStatusMessage(session, turnId, sequence + 1);
@@ -347,26 +390,39 @@ export class AgentLoop {
       try {
         const onAssistantDelta = this.options.onAssistantDelta;
         const onAssistantReasoning = this.options.onAssistantReasoning;
+        const callOptions = params.signal ? { signal: params.signal } : {};
         if (this.options.model.stream && (onAssistantDelta || onAssistantReasoning)) {
-          response = await this.options.model.stream(modelRequest, (event) => {
-            if (event.kind === "response.delta") {
-              onAssistantDelta?.({
-                delta: event.delta,
-                sessionId: session.id,
-                turnId: turn.id
-              });
-            } else if (event.kind === "response.reasoning") {
-              onAssistantReasoning?.({
-                delta: event.delta,
-                sessionId: session.id,
-                turnId: turn.id
-              });
-            }
-          });
+          response = await this.options.model.stream(
+            modelRequest,
+            (event) => {
+              if (event.kind === "response.delta") {
+                onAssistantDelta?.({
+                  delta: event.delta,
+                  sessionId: session.id,
+                  turnId: turn.id
+                });
+              } else if (event.kind === "response.reasoning") {
+                onAssistantReasoning?.({
+                  delta: event.delta,
+                  sessionId: session.id,
+                  turnId: turn.id
+                });
+              }
+            },
+            callOptions
+          );
         } else {
-          response = await this.options.model.generate(modelRequest);
+          response = await this.options.model.generate(modelRequest, callOptions);
         }
       } catch (error) {
+        if (isCancelled()) {
+          turn.status = "cancelled";
+          turn.completedAt = new Date().toISOString();
+          turn.summary = "Cancelled by the operator while the model was generating.";
+          await this.options.sessions.appendTurn(turn);
+          appendedTurns.push(turn);
+          return finishCancelled();
+        }
         turn.status = "failed";
         turn.completedAt = new Date().toISOString();
         turn.summary = "The language model request failed.";
@@ -494,6 +550,32 @@ export class AgentLoop {
           session = await this.persistSession(session, "completion_blocked", {
             statusSummary: "Completion was blocked because `attempt_complete` was mixed with other tool calls."
           });
+          continue;
+        }
+
+        // Steering that arrived while the model was producing its final answer
+        // must be read before the task ends, or it is silently deferred to
+        // some later run. Hold the completion, deliver the steering on the next
+        // turn, and let the model finish again. Operator-driven, so it does not
+        // count toward the no-progress guard.
+        if ((await this.listQueuedSteering(session.id)).length > 0) {
+          const heldMessage = createSystemMessage(
+            session.id,
+            turn.id,
+            "New operator steering arrived before the task finished. Read it and act on it, then call `attempt_complete` again.",
+            "system",
+            "compact"
+          );
+          await this.options.sessions.appendMessages([heldMessage]);
+          appendedMessages.push(heldMessage);
+          turn.outputMessageIds.push(heldMessage.id);
+          turn.completedAt = new Date().toISOString();
+          turn.status = "completed";
+          turn.summary = "The runtime held `attempt_complete` because operator steering arrived.";
+          await this.options.sessions.appendTurn(turn);
+          appendedTurns.push(turn);
+          pendingInputMessages = [heldMessage];
+          nextTrigger = "system_nudge";
           continue;
         }
 
@@ -628,8 +710,12 @@ export class AgentLoop {
         const priorIdenticalCalls = identicalToolCallCounts.get(identityKey) ?? 0;
         identicalToolCallCounts.set(identityKey, priorIdenticalCalls + 1);
 
-        const outcome =
-          priorIdenticalCalls >= maxIdenticalToolCalls
+        // A call already running finishes; once cancelled, none of the rest
+        // start. Each still gets a record and a result, so the transcript keeps
+        // one result per proposed call for the next model request.
+        const outcome = isCancelled()
+          ? cancelToolCall(toolCall)
+          : priorIdenticalCalls >= maxIdenticalToolCalls
             ? refuseRepeatedToolCall(toolCall, priorIdenticalCalls)
             : await (this.options.toolExecutor ?? defaultToolExecutor()).execute(toolCall, {
                 session,
@@ -1334,6 +1420,24 @@ function stableStringify(value: JsonValue | undefined): string {
   }
 
   return JSON.stringify(value);
+}
+
+// A cancelled run records the calls it never started as cancelled rather than
+// dropping them, so the transcript keeps a result for every proposed call.
+function cancelToolCall(toolCall: ToolCallRecord): AgentLoopToolExecutionResult {
+  return {
+    toolCall: {
+      ...toolCall,
+      completedAt: new Date().toISOString(),
+      error: {
+        code: "tool_call_cancelled",
+        details: {},
+        message: "Cancelled by the operator before it ran.",
+        retriable: false
+      },
+      status: "cancelled"
+    }
+  };
 }
 
 // Refusing costs one turn and tells the model exactly what to do differently;

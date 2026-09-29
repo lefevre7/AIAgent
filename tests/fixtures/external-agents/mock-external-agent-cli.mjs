@@ -27,7 +27,14 @@ if (mode === "codex") {
  */
 async function runInteractive(args) {
   const ready = "\r\n> ";
-  process.stdout.write(`mock interactive agent ready (${args.join(" ")})${ready}`);
+  // `--mock-modal` opens on an update offer, like a real CLI, and records the
+  // first line it is sent as the option chosen.
+  let modalOpen = args.includes("--mock-modal");
+  process.stdout.write(
+    modalOpen
+      ? "Update available! 1.0.0 -> 1.0.1\r\n› 1. Update now\r\n  2. Skip\r\nPress enter to continue\r\n"
+      : `mock interactive agent ready (${args.join(" ")})${ready}`
+  );
 
   let buffer = "";
   process.stdin.setEncoding("utf8");
@@ -39,6 +46,11 @@ async function runInteractive(args) {
       buffer = buffer.slice(newline + 1);
       newline = buffer.search(/[\r\n]/u);
 
+      if (modalOpen) {
+        modalOpen = false;
+        process.stdout.write(`\x1b[2J\x1b[Hchose: ${line || "(enter)"}\r\nmock interactive agent ready${ready}`);
+        continue;
+      }
       if (line.length === 0) {
         continue;
       }

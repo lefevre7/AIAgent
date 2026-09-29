@@ -47,6 +47,28 @@ export const approvalRequestSchema = z
   })
   .strict();
 
+/** Where an approval request lists every target the policy evaluated. */
+export const APPROVAL_TARGETS_METADATA_KEY = "evaluatedTargets";
+
+/**
+ * Every target an approval request was evaluated on (the command line with
+ * its argv, each path, the tool…), for showing the operator what they are
+ * approving. Requests recorded before these were kept list only the target
+ * that decided.
+ */
+export function readApprovalTargets(
+  request: Pick<ApprovalRequest, "metadata" | "target">
+): Array<ApprovalRequest["target"]> {
+  const recorded = request.metadata?.[APPROVAL_TARGETS_METADATA_KEY];
+  const targets = Array.isArray(recorded)
+    ? recorded.flatMap((entry) => {
+        const parsed = approvalRequestSchema.shape.target.safeParse(entry);
+        return parsed.success ? [parsed.data] : [];
+      })
+    : [];
+  return targets.length > 0 ? targets : [request.target];
+}
+
 export const approvalResolutionSchema = z
   .object({
     actor: approvalActorSchema,

@@ -9,6 +9,7 @@ import {
   FileSessionStore,
   buildVoiceAudioArtifact,
   createVoiceServiceFromConfig,
+  ensureStateRootWritable,
   loadAIAgentConfig,
   grantConfigTrust,
   revokeConfigTrust,
@@ -17,6 +18,8 @@ import {
   CLI_NAME,
   COMPLETION_SUMMARY_MESSAGE_TAG,
   DEFAULT_LM_STUDIO_MODEL,
+  readApprovalTargets,
+  repeatsShownText,
   type AppConfig,
   type ArtifactReference,
   type LoadedAIAgentConfig,
@@ -28,6 +31,7 @@ import {
 } from "@/core";
 import { createAIAgentSdkFromConfig, type AIAgentSdk, type AIAgentSessionHandle } from "@/sdk";
 import { attachToExternalAgentSession } from "@/gateway/attach-client";
+import { MODEL_MISMATCH_LOG_CODE } from "@/gateway/runtime";
 import { readAttachEndpoint, serveAttachEndpoint, type ServedAttachEndpoint } from "@/gateway/attach-endpoint";
 import type {
   GatewayApprovalRecord,
@@ -65,7 +69,21 @@ export type CliLineReader = {
   close?(): void | Promise<void>;
   /** Drops input that arrived before now. No-op unless stdin is a terminal. */
   discardBuffered(): void;
+  /**
+   * True when a person is typing at a terminal. Only then does the REPL take
+   * input while it is still starting; piped or scripted lines wait for
+   * startup, because their order (approval answers included) is deliberate.
+   */
+  interactive?: boolean;
   next(): Promise<string | null>;
+};
+
+/**
+ * Where Ctrl-C comes from. The REPL takes SIGINT itself, so Ctrl-C cancels
+ * the running turn instead of killing aia and everything it started.
+ */
+export type CliInterruptSource = {
+  subscribe(listener: () => void): () => void;
 };
 
 type CliDependencies = {
@@ -83,6 +101,11 @@ type CliDependencies = {
   // Overrides the interactive line source. When omitted, a readline interface
   // over process.stdin is used (only when stdin is a TTY).
   interactiveInput?: AsyncIterable<string> | CliLineReader;
+  // Overrides where the REPL's Ctrl-C comes from. Defaults to the process's
+  // SIGINT, but only when the REPL reads the real stdin: a test that injects
+  // its input gets no interrupts unless it passes its own, so a test run never
+  // swallows a real Ctrl-C.
+  interrupts?: CliInterruptSource;
   // Overrides the loopback gateway listener the REPL publishes for `aia attach`.
   // Tests substitute a recorder so they never bind a real port.
   serveAttachEndpoint?: (sdk: AIAgentSdk) => Promise<ServedAttachEndpoint | null>;
@@ -346,33 +369,127 @@ async function runChatCli(
   deps: CliDependencies
 ): Promise<number> {
   let loaded: LoadedAIAgentConfig;
-  let sdk: AIAgentSdk;
   try {
     // Read once for the whole REPL. The SDK, the attach listener and the
     // model-provenance hint each used to load it again, which resolved every
     // secret the config references three times per start: three runs of an
     // `exec` provider such as a password-manager CLI, each of which may prompt.
     loaded = await loadAIAgentConfig({ cwd: input.cwd, userHomeDirectory: deps.userHomeDirectory });
-    sdk = await resolveSdk(deps, input.cwd, loaded);
+    // Quick and local, so a state directory aia cannot write stops it here,
+    // before a prompt invites any typing.
+    await ensureStateRootWritable(loaded);
   } catch (error) {
     writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
     await lineSource.close?.();
     return 1;
   }
 
-  let attachEndpoint: ServedAttachEndpoint | null = null;
+  // Everything slower (MCP servers, memory, the model check, the session)
+  // starts behind the prompt, so a person can start typing at once.
+  let stopRequested = false;
+  const startup = settle(startChatRuntime({ deps, input, loaded, stopped: () => stopRequested }));
+  const reader = new CliInput(lineSource);
+  const screen = new ReplScreen(streams);
+  const interrupts = new CliInterrupts(deps.interrupts ?? (deps.interactiveInput ? undefined : processInterrupts));
+  // The outermost scope: a Ctrl-C that nothing more specific is waiting for
+  // (at the prompt, or a second one while a turn is cancelling) leaves.
+  const exitScope = interrupts.open();
+  const restoreWarnings = routeProcessWarnings(screen, streams.stderr);
+
   try {
-    // A REPL with no reachable chat model is useless, so gate on it up front
-    // and exit cleanly rather than opening a session that errors on every turn.
+    return await runChatRepl({
+      approvalState: createCliApprovalState(),
+      exitSignal: exitScope.signal,
+      input: reader,
+      interrupts,
+      screen,
+      startup,
+      stopStartup: () => {
+        stopRequested = true;
+      },
+      streams
+    });
+  } catch (error) {
+    screen.breakLine();
+    writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
+    return 1;
+  } finally {
+    // Every exit path releases what this REPL opened. A readline over a TTY and
+    // a bound listener each keep the process alive, so an early return (model
+    // unreachable, session creation failing) left `aia` running after it had
+    // already printed why it was stopping. A Ctrl-C from here on gets Node's
+    // default: it ends the process without waiting for the cleanup.
+    stopRequested = true;
+    restoreWarnings();
+    interrupts.dispose();
+    await lineSource.close?.();
+    const outcome = await startup;
+    if (outcome.ok && outcome.value) {
+      await outcome.value.attachEndpoint?.close().catch(() => undefined);
+      await outcome.value.sdk.close().catch(() => undefined);
+    }
+  }
+}
+
+type ChatRuntime = {
+  attachEndpoint: ServedAttachEndpoint | null;
+  handle: AIAgentSessionHandle;
+  // Formatted once, not per turn: it only changes if the config files do, and
+  // a failing turn is the worst moment to start reading the filesystem.
+  modelProvenance: string;
+  sdk: AIAgentSdk;
+  sessionId: string;
+};
+
+type ChatReplContext = {
+  approvalState: CliApprovalState;
+  // Aborted once the operator asked to leave with Ctrl-C.
+  exitSignal: AbortSignal;
+  input: CliInput;
+  interrupts: CliInterrupts;
+  screen: ReplScreen;
+  startup: Promise<Settled<ChatRuntime | null>>;
+  stopStartup: () => void;
+  streams: CliStreams;
+};
+
+/** A startup failure whose message is already the whole explanation. */
+class ChatStartupError extends Error {}
+
+/**
+ * Brings up what a chat needs, in order. Returns null, having closed what it
+ * opened, when `stopped()` turns true on the way (the operator left during
+ * startup); on a failure it closes what it opened and rethrows.
+ */
+async function startChatRuntime(params: {
+  deps: CliDependencies;
+  input: { cwd: string; goal: string; title: string };
+  loaded: LoadedAIAgentConfig;
+  stopped: () => boolean;
+}): Promise<ChatRuntime | null> {
+  const { deps, input, loaded } = params;
+  const sdk = await resolveSdk(deps, input.cwd, loaded);
+  let attachEndpoint: ServedAttachEndpoint | null = null;
+  const release = async (): Promise<void> => {
+    await attachEndpoint?.close().catch(() => undefined);
+    await sdk.close().catch(() => undefined);
+  };
+
+  try {
+    if (params.stopped()) {
+      await release();
+      return null;
+    }
+    // A REPL with no reachable chat model is useless, so this is a startup
+    // failure rather than a session that errors on every turn.
     const model = await probeModelHealth(sdk);
     if (model.status !== "healthy") {
-      writeLine(streams.stderr, formatModelUnavailable(model));
-      return 1;
+      throw new ChatStartupError(formatModelUnavailable(model));
     }
-
-    // Formatted once, not per turn: it only changes if the config files do,
-    // and a failing turn is the worst moment to start reading the filesystem.
-    const modelProvenance = formatChatModelProvenance(loaded);
+    if (params.stopped()) {
+      await release();
+      return null;
+    }
 
     // Serve the gateway on loopback so a terminal window opened for an
     // interactive external-agent session has something to attach to. Only the
@@ -395,6 +512,10 @@ async function runChatCli(
     if (attachEndpoint) {
       sdk.controlPlane.setAttachEndpoint?.(attachEndpoint.url);
     }
+    if (params.stopped()) {
+      await release();
+      return null;
+    }
 
     const created = await sdk.sessions.create({
       cwd: input.cwd,
@@ -404,90 +525,441 @@ async function runChatCli(
       },
       title: input.title
     });
+    return {
+      attachEndpoint,
+      handle: created.handle,
+      modelProvenance: formatChatModelProvenance(loaded),
+      sdk,
+      sessionId: created.session.id
+    };
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
 
-    writeLine(streams.stdout, formatChatWelcome(created.session.id));
-    const approvalState = createCliApprovalState();
+async function runChatRepl(context: ChatReplContext): Promise<number> {
+  const started = context.input.interactive ? await startWhileTyping(context) : await startBeforeReading(context);
+  if (typeof started === "number") {
+    return started;
+  }
 
-    for (;;) {
-      streams.stdout.write(CHAT_PROMPT);
-      // The conversation prompt deliberately does *not* drain: lines typed
-      // while the agent worked are the operator's next message, queued on
-      // purpose. Only question prompts discard stale input.
-      const raw = await lineSource.next();
-      if (raw === null) {
+  for (const line of started.held) {
+    // Say which held line is going now: several may have piled up.
+    writeLine(
+      context.streams.stderr,
+      `${ANSI_DIM}· ${parseChatCommand(line) === "message" ? "Sending" : "Running"}: ${line}${ANSI_RESET}`
+    );
+    const exitCode = await dispatchChatLine(line, started.runtime, context);
+    if (exitCode !== undefined) {
+      return exitCode;
+    }
+  }
+
+  for (;;) {
+    context.screen.prompt(CHAT_PROMPT);
+    // The conversation prompt deliberately does *not* drain: lines typed
+    // while the agent worked are the operator's next message, queued on
+    // purpose. Only question prompts discard stale input.
+    const raw = await context.input.read(context.exitSignal);
+    if (raw === INTERRUPTED) {
+      context.screen.breakLine();
+      writeLine(context.streams.stdout, "Goodbye.");
+      return 130;
+    }
+    context.screen.inputReceived();
+    if (raw === null) {
+      return 0;
+    }
+    const line = raw.trim();
+    if (line.length === 0) {
+      continue;
+    }
+    const exitCode = await dispatchChatLine(line, started.runtime, context);
+    if (exitCode !== undefined) {
+      return exitCode;
+    }
+  }
+}
+
+/**
+ * Piped or scripted input: nothing is read until startup is done, so a
+ * script's lines keep their order and meaning (an approval answer is still
+ * read as the answer), exactly as before the prompt came up early.
+ */
+async function startBeforeReading(
+  context: ChatReplContext
+): Promise<number | { held: string[]; runtime: ChatRuntime }> {
+  const outcome = await raceAbort(context.startup, context.exitSignal);
+  if (outcome === INTERRUPTED) {
+    context.stopStartup();
+    writeLine(context.streams.stdout, "Goodbye.");
+    return 130;
+  }
+  if (!outcome.ok) {
+    writeStartupFailure(context.streams, outcome.error);
+    return 1;
+  }
+  if (!outcome.value) {
+    return 0;
+  }
+  writeLine(context.streams.stdout, formatChatWelcome(outcome.value.sessionId));
+  return { held: [], runtime: outcome.value };
+}
+
+/**
+ * A person at a terminal: the prompt is up while startup runs. Messages and
+ * commands that need the session are held and run once it is ready; /help and
+ * mistakes are answered at once; /exit, Ctrl-D and Ctrl-C stop startup and
+ * leave, printing anything held so it is not silently lost.
+ */
+async function startWhileTyping(context: ChatReplContext): Promise<number | { held: string[]; runtime: ChatRuntime }> {
+  const { screen, streams } = context;
+  const held: string[] = [];
+  const leave = (exitCode: number, farewell: boolean): number => {
+    context.stopStartup();
+    writeUnsent(streams, held);
+    if (farewell) {
+      writeLine(streams.stdout, "Goodbye.");
+    }
+    return exitCode;
+  };
+  // A read that loses to startup finishing stays pending for the next read.
+  const startupDone = new AbortController();
+  void context.startup.then(() => {
+    startupDone.abort();
+  });
+
+  writeLine(streams.stdout, formatChatWelcome());
+  screen.prompt(CHAT_PROMPT);
+  for (;;) {
+    const raw = await context.input.read(AbortSignal.any([context.exitSignal, startupDone.signal]));
+    if (raw === INTERRUPTED) {
+      screen.breakLine();
+      if (context.exitSignal.aborted) {
+        return leave(130, true);
+      }
+      const outcome = await context.startup;
+      if (!outcome.ok) {
+        writeStartupFailure(streams, outcome.error);
+        writeUnsent(streams, held);
+        return 1;
+      }
+      if (!outcome.value) {
         return 0;
       }
-      const line = raw.trim();
-      if (line.length === 0) {
-        continue;
-      }
+      writeLine(streams.stdout, `Session: ${outcome.value.sessionId}`);
+      return { held, runtime: outcome.value };
+    }
 
+    screen.inputReceived();
+    if (raw === null) {
+      return leave(0, false);
+    }
+    const line = raw.trim();
+    if (line.length > 0) {
       const command = parseChatCommand(line);
       if (command === "exit") {
-        writeLine(streams.stdout, "Goodbye.");
-        return 0;
+        return leave(0, true);
       }
       if (command === "help") {
         writeLine(streams.stdout, formatChatHelp());
-        continue;
+      } else if (command === "unknown") {
+        writeLine(streams.stderr, formatUnknownChatCommand(line));
+      } else {
+        held.push(line);
+        writeLine(
+          streams.stderr,
+          `${ANSI_DIM}· Still starting up. ${command === "message" ? "This is sent" : "This runs"} as soon as the session is ready.${ANSI_RESET}`
+        );
       }
-      if (command === "mcp") {
-        try {
-          const { servers } = await sdk.request("mcp.list", {});
-          writeLine(streams.stdout, formatMcpServers(servers));
-        } catch (error) {
-          writeLine(streams.stderr, `Failed to list MCP servers: ${renderCliError(error)}`);
-        }
-        continue;
-      }
-      if (command === "compact") {
-        await runCompactCommand(created.handle, streams);
-        continue;
-      }
-      if (command === "agents") {
-        try {
-          const { sessions } = await sdk.request("external_agent.session.list", {});
-          writeLine(streams.stdout, formatExternalAgentSessions(sessions));
-        } catch (error) {
-          writeLine(streams.stderr, `Failed to list interactive external-agent sessions: ${renderCliError(error)}`);
-        }
-        continue;
-      }
-      if (command === "attach") {
-        const externalSessionId = line.slice(1).trim().split(/\s+/u)[1];
-        if (!externalSessionId) {
-          writeLine(streams.stderr, "Usage: /attach <external-session-id> (see /agents)");
-          continue;
-        }
-        try {
-          const result = await sdk.request("external_agent.session.attach", {
-            externalSessionId
-          });
-          writeLine(streams.stdout, `Opened a terminal window running: ${result.command}`);
-        } catch (error) {
-          writeLine(streams.stderr, `Failed to attach to ${externalSessionId}: ${renderCliError(error)}`);
-        }
-        continue;
-      }
-      if (command === "unknown") {
-        writeLine(streams.stderr, `Unknown command "${line}". Type /help for options, or /exit to leave.`);
-        continue;
-      }
-
-      await runChatTurn(created.handle, line, streams, lineSource, approvalState, modelProvenance);
     }
-  } catch (error) {
-    writeLine(streams.stderr, `Failed to start AIAgent: ${renderCliError(error)}`);
-    return 1;
-  } finally {
-    // Every exit path releases what this REPL opened. A readline over a TTY and
-    // a bound listener each keep the process alive, so an early return (model
-    // unreachable, session creation failing) left `aia` running after it had
-    // already printed why it was stopping.
-    await lineSource.close?.();
-    await attachEndpoint?.close().catch(() => undefined);
-    await sdk.close().catch(() => undefined);
+    screen.prompt(CHAT_PROMPT);
   }
+}
+
+/** Runs one line from the prompt. Returns an exit code when the REPL should end. */
+async function dispatchChatLine(
+  line: string,
+  runtime: ChatRuntime,
+  context: ChatReplContext
+): Promise<number | undefined> {
+  const { sdk } = runtime;
+  const { streams } = context;
+  switch (parseChatCommand(line)) {
+    case "exit":
+      writeLine(streams.stdout, "Goodbye.");
+      return 0;
+    case "help":
+      writeLine(streams.stdout, formatChatHelp());
+      return undefined;
+    case "mcp":
+      try {
+        const { servers } = await sdk.request("mcp.list", {});
+        writeLine(streams.stdout, formatMcpServers(servers));
+      } catch (error) {
+        writeLine(streams.stderr, `Failed to list MCP servers: ${renderCliError(error)}`);
+      }
+      return undefined;
+    case "compact":
+      await runCompactCommand(runtime.handle, streams);
+      return undefined;
+    case "agents":
+      try {
+        const { sessions } = await sdk.request("external_agent.session.list", {});
+        writeLine(streams.stdout, formatExternalAgentSessions(sessions));
+      } catch (error) {
+        writeLine(streams.stderr, `Failed to list interactive external-agent sessions: ${renderCliError(error)}`);
+      }
+      return undefined;
+    case "attach": {
+      const externalSessionId = line.slice(1).trim().split(/\s+/u)[1];
+      if (!externalSessionId) {
+        writeLine(streams.stderr, "Usage: /attach <external-session-id> (see /agents)");
+        return undefined;
+      }
+      try {
+        const result = await sdk.request("external_agent.session.attach", {
+          externalSessionId
+        });
+        writeLine(streams.stdout, `Opened a terminal window running: ${result.command}`);
+      } catch (error) {
+        writeLine(streams.stderr, `Failed to attach to ${externalSessionId}: ${renderCliError(error)}`);
+      }
+      return undefined;
+    }
+    case "unknown":
+      writeLine(streams.stderr, formatUnknownChatCommand(line));
+      return undefined;
+    case "message":
+      await runChatTurn(runtime.handle, line, {
+        approvalState: context.approvalState,
+        exitSignal: context.exitSignal,
+        input: context.input,
+        interrupts: context.interrupts,
+        modelProvenance: runtime.modelProvenance,
+        screen: context.screen,
+        streams
+      });
+      if (context.exitSignal.aborted) {
+        writeLine(streams.stdout, "Goodbye.");
+        return 130;
+      }
+      return undefined;
+  }
+}
+
+function formatUnknownChatCommand(line: string): string {
+  return `Unknown command "${line}". Type /help for options, or /exit to leave.`;
+}
+
+function writeStartupFailure(streams: CliStreams, error: unknown): void {
+  writeLine(
+    streams.stderr,
+    error instanceof ChatStartupError ? error.message : `Failed to start AIAgent: ${renderCliError(error)}`
+  );
+}
+
+// Held lines were typed but never reached the agent; print them so they can be
+// copied into the next session instead of silently disappearing.
+function writeUnsent(streams: CliStreams, held: string[]): void {
+  if (held.length === 0) {
+    return;
+  }
+  writeLine(streams.stderr, "Not sent:");
+  for (const line of held) {
+    writeLine(streams.stderr, `  ${line}`);
+  }
+}
+
+type Settled<T> = { ok: true; value: T } | { error: unknown; ok: false };
+
+async function settle<T>(promise: Promise<T>): Promise<Settled<T>> {
+  try {
+    return { ok: true, value: await promise };
+  } catch (error) {
+    return { error, ok: false };
+  }
+}
+
+const INTERRUPTED = Symbol("interrupted");
+
+/** Resolves with the promise's value, or with INTERRUPTED once `signal` aborts. */
+async function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | typeof INTERRUPTED> {
+  if (signal.aborted) {
+    return INTERRUPTED;
+  }
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<typeof INTERRUPTED>((resolve) => {
+    onAbort = () => {
+      resolve(INTERRUPTED);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort as () => void);
+  }
+}
+
+const processInterrupts: CliInterruptSource = {
+  subscribe(listener) {
+    process.on("SIGINT", listener);
+    return () => {
+      process.off("SIGINT", listener);
+    };
+  }
+};
+
+/**
+ * Hands each Ctrl-C to the innermost scope that is still listening. A turn
+ * opens a scope that cancels it; once that has fired, the next Ctrl-C reaches
+ * the REPL's own scope, which exits.
+ */
+class CliInterrupts {
+  private readonly scopes: AbortController[] = [];
+  private readonly unsubscribe: () => void;
+
+  constructor(source: CliInterruptSource | undefined) {
+    this.unsubscribe = source?.subscribe(() => this.deliver()) ?? (() => undefined);
+  }
+
+  open(): { close(): void; signal: AbortSignal } {
+    const controller = new AbortController();
+    this.scopes.push(controller);
+    return {
+      close: () => {
+        const index = this.scopes.indexOf(controller);
+        if (index !== -1) {
+          this.scopes.splice(index, 1);
+        }
+      },
+      signal: controller.signal
+    };
+  }
+
+  dispose(): void {
+    this.unsubscribe();
+  }
+
+  private deliver(): void {
+    for (let index = this.scopes.length - 1; index >= 0; index -= 1) {
+      const scope = this.scopes[index] as AbortController;
+      if (!scope.signal.aborted) {
+        scope.abort();
+        return;
+      }
+    }
+  }
+}
+
+/**
+ * The REPL's one reader. A read that loses a race (to a Ctrl-C, or to startup
+ * finishing) stays pending and goes to whoever reads next, so a typed line is
+ * never swallowed by a read nobody is waiting on any more.
+ */
+class CliInput {
+  private pending: { promise: Promise<string | null>; settled: boolean } | null = null;
+
+  constructor(private readonly reader: CliLineReader) {}
+
+  get interactive(): boolean {
+    return this.reader.interactive === true;
+  }
+
+  async read(signal?: AbortSignal): Promise<string | null | typeof INTERRUPTED> {
+    if (!this.pending) {
+      const entry = { promise: Promise.resolve<string | null>(null), settled: false };
+      entry.promise = this.reader.next().finally(() => {
+        entry.settled = true;
+      });
+      this.pending = entry;
+    }
+    const pending = this.pending;
+    const line = signal ? await raceAbort(pending.promise, signal) : await pending.promise;
+    if (line !== INTERRUPTED && this.pending === pending) {
+      this.pending = null;
+    }
+    return line;
+  }
+
+  /** Drops what was typed before now (at a terminal), a line already read ahead included. */
+  discardBuffered(): void {
+    this.reader.discardBuffered();
+    if (this.interactive && this.pending?.settled) {
+      this.pending = null;
+    }
+  }
+}
+
+/**
+ * Knows whether a prompt is on screen, so output nobody typed for (startup
+ * finishing, a warning, a Ctrl-C notice) starts on its own line. In line mode
+ * the terminal echoes typing, not aia, so a half-typed line stays where it was
+ * and is still sent whole on Enter.
+ */
+class ReplScreen {
+  private shownPrompt: string | null = null;
+
+  constructor(private readonly streams: CliStreams) {}
+
+  prompt(text: string): void {
+    this.streams.stdout.write(text);
+    this.shownPrompt = text;
+  }
+
+  inputReceived(): void {
+    this.shownPrompt = null;
+  }
+
+  /** Moves off a prompt line, if one is showing. */
+  breakLine(): void {
+    if (this.shownPrompt !== null) {
+      this.streams.stdout.write("\n");
+      this.shownPrompt = null;
+    }
+  }
+
+  /** Writes a line on its own and puts back the prompt that was showing, if any. */
+  notice(stream: CliStream, text: string): void {
+    const prompt = this.shownPrompt;
+    this.breakLine();
+    writeLine(stream, text);
+    if (prompt !== null) {
+      this.prompt(prompt);
+    }
+  }
+}
+
+/**
+ * Node prints process warnings wherever the cursor is, which in the REPL is
+ * usually right after the prompt. While the REPL runs they go through the
+ * screen instead. With warnings turned off (--no-warnings, NODE_NO_WARNINGS=1)
+ * Node installs no printer, and none is added here.
+ */
+function routeProcessWarnings(screen: ReplScreen, stream: CliStream): () => void {
+  const printers = process.rawListeners("warning");
+  if (printers.length === 0) {
+    return () => undefined;
+  }
+  process.removeAllListeners("warning");
+  const print = (warning: Error & { code?: string }): void => {
+    if (warning.name === "DeprecationWarning" && process.noDeprecation) {
+      return;
+    }
+    screen.notice(
+      stream,
+      `(node:${process.pid}) ${warning.code ? `[${warning.code}] ` : ""}${warning.name}: ${warning.message}`
+    );
+  };
+  process.on("warning", print);
+  return () => {
+    process.off("warning", print);
+    for (const printer of printers) {
+      process.on("warning", printer as (warning: Error) => void);
+    }
+  };
 }
 
 function formatStatusMetrics(metrics: {
@@ -684,17 +1156,23 @@ function formatTurnStopNotice(
   return `${ANSI_DIM}Turn ended: ${describeCompletionReason(run?.completionReason)} (session ${snapshot.session.status}).${detail}${ANSI_RESET}`;
 }
 
-async function runChatTurn(
-  handle: AIAgentSessionHandle,
-  text: string,
-  streams: CliStreams,
-  reader: CliLineReader,
-  approvalState: CliApprovalState = createCliApprovalState(),
-  modelProvenance?: string
-): Promise<void> {
-  const DIM = "[2m";
-  const RESET = "[0m";
+type ChatTurnContext = {
+  approvalState: CliApprovalState;
+  // Aborted once the operator asked to leave: stop waiting and return.
+  exitSignal: AbortSignal;
+  input: CliInput;
+  interrupts: CliInterrupts;
+  modelProvenance?: string;
+  screen: ReplScreen;
+  streams: CliStreams;
+};
+
+async function runChatTurn(handle: AIAgentSessionHandle, text: string, context: ChatTurnContext): Promise<void> {
+  const { streams } = context;
+  const DIM = "\x1b[2m";
+  const RESET = "\x1b[0m";
   let streamedText = false;
+  let streamedContent = "";
   let reasoningOpen = false;
   const closeReasoning = (): void => {
     if (reasoningOpen) {
@@ -718,6 +1196,7 @@ async function runChatTurn(
     } else if (event.topic === "message.delta") {
       closeReasoning();
       streamedText = true;
+      streamedContent += event.payload.delta;
       streams.stdout.write(event.payload.delta);
     } else if (event.topic === "tool.updated") {
       // Tool activity goes to stderr so it never corrupts streamed stdout text.
@@ -746,11 +1225,20 @@ async function runChatTurn(
         closeReasoning();
         writeLine(streams.stderr, `${DIM}${formatStatusMetrics(metrics)}${RESET}`);
       }
+    } else if (event.topic === "log.emitted" && event.metadata.code === MODEL_MISMATCH_LOG_CODE) {
+      // Once per session: the provider answered with another model than the
+      // one asked for. Where the requested id came from is the likely fix.
+      closeReasoning();
+      writeLine(streams.stderr, `${DIM}· ${event.payload.message}${RESET}`);
+      if (context.modelProvenance) {
+        writeLine(streams.stderr, `${DIM}  ${context.modelProvenance}${RESET}`);
+      }
     }
   };
   const unsubscribe = handle.subscribe(onEvent, {
     topics: [
       "approval.requested",
+      "log.emitted",
       "message.delta",
       "message.reasoning",
       "tool.output.delta",
@@ -759,18 +1247,49 @@ async function runChatTurn(
     ]
   });
 
+  // The first Ctrl-C during a turn cancels it: the gateway aborts the model
+  // request and starts no further tool call or turn. A second one reaches the
+  // REPL's own scope and exits.
+  const turnScope = context.interrupts.open();
+  const cancelTurn = (): void => {
+    closeReasoning();
+    context.screen.breakLine();
+    writeLine(streams.stderr, `${DIM}· Cancelling the turn. Press Ctrl-C again to exit.${RESET}`);
+    // No run is active while an approval prompt waits; that path cancels the
+    // approvals instead, so "nothing to cancel" is expected here.
+    void Promise.resolve()
+      .then(async () => handle.cancel())
+      .catch(() => undefined);
+  };
+  turnScope.signal.addEventListener("abort", cancelTurn, { once: true });
+
   try {
     // Thinking line is terminated so streamed tokens / tool lines start cleanly.
     writeLine(streams.stdout, "Thinking…");
     const run = await handle.sendMessage({ text });
-    let finalRun = await run.wait();
+    const firstRun = await raceAbort(run.wait(), context.exitSignal);
+    if (firstRun === INTERRUPTED) {
+      return;
+    }
+    let finalRun = firstRun;
 
     closeReasoning();
     if (streamedText) {
       streams.stdout.write("\n");
     }
 
-    const resumedRuns = await resolvePendingApprovals(handle, streams, reader, approvalState);
+    const approvals = await resolvePendingApprovals(handle, { ...context, turnSignal: turnScope.signal });
+    if (approvals.outcome === "exit") {
+      return;
+    }
+    if (approvals.outcome === "cancelled") {
+      writeLine(
+        streams.stderr,
+        `${DIM}Turn cancelled. ${approvals.cancelledCount === 1 ? "The pending approval was" : `${approvals.cancelledCount} pending approvals were`} cancelled, so nothing it asked for ran.${RESET}`
+      );
+      return;
+    }
+    const resumedRuns = approvals.resumedRuns;
     // Test fakes can hand back no record at all; the real gateway always does.
     const turnMessageIds = new Set([finalRun, ...resumedRuns].flatMap((entry) => entry?.messageIds ?? []));
     finalRun = resumedRuns.at(-1) ?? finalRun;
@@ -784,7 +1303,8 @@ async function runChatTurn(
     // turn's runs wrote counts: the snapshot holds the whole session, and an
     // earlier turn's answer must never be re-printed as this one's.
     const completionSummary = extractCompletionSummary(snapshot, turnMessageIds);
-    if (completionSummary) {
+    // Unless it only repeats what just streamed: the answer used to appear twice.
+    if (completionSummary && !repeatsShownText(completionSummary, streamedContent)) {
       writeLine(streams.stdout, completionSummary);
     }
 
@@ -794,8 +1314,8 @@ async function runChatTurn(
       // A provider error that names a model is almost always a config-location
       // problem rather than a provider problem, and the provider cannot know
       // that. Say which id we asked for and which files chose it.
-      if (modelProvenance && mentionsChatModel(errorMessage)) {
-        writeLine(streams.stderr, `${DIM}${modelProvenance}${RESET}`);
+      if (context.modelProvenance && mentionsChatModel(errorMessage)) {
+        writeLine(streams.stderr, `${DIM}${context.modelProvenance}${RESET}`);
       }
     } else {
       // A turn that ends for any reason other than "the agent finished" used
@@ -809,6 +1329,8 @@ async function runChatTurn(
   } catch (error) {
     writeLine(streams.stderr, renderCliError(error));
   } finally {
+    turnScope.signal.removeEventListener("abort", cancelTurn);
+    turnScope.close();
     unsubscribe();
   }
 }
@@ -821,26 +1343,50 @@ async function runChatTurn(
 // `question`-kind approvals (ask_user_question) are answered directly: the
 // typed reply (or the chosen option's label) is the resolution comment the
 // tool returns to the model. Returns every run it resumed, in order.
+//
+// Ctrl-C (the turn signal) cancels every pending approval with the gateway's
+// "cancelled" decision, which, unlike a denial, is not turned into steering,
+// and resumes nothing: the operator stopped the turn, so nothing it asked for
+// runs and the model is not woken to carry on.
+type ApprovalLoopResult =
+  | { outcome: "cancelled"; cancelledCount: number }
+  | { outcome: "exit" }
+  | { outcome: "settled"; resumedRuns: GatewayRunRecord[] };
+
 async function resolvePendingApprovals(
   handle: AIAgentSessionHandle,
-  streams: CliStreams,
-  reader: CliLineReader,
-  state: CliApprovalState
-): Promise<GatewayRunRecord[]> {
-  const ask = createOperatorPrompt(streams, reader);
+  context: ChatTurnContext & { turnSignal: AbortSignal }
+): Promise<ApprovalLoopResult> {
+  const { streams } = context;
+  const state = context.approvalState;
+  const ask = createOperatorPrompt(context);
   const resumedRuns: GatewayRunRecord[] = [];
+  // With nothing left pending (the Ctrl-C landed while the run was going),
+  // the turn ends the usual way and reports the cancelled run.
+  const stop = async (): Promise<ApprovalLoopResult> => {
+    if (context.exitSignal.aborted) {
+      return { outcome: "exit" };
+    }
+    const cancelledCount = await cancelPendingApprovals(handle);
+    return cancelledCount > 0 ? { cancelledCount, outcome: "cancelled" } : { outcome: "settled", resumedRuns };
+  };
 
   for (let round = 0; round < 50; round += 1) {
+    if (context.exitSignal.aborted || context.turnSignal.aborted) {
+      return stop();
+    }
     const pending = await handle.listPendingApprovals();
     if (pending.length === 0) {
-      return resumedRuns;
+      return { outcome: "settled", resumedRuns };
     }
 
     for (const approval of pending) {
       const target = approval.request.target;
 
       if (target.kind === "question") {
-        await answerAgentQuestion(handle, approval, streams, reader);
+        if ((await answerAgentQuestion(handle, approval, context, ask)) === INTERRUPTED) {
+          return stop();
+        }
         continue;
       }
 
@@ -856,14 +1402,19 @@ async function resolvePendingApprovals(
       }
 
       writeLine(streams.stdout, `${ANSI_DIM}  ${approval.request.justification}${ANSI_RESET}`);
-      const answer =
-        (
-          await ask(
-            `Approve ${target.label} → ${target.value}? [y/N/a/e] (y = yes, N = no, a = always for this session, e = no + explain what to do instead) `
-          )
-        )
-          ?.trim()
-          .toLowerCase() ?? "";
+      // Everything the policy weighed: the full command line with its argv,
+      // each path, the tool. A prompt for "write_file" alone never said which
+      // file it would write.
+      for (const evaluated of readApprovalTargets(approval.request)) {
+        writeLine(streams.stdout, `  ${evaluated.kind}: ${evaluated.value}`);
+      }
+      const reply = await ask(
+        `Approve ${target.label} → ${target.value}? [y/N/a/e] (y = yes, N = no, a = always approve ${describeAlwaysScope(target)} for this session, e = no + explain what to do instead) `
+      );
+      if (reply === INTERRUPTED) {
+        return stop();
+      }
+      const answer = reply?.trim().toLowerCase() ?? "";
 
       if (answer === "a" || answer === "always") {
         state.alwaysApprove.add(alwaysKey);
@@ -873,7 +1424,7 @@ async function resolvePendingApprovals(
         });
         writeLine(
           streams.stdout,
-          `Approved ${target.value}; further ${target.value} requests are auto-approved for this session.`
+          `Approved ${target.value}; ${describeAlwaysScope(target)} is auto-approved for this session.`
         );
         continue;
       }
@@ -889,7 +1440,11 @@ async function resolvePendingApprovals(
 
       let note = "";
       if (answer === "e" || answer === "explain") {
-        note = (await ask("What should the agent do instead? "))?.trim() ?? "";
+        const explanation = await ask("What should the agent do instead? ");
+        if (explanation === INTERRUPTED) {
+          return stop();
+        }
+        note = explanation?.trim() ?? "";
       }
       await handle.resolveApproval({
         ...(note.length > 0 ? { comment: note } : {}),
@@ -905,7 +1460,10 @@ async function resolvePendingApprovals(
     }
 
     const resumeRun = await handle.resume();
-    const resumed = await resumeRun.wait();
+    const resumed = await raceAbort(resumeRun.wait(), context.exitSignal);
+    if (resumed === INTERRUPTED) {
+      return { outcome: "exit" };
+    }
     if (resumed) {
       resumedRuns.push(resumed);
     }
@@ -915,11 +1473,39 @@ async function resolvePendingApprovals(
     streams.stderr,
     "Stopped after 50 rounds of approvals without the session settling. Run the prompt again, or resolve the remaining approvals from another surface."
   );
-  return resumedRuns;
+  return { outcome: "settled", resumedRuns };
+}
+
+// What answering "a" covers: the target that decided the prompt, matched
+// exactly (`kind:value`) for the rest of the CLI session.
+function describeAlwaysScope(target: { kind: string; value: string }): string {
+  switch (target.kind) {
+    case "command":
+      return "this exact command line";
+    case "path":
+      return `every request for ${target.value}`;
+    case "mcp_server":
+      return `every tool on MCP server ${target.value}`;
+    default:
+      return `every ${target.value} request`;
+  }
+}
+
+async function cancelPendingApprovals(handle: AIAgentSessionHandle): Promise<number> {
+  const pending = await handle.listPendingApprovals();
+  for (const approval of pending) {
+    await handle.resolveApproval({
+      comment: "Cancelled by the operator (Ctrl-C).",
+      decision: "cancelled",
+      requestId: approval.request.id
+    });
+  }
+  return pending.length;
 }
 
 /**
- * Asks the operator something and reads their reply.
+ * Asks the operator something and reads their reply, or INTERRUPTED on
+ * Ctrl-C.
  *
  * Buffered input is dropped immediately before the question is written: on a
  * terminal, a human cannot have answered a question they had not yet seen, so
@@ -928,37 +1514,42 @@ async function resolvePendingApprovals(
  * meant to grant, and pushed their real keystroke onto the next prompt.
  */
 function createOperatorPrompt(
-  streams: CliStreams,
-  reader: CliLineReader
-): (question: string) => Promise<string | null> {
+  context: ChatTurnContext & { turnSignal: AbortSignal }
+): (question: string) => Promise<string | null | typeof INTERRUPTED> {
+  const interrupted = AbortSignal.any([context.turnSignal, context.exitSignal]);
   return async (question: string) => {
-    reader.discardBuffered();
-    streams.stdout.write(question);
-    return reader.next();
+    context.input.discardBuffered();
+    context.screen.prompt(question);
+    const reply = await context.input.read(interrupted);
+    if (reply !== INTERRUPTED) {
+      context.screen.inputReceived();
+    }
+    return reply;
   };
 }
 
 async function answerAgentQuestion(
   handle: AIAgentSessionHandle,
   approval: GatewayApprovalRecord,
-  streams: CliStreams,
-  reader: CliLineReader
-): Promise<void> {
-  const ask = createOperatorPrompt(streams, reader);
+  context: ChatTurnContext,
+  ask: (question: string) => Promise<string | null | typeof INTERRUPTED>
+): Promise<void | typeof INTERRUPTED> {
+  const { streams } = context;
   writeLine(streams.stdout, `The agent asks: ${approval.request.justification}`);
   const options = readQuestionOptions(approval.request.metadata?.options);
   for (const [index, option] of options.entries()) {
     writeLine(streams.stdout, `  ${index + 1}) ${option.label}${option.description ? ` — ${option.description}` : ""}`);
   }
 
-  const typed =
-    (
-      await ask(
-        options.length > 0
-          ? "Your answer (number, or type your own answer; Enter to skip): "
-          : "Your answer (Enter to skip): "
-      )
-    )?.trim() ?? "";
+  const reply = await ask(
+    options.length > 0
+      ? "Your answer (number, or type your own answer; Enter to skip): "
+      : "Your answer (Enter to skip): "
+  );
+  if (reply === INTERRUPTED) {
+    return INTERRUPTED;
+  }
+  const typed = reply?.trim() ?? "";
   // A bare number is shorthand for the option at that position; the tool only
   // ever sees the label, so option numbering stays a CLI presentation detail.
   const chosen = /^\d+$/u.test(typed) ? options[Number.parseInt(typed, 10) - 1] : undefined;
@@ -1482,10 +2073,12 @@ function parseChatCommand(
   }
 }
 
-function formatChatWelcome(sessionId: string): string {
+// At a terminal the welcome comes before the session exists (startup runs
+// behind the prompt), and the session line follows once it does.
+function formatChatWelcome(sessionId?: string): string {
   return [
     "AIAgent interactive session. Type a message and press Enter.",
-    `Session: ${sessionId}`,
+    ...(sessionId ? [`Session: ${sessionId}`] : []),
     "The session stays open until you type /exit or /quit. Type /help for commands."
   ].join("\n");
 }
@@ -1500,6 +2093,9 @@ function formatChatHelp(): string {
     "  /mcp           List configured MCP servers, their state, and their tools",
     "  /exit, /quit   End the session and return to the shell",
     "Anything else is sent to the agent as a message.",
+    "",
+    "Ctrl-C stops the running turn; press it again to exit. At the prompt, Ctrl-C exits.",
+    "At an approval prompt it cancels the turn and the approvals it was waiting on.",
     "",
     "Approval prompts [y/N/a/e]:",
     "  y  approve once",
@@ -1617,6 +2213,7 @@ function createStdinLineReader(options: { interactive?: boolean } = {}): CliLine
         queue.length = 0;
       }
     },
+    interactive,
     async next(): Promise<string | null> {
       while (true) {
         if (queue.length > 0) {
@@ -1649,6 +2246,7 @@ function toLineReader(source: AsyncIterable<string> | CliLineReader): CliLineRea
       await iterator.return?.();
     },
     discardBuffered: () => undefined,
+    interactive: false,
     async next(): Promise<string | null> {
       const result = await iterator.next();
       return result.done ? null : result.value;
@@ -1907,7 +2505,10 @@ async function runTrustCli(args: string[], streams: CliStreams, deps: CliDepende
     if (!workspaceTrust.required) {
       writeLine(
         streams.stdout,
-        `No trust needed: ${configPath} declares no secret provider that can run commands or read arbitrary files.`
+        loaded.sources.config.workspace
+          ? `No trust needed: ${configPath} declares no secret provider that can run commands or read arbitrary files.`
+          : // Naming a file that does not exist read as if it had been inspected.
+            `No trust needed: there is no workspace config (no ${APP_CONFIG_FILE_NAME} found from ${paths.workspaceRoot} upward).`
       );
       return 0;
     }
@@ -1975,7 +2576,10 @@ async function confirmTrustGrant(streams: CliStreams, deps: CliDependencies): Pr
   }
 
   try {
-    const answer = await createOperatorPrompt(streams, reader)("Trust this exact file now? [y/N] ");
+    // As at any question prompt, input typed before the question is stale.
+    reader.discardBuffered();
+    streams.stdout.write("Trust this exact file now? [y/N] ");
+    const answer = await reader.next();
     return /^(y|yes)$/iu.test(answer?.trim() ?? "");
   } finally {
     await reader.close?.();

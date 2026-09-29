@@ -151,7 +151,7 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
       timeout: this.actionTimeoutMs()
     });
     const extracted = await page.evaluate(
-      ({ maxElements, maxTextChars }) => {
+      inPage(({ maxElements, maxTextChars }: { maxElements: number; maxTextChars: number }) => {
         const clearExistingRefs = () => {
           for (const element of Array.from(document.querySelectorAll("[data-aia-ref]"))) {
             element.removeAttribute("data-aia-ref");
@@ -244,7 +244,7 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
           truncated: Boolean(fullText && bodyText && fullText.length > bodyText.length),
           url: window.location.href
         };
-      },
+      }),
       {
         maxElements: params.maxElements ?? this.snapshotMaxElements(),
         maxTextChars: params.maxTextChars ?? this.snapshotTextChars()
@@ -367,22 +367,25 @@ export class PlaywrightBrowserAutomationService implements BrowserAutomationServ
     const session = await this.ensureSession(params.sessionId);
     const runtimePage = await this.resolvePage(params);
     const locator = this.resolveRequiredLocator(runtimePage, params);
-    const optionValues = await locator.evaluate((element, requestedValues) => {
-      if (!(element instanceof HTMLSelectElement)) {
-        throw new Error("Target element is not a <select> element.");
-      }
+    const optionValues = await locator.evaluate(
+      inPage((element: Element, requestedValues: string[]) => {
+        if (!(element instanceof HTMLSelectElement)) {
+          throw new Error("Target element is not a <select> element.");
+        }
 
-      const resolved = requestedValues.map((requested) => {
-        const normalized = requested.trim().toLowerCase();
-        const directMatch = Array.from(element.options).find(
-          (option) =>
-            option.value.trim().toLowerCase() === normalized || option.label.trim().toLowerCase() === normalized
-        );
-        return directMatch?.value ?? requested;
-      });
+        const resolved = requestedValues.map((requested) => {
+          const normalized = requested.trim().toLowerCase();
+          const directMatch = Array.from(element.options).find(
+            (option) =>
+              option.value.trim().toLowerCase() === normalized || option.label.trim().toLowerCase() === normalized
+          );
+          return directMatch?.value ?? requested;
+        });
 
-      return Array.from(new Set(resolved));
-    }, params.values);
+        return Array.from(new Set(resolved));
+      }),
+      params.values
+    );
 
     await locator.selectOption(optionValues, {
       timeout: this.actionTimeoutMs()
@@ -880,10 +883,30 @@ async function settleDownload(download: RuntimeBrowserDownload, timeoutMs: numbe
   await Promise.race([download.ready, sleep(timeoutMs)]);
 }
 
+/**
+ * Prepares a function for Playwright to run in the page. Playwright sends the
+ * page the function's source (its toString()), and under tsx, which is how
+ * `npm run dev` and `node --import tsx` run aia, esbuild's keepNames rewrites
+ * every named inner function into a `__name(fn, "name")` call, a helper that
+ * exists in Node but not in the page, so snapshots failed with "__name is not
+ * defined". The helper is declared around the function, in its own scope, so
+ * nothing is added to the page. The bundled build keeps no names and is
+ * unaffected either way.
+ */
+function inPage<Args extends unknown[], Result>(fn: (...args: Args) => Result): (...args: Args) => Result {
+  const source = `(...args) => { const __name = (target) => target; return (${fn.toString()})(...args); }`;
+  const wrapped = (...args: Args): Result => fn(...args);
+  wrapped.toString = () => source;
+  return wrapped;
+}
+
 async function waitForTextGone(page: Page, text: string, timeoutMs: number): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
-    const present = await page.evaluate((needle) => document.body?.innerText?.includes(needle) ?? false, text);
+    const present = await page.evaluate(
+      inPage((needle: string) => document.body?.innerText?.includes(needle) ?? false),
+      text
+    );
     if (!present) {
       return;
     }

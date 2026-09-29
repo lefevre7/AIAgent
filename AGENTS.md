@@ -1001,3 +1001,96 @@ compaction caused the worst regression below.
   external-agent `hydrateJob` takes a `locked` boolean describing its caller's lock state;
   `TaskStateCard` shows `slice(-5)` against a cap of 3.
 - Security review M1–M5, M7–M12, and channels 25/27/28 (Discord, Teams, iMessage), as before.
+
+## Addendum (2026-09-28): live test of the start-directory workspace change
+
+The operator asked for a thorough live test of `0ba351c` (with no config found, the start directory is
+the workspace, and its `.aia` holds the state): sandboxed homes, their real `~/Projects`, the dev
+server, the live suites, and a real model (LM Studio). Then every completed item in this file was
+exercised, and everything found was fixed as the operator chose. **Nothing is committed**, at the
+operator's instruction. The ticket change itself held in every case tried (no config, a nested start
+below a config, a lone approvals file, a relative `AIA_MEMORY_STATE_ROOT`, a start in `~` and in
+`~/Documents`); what broke was around it.
+
+### Fixed (each with a regression test)
+
+- **Startup.** The state directory is checked for write access before anything starts, on every
+  surface, with an error that says where it came from (`StateRootUnavailableError`). A failure part
+  way through startup closes what was already started (MCP children included; F0/F1), and the server's
+  failed start no longer leaks its context. MCP servers connect in parallel (F2). The server takes its
+  host and port from `gateway.hostname`/`gateway.port` (flags and env still win; F27) and a taken port
+  exits with the reason (F28). `aia trust` in a folder with no config says so.
+- **The REPL at a terminal** shows its prompt once the config is read and starts everything else
+  behind it. Typed messages are held and sent when ready, `/help` answers at once, and `/exit`, Ctrl-D
+  and Ctrl-C stop startup. Startup failures, an unreachable model included, print the error and the
+  unsent lines. Piped input still waits for startup, so scripts are unchanged. **Ctrl-C** (F4) cancels a
+  turn; a second one, or one at the prompt, exits (130). At an approval prompt it resolves the pending
+  approvals as `cancelled` and resumes nothing. Node warnings no longer print into the prompt line.
+- **Run control.** Cancel aborts the model request through the queue to `fetch`, and starts no further
+  tool call or turn (F18). Close cancels before it drains. Mid-run steering reaches the model at the
+  next tool boundary, and steering pending at `attempt_complete` holds the completion (F17). Channel
+  `/steer` works mid-run. Approving a direct `tool.execute` runs only that call (F26). The dashboard
+  resumes the session after its last approval (F23). `gateway.subscribe` without a cursor is live-only
+  (F15).
+- **Security.** Compound shell commands are matched one command at a time; substitution and
+  file-writing redirects never auto-allow, and the read rule asks for `sed -i`, `find -exec`/`-delete`,
+  `rg --pre` and `git diff --ext-diff`/`--output` (the Critical item below, now closed). Without a
+  token, requests must name this machine in `Host` and browser requests must come from this server's
+  page: this closes the cross-site WebSocket and DNS-rebinding hole and M1. `/_next/` upgrades get the
+  page check and are then left to Next's own listener (handing them to `getUpgradeHandler()` too did
+  nothing: it is Next's empty production handler), and other paths get 404 (F16). Approval requests carry every evaluated target, which the CLI
+  and web show, and `a` says what it covers (F5/F12). Uploads go to the file the approval named
+  (F11). An external agent's `send` refuses a consent or menu screen, and Codex's own prompt must show
+  (F22); the Codex preset turns off its update check.
+- **Tools and subsystems.** The browser tools work under tsx (`__name`; F10). Memory search matches
+  word by word with FTS5 terms quoted (F6). The voice tools are registered on every surface (F9) and
+  the Swift helper compiles again (F29). `sdk.tools.list()` returns every tool (F8). A provider that
+  answers with another model is reported once per session (F25), and connection errors name the
+  provider URL (F24).
+- **Small ones.** The memory/MCP example completes, and its test checks the session (F7). The
+  dashboard labels the workspace and memory folders correctly (F19). A malformed JSON body gets the
+  JSON error envelope (F14). The live MCP suite parses its config through the schema (F20). A
+  completion summary that repeats the streamed reply is shown once, and WhatsApp stopped sending
+  "pong | pong". Stdio MCP servers run in their own process group, so Ctrl-C does not kill them, and
+  their piped stderr is drained.
+- **Found while verifying, then fixed with the operator's go-ahead.** The dashboard pages built a
+  second runtime context: Next compiles pages with their own copy of `runtime-context.ts`, whose
+  module variable was empty, so the first render started a second gateway, MCP manager (a second set
+  of MCP server processes), channel pollers and events-log writer. The context now lives in a global
+  slot shared by every copy of the module; one set of MCP processes after page renders, measured live.
+  The interactive Codex live test now trusts the temporary folder it creates, for that run only
+  (`-c projects={"<folder>"={trust_level="trusted"}}`; Codex splits `-c` keys on dots, so a dotted key
+  breaks on paths with dots), and passes against the real Codex.
+- **Tests added.** CLI e2e for state placement; startup teardown; `tests/live/cli-workspace.live.test.ts`
+  (`npm run test:live:cli`, dist and src, dist freshness check); `npm run test:live:commands`; a tsx
+  browser test; a real Swift compile test; and unit and integration coverage for each fix above.
+
+### Decisions (operator-confirmed)
+
+The REPL is typable at once only when a person is typing, and piped lines keep their old meaning. Line
+mode stays. Ctrl-C resolves pending approvals as `cancelled`, not `denied`, so its note does not become
+steering. A direct `tool.execute` approval continues only that call. Tokenless browser checks apply only
+when no token is set. Old sessions under `~/.aia` stay where they are, and `~` keeps its state in
+`~/.aia`. Test sessions in the repo's `.aia` stay.
+
+### Still open after this pass
+
+- **F3: the gateway event log never rotates.** `.aia/gateway/events.jsonl` is parsed whole into
+  memory at every start (this repo: 42 MB, one event 12.9 MB).
+- **The dev dashboard runs out of memory under steady polling.** Every render's `listApprovals(25)`
+  reads every session's full snapshot to build approval records: 1.1 s and ~1.1 GB per render against
+  this repo's 451 MB of sessions (measured; the rest of the page costs under 15 ms, and the heap
+  returns to ~137 MB after each render, so it does not leak). A preview harness polling `HEAD /` every
+  2 s overlapped renders past the 4 GB heap and the server crashed. This is the "loads every
+  transcript per render" item, now measured.
+- The FTS query still takes an arbitrary subset of matches before ranking (`LIMIT` without
+  `ORDER BY`), as recorded above; FTS5 is absent from stock Node, where the word scan ranks properly.
+- Cancel does not interrupt a tool call that is already running (a long shell command finishes).
+  Steering that arrives after a completion is accepted waits for the next run.
+- The dashboard's approval card for a URL action (`browser_open`) shows the rule note and targets,
+  not the URL: a URL is not a policy target.
+- Windows keeps the SDK's stdio transport, so a Ctrl-C there can still reach MCP servers.
+- Carried over from the 2026-09-25 list and not addressed here: H3's remaining gaps, H4 (instructions
+  not in the external-agent target), H6's documentation, the races, the CLI input items (a half-typed
+  line then `a`, the old `Error:` reprinting), the web items, the robustness items, the provenance
+  hint naming `runtime.defaultModel`, the small test gaps, and security review M2–M5, M7–M12.

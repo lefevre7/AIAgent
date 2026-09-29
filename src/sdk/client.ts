@@ -538,8 +538,9 @@ class AIAgentSteering {
 class AIAgentTools {
   constructor(private readonly sdk: AIAgentSdk) {}
 
+  /** Every registered tool. It went through a plain search, so it returned the first ten. */
   async list(options: AIAgentGatewayRequestOptions = {}): Promise<ToolDefinition[]> {
-    return this.search({}, options);
+    return (await this.sdk.request("tool.search", { all: true }, options)).tools;
   }
 
   async search(

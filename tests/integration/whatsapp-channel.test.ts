@@ -115,6 +115,45 @@ describe("WhatsApp channel integration", () => {
     ).toBe(true);
   });
 
+  // The reply and the attempt_complete summary are both assistant messages, so
+  // an answer the model gave in both arrived twice ("pong | pong").
+  test.each([
+    ["sends an answer once when the completion summary repeats the reply", "pong", "pong", ["pong"]],
+    [
+      "still sends a summary that adds to the reply",
+      "Checking now.",
+      "The build passed.",
+      ["Checking now.", "The build passed."]
+    ]
+  ])("%s", async (_label, replyText, summary, expectedTexts) => {
+    const harness = await createWhatsAppHarness(async (request) =>
+      buildAssistantResponse({
+        sessionId: requireSessionId(request.sessionId),
+        text: replyText,
+        toolCalls: [buildAttemptCompleteCall("tool.complete.whatsapp.repeat", summary)]
+      })
+    );
+
+    await writeInboundEntry(harness.sessionDirectory, {
+      accountId: "whatsapp-account",
+      createdAt: "2026-03-31T12:40:00.000Z",
+      displayName: "Ada",
+      id: "channel-message.whatsapp.inbound.repeat",
+      media: [],
+      metadata: {},
+      text: "ping",
+      userId: "user-42"
+    });
+    await waitFor(async () =>
+      (await readOutboundEntries(harness.sessionDirectory)).some((entry) => entry.text?.includes(summary))
+    );
+    // Let any further relay land before counting.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const texts = (await readOutboundEntries(harness.sessionDirectory)).map((entry) => entry.text ?? "");
+    expect(texts).toEqual(expectedTexts);
+  });
+
   test("relays approval prompts and continues the session after a WhatsApp-side approval command", async () => {
     const harness = await createWhatsAppHarness(async (request) => {
       const toolMessages = request.messages.filter((message) => message.role === "tool");
@@ -257,6 +296,92 @@ describe("WhatsApp channel integration", () => {
     const outboundTexts = (await readOutboundEntries(harness.sessionDirectory)).map((entry) => entry.text ?? "");
     expect(outboundTexts.some((text) => text.includes('Queued steering for "WhatsApp Steering Session".'))).toBe(true);
     expect(outboundTexts.some((text) => text.includes("Steering applied."))).toBe(true);
+  });
+
+  // /steer used to be refused while a run was active ("busy, retry after the
+  // run finishes"), so the correction arrived only once the old plan was done.
+  test("queues /steer sent mid-run, and the running task reads it before it finishes", async () => {
+    let modelEntered = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const harness = await createWhatsAppHarness(async (request) => {
+      const visibleText = request.messages.flatMap(extractText).join("\n");
+      if (visibleText.includes("Check the tests too.")) {
+        return buildAssistantResponse({
+          sessionId: requireSessionId(request.sessionId),
+          text: "Checked the tests as asked.",
+          toolCalls: [buildAttemptCompleteCall("tool.complete.whatsapp.mid-run.2")]
+        });
+      }
+      modelEntered = true;
+      await gate;
+      return buildAssistantResponse({
+        sessionId: requireSessionId(request.sessionId),
+        text: "First pass done.",
+        toolCalls: [buildAttemptCompleteCall("tool.complete.whatsapp.mid-run.1")]
+      });
+    });
+
+    const session = sessionRecordSchema.parse({
+      createdAt: "2026-03-31T12:30:00.000Z",
+      cwd: "/workspace",
+      goal: "Respond to the WhatsApp thread",
+      id: "session.whatsapp.steering.mid-run",
+      lastActiveAt: "2026-03-31T12:30:00.000Z",
+      metadata: {},
+      status: "idle",
+      tags: ["channel:whatsapp"],
+      title: "WhatsApp Mid-run Session",
+      updatedAt: "2026-03-31T12:30:00.000Z"
+    });
+    await harness.sessions.saveSession(session);
+    await harness.channelService.ensureRoute({
+      identity: { accountId: "whatsapp-account", channel: "whatsapp", displayName: "Ada", userId: "user-42" },
+      sessionId: session.id
+    });
+
+    await writeInboundEntry(harness.sessionDirectory, {
+      accountId: "whatsapp-account",
+      createdAt: "2026-03-31T12:31:00.000Z",
+      displayName: "Ada",
+      id: "channel-message.whatsapp.inbound.mid-run.1",
+      media: [],
+      metadata: {},
+      text: "Start the long task.",
+      userId: "user-42"
+    });
+    await waitFor(async () => modelEntered);
+
+    await writeInboundEntry(harness.sessionDirectory, {
+      accountId: "whatsapp-account",
+      createdAt: "2026-03-31T12:31:30.000Z",
+      displayName: "Ada",
+      id: "channel-message.whatsapp.inbound.mid-run.2",
+      media: [],
+      metadata: {},
+      text: "/steer Check the tests too.",
+      userId: "user-42"
+    });
+    await waitFor(async () =>
+      (await readOutboundEntries(harness.sessionDirectory)).some((entry) =>
+        entry.text?.includes("The running task will read it before its next step.")
+      )
+    );
+
+    release();
+    await waitFor(async () =>
+      (await readOutboundEntries(harness.sessionDirectory)).some((entry) =>
+        entry.text?.includes("Checked the tests as asked.")
+      )
+    );
+
+    const outboundTexts = (await readOutboundEntries(harness.sessionDirectory)).map((entry) => entry.text ?? "");
+    expect(outboundTexts.some((text) => text.includes("is busy right now"))).toBe(false);
+    const snapshot = await harness.sessions.getSessionSnapshot(session.id);
+    expect(snapshot?.steeringInjections.at(-1)?.state).toBe("applied");
+    expect(snapshot?.session.status).toBe("completed");
   });
 
   // Security review H6. Any message starting with /approve used to resolve the
@@ -710,9 +835,9 @@ function buildAssistantResponse(params: {
   };
 }
 
-function buildAttemptCompleteCall(callId: string) {
+function buildAttemptCompleteCall(callId: string, summary?: string) {
   return {
-    arguments: {} as Record<string, JsonValue>,
+    arguments: (summary ? { status: "success", summary } : {}) as Record<string, JsonValue>,
     callId,
     toolName: "attempt_complete"
   };

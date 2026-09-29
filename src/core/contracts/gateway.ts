@@ -533,7 +533,9 @@ export const gatewayRequestPayloadSchemas = {
   "session.snapshot": gatewaySessionSnapshotRequestSchema,
   "steering.inject": steeringInjectionSchema,
   "tool.execute": gatewayToolExecuteRequestSchema,
-  "tool.search": toolSearchQuerySchema
+  // `all` is for gateway clients (the SDK's tools.list()); the model's own
+  // tool_search keeps the 100-result cap.
+  "tool.search": toolSearchQuerySchema.extend({ all: z.boolean().optional() })
 } as const;
 
 export const gatewayResponsePayloadSchemas = {

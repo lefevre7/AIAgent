@@ -34,10 +34,14 @@ npm run cli
 
 It creates a session and keeps prompting for input. The loop stays open until you type `/exit` or `/quit` (or stdin reaches end-of-input); `/help` lists the commands. Anything else is sent to the agent as a message.
 
+At a terminal the prompt appears as soon as the config is read, while MCP servers, memory and the model check start behind it: type straight away, and a message is sent once the session is ready (the session id is printed then). If startup fails, `aia` says why and prints anything you typed that was not sent. Piped input waits for startup, so a script's lines keep their order.
+
+Ctrl-C stops the running turn (the model request is cancelled, and nothing else starts); a second Ctrl-C while it is stopping, or Ctrl-C at the prompt, exits. At an approval prompt, Ctrl-C cancels the turn and the approvals it was waiting on.
+
 While the model works, the CLI shows a `Thinking…` indicator and then streams the response live, along with tool-activity lines. When a tool needs approval (file writes, shell commands, etc.) it prompts inline — `Approve <tool> → <target>? [y/N/a/e]` — and only runs the tool if you approve:
 
 - `y` approves this request once.
-- `a` approves it and auto-approves the same target (same tool, command, path, or MCP server) for the rest of this CLI session.
+- `a` approves it and auto-approves the same target (same tool, command, path, or MCP server) for the rest of this CLI session. The prompt says which: "this exact command line", "every write_file request", and so on. Above the prompt the CLI lists everything the approval covers: the full command line with its arguments, each path, and the tool.
 - `e` denies it and asks what the agent should do instead; your note is queued as steering so it adapts on the resumed turn rather than retrying the same action.
 - anything else (including a bare Enter) denies it.
 
@@ -53,7 +57,7 @@ Interactive commands: `/help`, `/compact` (summarize the transcript so far into 
 
 Use `aia info` to print the version, the config files in effect, the chat model and provider, and whether the workspace config is trusted, without starting a session. It never resolves secrets, so it runs no secret provider, even in an untrusted checkout.
 
-The interactive session needs a reachable chat model (the configured default provider, e.g. LM Studio or Ollama). If it isn't running, `aia` prints a clear message and exits rather than opening a session that fails on every turn. If only the embedding provider is down, memory degrades to lexical search (with a warning) and the session still opens.
+The interactive session needs a reachable chat model (the configured default provider, e.g. LM Studio or Ollama). If it isn't running, `aia` prints a clear message and exits rather than opening a session that fails on every turn. If the provider answers with a different model than the one configured (LM Studio serves whatever is loaded when it does not know the id), the CLI says so once per session. If only the embedding provider is down, memory degrades to lexical search (with a warning) and the session still opens.
 
 ### One-shot prompt mode
 

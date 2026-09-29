@@ -7,8 +7,9 @@ import type {
   ToolCallRecord,
   ToolDefinition
 } from "@/core/contracts";
-import { validateApprovalPattern } from "@/core/contracts";
+import { APPROVAL_TARGETS_METADATA_KEY, validateApprovalPattern } from "@/core/contracts";
 import type { ApprovalSettings } from "@/core/config";
+import { analyzeShellCommand, type ShellCommandAnalysis } from "@/core/approvals/shell-command";
 import { resolveLocalPath } from "@/core/tools/builtins/local-paths";
 import type { ToolApprovalDecider, ToolApprovalDeciderParams } from "@/core/tools/runtime";
 
@@ -66,18 +67,29 @@ export class RegexApprovalPolicy {
   // regardless of rule or target order, so a broad allow can never shadow a
   // deny. When nothing denies, the first allow/ask match in target order (the
   // more specific command/path targets come first) decides, and the default
-  // mode applies when nothing matches at all.
+  // mode applies when nothing matches at all. A command line is matched one
+  // command at a time (see decideCommandLine).
   evaluateTargets(targets: ApprovalEvaluationTarget[]): ApprovalPolicyMatch {
-    const evaluations = targets.map((target) => ({
-      target,
-      truncated: target.value.length > MAX_APPROVAL_TARGET_VALUE_LENGTH,
-      value: target.value.slice(0, MAX_APPROVAL_TARGET_VALUE_LENGTH)
-    }));
+    const evaluations = targets.map((target) => {
+      const value = target.value.slice(0, MAX_APPROVAL_TARGET_VALUE_LENGTH);
+      return {
+        shell: target.kind === "command" ? analyzeShellCommand(value) : null,
+        target,
+        truncated: target.value.length > MAX_APPROVAL_TARGET_VALUE_LENGTH,
+        value
+      };
+    });
     const anyTruncated = evaluations.some((entry) => entry.truncated);
 
     for (const evaluation of evaluations) {
+      // A deny rule sees the whole line and each command in it, so wrapping a
+      // command in a group or a pipeline cannot hide it.
+      const candidates = [evaluation.value, ...(evaluation.shell?.segments ?? [])];
       for (const compiled of this.compiledRules) {
-        if (compiled.rule.mode === "deny" && this.matches(compiled, evaluation)) {
+        if (
+          compiled.rule.mode === "deny" &&
+          candidates.some((candidate) => this.matches(compiled, evaluation.target.kind, candidate))
+        ) {
           return {
             mode: "deny",
             rule: compiled.rule,
@@ -88,8 +100,16 @@ export class RegexApprovalPolicy {
     }
 
     for (const evaluation of evaluations) {
+      if (evaluation.shell) {
+        const decision = this.decideCommandLine(evaluation.target, evaluation.shell, evaluation.value, anyTruncated);
+        if (decision) {
+          return decision;
+        }
+        continue;
+      }
+
       for (const compiled of this.compiledRules) {
-        if (compiled.rule.mode === "deny" || !this.matches(compiled, evaluation)) {
+        if (compiled.rule.mode === "deny" || !this.matches(compiled, evaluation.target.kind, evaluation.value)) {
           continue;
         }
 
@@ -111,15 +131,40 @@ export class RegexApprovalPolicy {
     };
   }
 
-  private matches(
-    compiled: CompiledApprovalRule,
-    evaluation: { target: ApprovalEvaluationTarget; value: string }
-  ): boolean {
-    if (compiled.rule.targetKind !== evaluation.target.kind) {
+  // A command line is allowed only when every command in it is, and nothing
+  // in it needs a shell to know what it does: `$(…)`, backticks, process
+  // substitution, or a redirect that writes a file turn an allow into a
+  // question. An ask rule on any command asks. A command no rule covers leaves
+  // the decision to the other targets and the default mode, as a lone
+  // unmatched command always did.
+  private decideCommandLine(
+    target: ApprovalEvaluationTarget,
+    shell: ShellCommandAnalysis,
+    value: string,
+    anyTruncated: boolean
+  ): ApprovalPolicyMatch | null {
+    const commands = shell.segments.length > 0 ? shell.segments : [value];
+    const matched = commands.map((command) =>
+      this.compiledRules.find((compiled) => compiled.rule.mode !== "deny" && this.matches(compiled, "command", command))
+    );
+
+    const asked = matched.find((compiled) => compiled?.rule.mode === "ask");
+    if (asked) {
+      return { mode: "ask", rule: asked.rule, target };
+    }
+    const [first] = matched;
+    if (!first || matched.some((compiled) => compiled === undefined)) {
+      return null;
+    }
+    return { mode: shell.opaque || anyTruncated ? "ask" : "allow", rule: first.rule, target };
+  }
+
+  private matches(compiled: CompiledApprovalRule, kind: ApprovalTargetKind, value: string): boolean {
+    if (compiled.rule.targetKind !== kind) {
       return false;
     }
     compiled.matcher.lastIndex = 0;
-    return compiled.matcher.test(evaluation.value);
+    return compiled.matcher.test(value);
   }
 }
 
@@ -160,10 +205,11 @@ export function createToolApprovalDecider(params: {
     }
 
     const additionalTargets = (await params.resolveAdditionalTargets?.(input)) ?? [];
-    const match = policy.evaluateTargets([
+    const targets = [
       ...additionalTargets,
       ...extractApprovalTargets(input.call, input.definition, { cwd: input.session.cwd })
-    ]);
+    ];
+    const match = policy.evaluateTargets(targets);
     const resolvedMode = resolveApprovalMode(input.definition.approvalMode, match.mode);
 
     if (resolvedMode === "allow") {
@@ -198,7 +244,7 @@ export function createToolApprovalDecider(params: {
       mode: "request",
       request: isQuestionInteraction(input.definition)
         ? buildQuestionApprovalRequest(input)
-        : buildApprovalRequest(input, match)
+        : buildApprovalRequest(input, match, targets)
     };
   };
 }
@@ -356,7 +402,11 @@ export function extractApprovalTargets(
   return targets;
 }
 
-function buildApprovalRequest(params: ToolApprovalDeciderParams, match: ApprovalPolicyMatch): ApprovalRequest {
+function buildApprovalRequest(
+  params: ToolApprovalDeciderParams,
+  match: ApprovalPolicyMatch,
+  targets: ApprovalEvaluationTarget[]
+): ApprovalRequest {
   return {
     createdAt: new Date().toISOString(),
     id: `approval.${params.call.id}.${params.turn.id}.${match.target.kind}`,
@@ -365,6 +415,13 @@ function buildApprovalRequest(params: ToolApprovalDeciderParams, match: Approval
       `The tool "${params.definition.name}" requires approval before it can run because it matched the configured policy.`,
     metadata: {
       approvalMode: params.definition.approvalMode,
+      // Everything the policy weighed, not only the target that decided: a
+      // prompt for "write_file" alone never said which file it would write.
+      [APPROVAL_TARGETS_METADATA_KEY]: targets.map((target) => ({
+        kind: target.kind,
+        label: target.label,
+        value: target.value
+      })),
       matchedApprovalRuleId: match.rule?.id ?? null,
       matchedApprovalTargetKind: match.target.kind,
       matchedApprovalTargetValue: match.target.value,

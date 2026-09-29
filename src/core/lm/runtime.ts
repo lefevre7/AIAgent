@@ -1,4 +1,5 @@
 import type {
+  LanguageModelCallOptions,
   LanguageModelAdapter,
   LanguageModelDescriptor,
   LanguageModelProvider,
@@ -81,13 +82,20 @@ export class LanguageModelRuntime {
       });
   }
 
-  async generate(request: LanguageModelInvocation): Promise<LanguageModelResponse> {
-    return this.queue.execute(this.resolveRequest(request));
+  async generate(
+    request: LanguageModelInvocation,
+    options: LanguageModelCallOptions = {}
+  ): Promise<LanguageModelResponse> {
+    return this.queue.execute(this.resolveRequest(request), options);
   }
 
-  async stream(request: LanguageModelInvocation, onEvent: LanguageModelStreamSink): Promise<LanguageModelResponse> {
+  async stream(
+    request: LanguageModelInvocation,
+    onEvent: LanguageModelStreamSink,
+    options: LanguageModelCallOptions = {}
+  ): Promise<LanguageModelResponse> {
     const resolved = this.resolveRequest(request);
-    return this.queue.stream ? this.queue.stream(resolved, onEvent) : this.queue.execute(resolved);
+    return this.queue.stream ? this.queue.stream(resolved, onEvent, options) : this.queue.execute(resolved, options);
   }
 
   async close(): Promise<void> {

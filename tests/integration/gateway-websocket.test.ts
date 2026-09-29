@@ -231,7 +231,105 @@ describe("gateway websocket", () => {
     await waitFor(() => socket.sent.length === 1);
     expect(socket.takeJsonMessages()).toEqual([persistedEvent]);
   });
+
+  test("a subscribe without a cursor is live-only and replays nothing", async () => {
+    // Before, a cursor-less subscribe replayed the whole stored history that
+    // matched the filter, so `aia attach` (which subscribes to
+    // tool.output.delta with no cursor) opened with every old chunk.
+    let replayCalls = 0;
+    const runtime = createRuntimeStub({
+      replayEvents: async () => {
+        replayCalls += 1;
+        return { events: [buildMessageCreatedEvent("message.old", "cursor.1")] };
+      }
+    });
+    const socket = new FakeGatewaySocket();
+    bindGatewayWebSocketConnection(socket, { requestTimeoutMs: 5_000, runtime });
+
+    socket.emitMessage(
+      JSON.stringify({
+        createdAt: "2026-03-31T12:00:00.000Z",
+        id: "gateway-request.subscribe.1",
+        metadata: {},
+        payload: { sessionId: "session.1", topics: ["message.created"] },
+        topic: "gateway.subscribe"
+      })
+    );
+    await waitFor(() => socket.sent.length === 1);
+    await flush();
+    expect(replayCalls).toBe(0);
+    expect(socket.takeJsonMessages().map((entry) => (entry as { topic: string }).topic)).toEqual(["gateway.subscribe"]);
+
+    const liveEvent = buildMessageCreatedEvent("message.live", "cursor.2");
+    runtime.emitEvent(liveEvent);
+    await waitFor(() => socket.sent.length === 1);
+    expect(socket.takeJsonMessages()).toEqual([liveEvent]);
+  });
+
+  test("a newer subscribe stops the backlog of the one it replaced", async () => {
+    let resolveFirstReplay: ((page: { events: GatewayEvent[]; nextCursor?: string }) => void) | undefined;
+    const firstReplay = new Promise<{ events: GatewayEvent[]; nextCursor?: string }>((resolve) => {
+      resolveFirstReplay = resolve;
+    });
+    const runtime = createRuntimeStub({ replayEvents: async () => firstReplay });
+    const socket = new FakeGatewaySocket();
+    bindGatewayWebSocketConnection(socket, { requestTimeoutMs: 5_000, runtime });
+
+    socket.emitMessage(
+      JSON.stringify({
+        createdAt: "2026-03-31T12:00:00.000Z",
+        id: "gateway-request.subscribe.1",
+        metadata: {},
+        payload: { cursor: "cursor.0", sessionId: "session.1", topics: ["message.created"] },
+        topic: "gateway.subscribe"
+      })
+    );
+    await waitFor(() => socket.sent.length === 1);
+
+    socket.emitMessage(
+      JSON.stringify({
+        createdAt: "2026-03-31T12:00:02.000Z",
+        id: "gateway-request.subscribe.2",
+        metadata: {},
+        payload: { sessionId: "session.2", topics: ["message.created"] },
+        topic: "gateway.subscribe"
+      })
+    );
+    await waitFor(() => socket.sent.length === 2);
+
+    // The first subscription's backlog arrives only after it was replaced.
+    resolveFirstReplay?.({
+      events: [buildMessageCreatedEvent("message.stale", "cursor.1")],
+      nextCursor: "cursor.1"
+    });
+    await flush();
+    expect(socket.takeJsonMessages().map((entry) => (entry as { requestId?: string }).requestId)).toEqual([
+      "gateway-request.subscribe.1",
+      "gateway-request.subscribe.2"
+    ]);
+  });
 });
+
+function buildMessageCreatedEvent(messageId: string, cursor: string, sessionId = "session.1"): GatewayEvent {
+  return gatewayEventSchema.parse({
+    createdAt: "2026-03-31T12:05:00.000Z",
+    cursor,
+    id: `message-created.${messageId}`,
+    metadata: {},
+    payload: {
+      createdAt: "2026-03-31T12:05:00.000Z",
+      id: messageId,
+      metadata: {},
+      parts: [{ kind: "text", text: messageId }],
+      role: "assistant",
+      sessionId,
+      source: "assistant",
+      tags: [],
+      visibility: "default"
+    },
+    topic: "message.created"
+  });
+}
 
 function createRuntimeStub(
   overrides: {
