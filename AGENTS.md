@@ -1094,3 +1094,432 @@ when no token is set. Old sessions under `~/.aia` stay where they are, and `~` k
   not in the external-agent target), H6's documentation, the races, the CLI input items (a half-typed
   line then `a`, the old `Error:` reprinting), the web items, the robustness items, the provenance
   hint naming `runtime.defaultModel`, the small test gaps, and security review M2–M5, M7–M12.
+
+## Addendum (2026-09-30): MCP hardened against Codex, Agent Skills, and llama.cpp
+
+The operator asked to study the Codex sibling repo (`main` at `94d642d`), make AIAgent's MCP client
+and discovery at least as robust as Codex's, add Agent Skills, and add llama.cpp (`llama-server`) as a
+model runner. After research, 48 numbered questions were answered `1B 2-48A`: four stages with the full
+test gate between them, in the order MCP security → llama.cpp and the shared stream fixes → skills →
+MCP robustness and OAuth. **Nothing is committed** (1B: the operator commits). The operator's plaintext
+`x-drps-api-key` values in `~/.aia/config.jsonc` were left alone (48A); `docs/CONFIG.md` documents the
+env and Keychain `exec` patterns to move them to.
+
+### Stage 1: MCP security
+
+- **M11 closed.** A workspace config's `mcp.servers`, `mcp.imports`, `mcp.templates` (and, in stage 4,
+  `mcp.passEnv`) need the same content-hash trust as its `exec`/`file` providers. Untrusted, the layer
+  is merged without them; withheld servers show as `untrusted`; the REPL asks at a terminal;
+  `installTemplate`/`aia mcp add` keep trust only for a file that was already the operator's.
+- **`web_search`** is approved as the MCP tool it runs (it ran any tool with a `query` field, unasked);
+  the chosen backend is pinned on the call. **Never-mode tools** that act through a server carry its
+  targets, so deny rules reach `mcp_read_resource*`. **H3**: the loader hashes the exact bytes it parsed.
+
+### Stage 2: llama.cpp and the shared stream fixes
+
+- `OpenAICompatibleChatAdapter` holds the payload, streaming, and response code LM Studio and the new
+  `LlamaCppLanguageModelAdapter` share; one provider table (`src/core/lm/providers.ts`) replaced the
+  per-provider ternaries. llama.cpp: `/health` (503 "loading" is `degraded`), `n_ctx` from
+  `/v1/models` then `/props`, router mode, `apiKey` as Bearer, `cache_prompt: true`, `requestExtras`.
+- Fixed on the way: mid-stream `data: {"error":…}` was read as an empty answer; the context window was
+  looked up with LM Studio's model id for every provider; one dead provider broke `listModels()`; the
+  queue flattened structured errors; a network failure ("fetch failed", code in `cause`) was never
+  retried.
+- Codex-style retries (200 ms doubling, ±10% jitter, `Retry-After`, a stream only before its first
+  token, llama.cpp's loading 503 waited out). A prompt over the window is `context_window_exceeded`:
+  the loop compacts once and retries, then fails with both sizes and the fix. `docs/PROVIDERS.md`.
+
+### Stage 3: Agent Skills (`docs/SKILLS.md`)
+
+- Roots: project `.aia/skills` and `.agents/skills` (cwd up to the project root, closest first), user
+  `~/.aia/skills` and `~/.agents/skills`, `skills.extraRoots`, then the bundled `skill-creator`. **24A
+  and 35A disagreed** (24A's list put `extraRoots` after bundled; 35A says bundled is read "at the lowest
+  precedence"); bundled is lowest, as 35A says. Codex's scan bounds, symlinked `SKILL.md` ignored, a
+  project symlink followed only inside the project, lenient parsing with Codex's colon repair.
+- The model gets an `<available_skills>` catalog (name, description, location, per 30A) within 2% of
+  the window, trimmed fairly as Codex does, and a `skill` tool whose `name` is an **enum of the
+  session's skills**, so llama.cpp's grammar cannot produce a skill that does not exist. `$name` (and
+  `[$name](path)`) in the operator's messages loads a skill as a user message; a channel message counts
+  only from an allowlisted operator (the gateway stamps `metadata.channelOperator` after the adapter's
+  metadata). Loads are recorded per session; compaction restores them in an "Active Skills" section.
+  `allowed-tools` never approves anything. `/skills`, `aia skills list|enable|disable`, `skills.list`,
+  `sdk.skills.list()`.
+- Verified live with Gemma 4 E4B on llama-server: the model called `skill({"name":"team-greeting"})` on
+  its own, and `$team-greeting` loaded the skill without a tool call.
+
+### Stage 4: MCP robustness and OAuth (`docs/MCP.md`)
+
+- **Startup** is non-blocking: required servers block, the rest get `mcp.optionalStartupGraceMs` (1 s)
+  and join when connected; a call to a connecting server waits. **Timeouts**: `startupTimeoutMs` 30 s
+  per phase, `toolTimeoutMs` 300 s without progress (a pausable clock, stopped during elicitation).
+- **Crashes**: a dropped connection is `failed` with the exit code/signal and the last stderr lines,
+  retried after 1, 2, 4, 8, 16 s; `/mcp reconnect`, `aia mcp reconnect`, `mcp.reconnect`. The manager was
+  rewritten around per-server slots with an epoch guard, so a stale connect, close, or relist never
+  touches a newer connection. **`list_changed`** relists (full pagination). **Filters**
+  `enabledTools`/`disabledTools`, checked at call time too. **Schemas** repaired by Codex's rules
+  without dropping keywords or the server's `additionalProperties` (the provider layer used to force
+  `false` on every tool schema). **Server instructions** in `mcp_status` and `tool_search`.
+- **Environment**: one child-process builder shared with external agents (`src/core/process/environment.ts`):
+  the allowlist (now with `LC_*`, `__CF_USER_TEXT_ENCODING`, Codex's CA variables), `mcp.passEnv`,
+  per-server `passEnv`, then `env`.
+- **HTTP**: same-origin redirects only (a real leak before: Node's fetch forwards custom credential
+  headers across origins), handshake and listing retries on 408/429/5xx/network, a 404 session re-init
+  and replay once, the real clientInfo and `User-Agent`, ≤2048 tools and ≤64 KiB cursors.
+- **OAuth**: `aia mcp login|logout` (discovery, DCR or a configured client, PKCE, a 127.0.0.1 callback
+  on a per-server path, `state` check, 300 s, `--no-browser` with a pasted URL); tokens in
+  `~/.aia/mcp-credentials.json` (0600, no symlinks, keyed by URL, issuer-bound by SDK 1.31). Sessions use
+  OAuth only for a signed-in or `oauth`-configured server, never register a client, and show
+  `needs_login`; a sign-in elsewhere reconnects them (the credentials file is watched).
+- **Elicitation** reuses question approvals: one question per form field, a URL request as one question;
+  the CLI asks mid-turn, channels answer with `/approve` while busy, and with no subscriber that shows
+  approvals (`GatewaySubscribeOptions.wants`) it is declined at once. **`tool_search`** is BM25 over the
+  whole catalog. **`aia mcp list|get|add|remove|login|logout|reconnect`** (`src/commands/mcp.ts`), secrets
+  masked in JSON too, `--force` to replace, comments kept. SDK 1.28 → 1.31. Live `mcp.updated` events and
+  dim REPL lines for failures and needed sign-ins.
+- Where aia now goes further than Codex: SSE fallback, full `tools/list` pagination, prompts, `isError`
+  visible to the model, crash auto-reconnect, `list_changed` relisting, masked `--json`, no silent
+  overwrite on `add`, skills as a grammar-constrained tool.
+
+### Tests and verification
+
+- New: `tests/unit/skills-{parse,mentions,catalog,settings}.test.ts`, `mcp-{schema,http,oauth}.test.ts`,
+  `gateway-elicitation.test.ts`, `tool-search-bm25.test.ts`, `process-environment.test.ts`,
+  `lm-{llama-cpp,http-retry,providers}.test.ts`; `tests/integration/skills-discovery.test.ts`,
+  `agent-loop-skills.test.ts`, `mcp-manager-lifecycle.test.ts` (with `tests/fixtures/mcp/stdio-lifecycle-server.mjs`),
+  `mcp-oauth.test.ts` (a local authorization server: DCR, PKCE, refresh, forged state),
+  `gateway-mcp.test.ts`; CLI cases for `aia skills`, `aia mcp`, `/skills`, `/mcp reconnect`;
+  `tests/live/llama-cpp.live.test.ts` (`npm run test:live:llama-cpp`).
+- `brew install llama.cpp` (0.5.0, with ggml and libomp; openssl@3 and ca-certificates upgraded) was
+  run with the operator's OK (45A); the live suite passed against Gemma 4 E4B, and `llama-server` was
+  stopped afterwards.
+
+### Decisions worth keeping in mind
+
+- A test harness that constructs `GatewayRuntime` by hand needs a real `MCPManager` (or one with
+  `on`, `off`, `setElicitationHandler`, `waitForStartup`); `new MCPManager({ config, watch: false })`
+  with no servers is cheap.
+- A subscriber that does not pass `wants` never counts as an operator for elicitation; pass it for any
+  new surface that shows approvals.
+- Non-goals agreed (47A): skill subagents, Codex's `openai.yaml` sidecars and skill dependency installs,
+  plugins, admin allowlists, the Responses API, MCP output truncation, MCP roots and sampling, and (22A)
+  importing other clients' MCP configs.
+
+### Still open after this pass
+
+- The skills web view (37A deferred it). Skills and MCP server state are not shown in the dashboard.
+- Under the full tool profile, an MCP server that connects mid-run joins at the next run (lean joins
+  through `tool_search` at once).
+- OAuth tokens are refreshed on a 401 (the SDK's behaviour), not ahead of expiry; there is no Keychain
+  store (18A chose the file).
+- `aia mcp reconnect` reaches only sessions that publish a loopback gateway (the interactive CLI and
+  the server).
+- Windows still uses the SDK's stdio transport (no process group, no exit status in crash reports).
+
+## Addendum (2026-10-02): compaction kept no request, and a misread context window
+
+The operator's interactive session stopped with "The model produced 4 consecutive turns without
+tool use" while LM Studio logged `Error rendering prompt with jinja template: "No user query found
+in messages."` for `qwen3.8-27b-mlx`. Every step below was reproduced against the session's files,
+LM Studio's logs, and the loaded model.
+
+### What happened
+
+1. **The context window was misread.** The process started (Sep 29) before LM Studio had loaded the
+   model, the window was looked up only then, and the fallback to "any loaded model" picked the
+   nomic embedding model's 2048 tokens. The auto-compaction threshold became ~1.6k tokens, so the
+   session compacted after its first turn (9,308 prompt tokens).
+2. **Compaction hid the request.** Every message before the watermark left the model's view, and
+   the session summary records tool calls and narration, never requests ("Goal: Interactive CLI
+   session"). The replayed history opened with the assistant's `tool_search` call. The Qwen
+   3.5-family template refuses a conversation whose first message after the system prompt is not a
+   user turn, so every later request failed, including the operator's follow-up three days later.
+   Probed in LM Studio: `[system, assistant, tool, user]` and `[system, assistant, user]` are
+   refused; `[system, user, assistant, tool, system, user]` renders.
+3. **The refusal looked like silence.** LM Studio sends it as HTTP 200 with one `event: error`
+   frame. The running process predated the Sep 30 stream fix, read it as an empty answer, nudged
+   three times, and blamed the model. The built CLI already reports it; the old process must be
+   restarted to get any of this.
+
+### Decisions (operator-confirmed: 1A 2A 3A 4A)
+
+- **1A**: keep the conversation's own messages across the watermark (Codex's `build_compacted_history`).
+  This reverses two test assertions that said the original request must not be replayed.
+- **2A**: Codex's budget, newest first, 80,000 characters (20k tokens); the straddling message keeps its
+  start and end around a marker; older ones are dropped; text and markdown parts only.
+- **3A**: LM Studio uses only the requested model's loaded window (unknown until loaded; another
+  loaded chat model's only when the configured id matches nothing; never an embedding model), and the
+  gateway looks again before every run, keeping the last known window when the answer is unknown.
+- **4A**: nudges stay `system` messages (below).
+
+### Changes
+
+- `src/core/agent/loop.ts`: `filterModelVisibleMessages` prepends `retainConversationInput(...)` of the
+  folded history (user-role messages from `user`, `operator`, `channel`; a skill injection is
+  restated by the prompt instead). Threshold, overflow, and `/compact` all go through it, as do the
+  memory estimate and the compacted-skills check.
+- `src/core/lm/lm-studio.ts`: `getModelContextWindow` per 3A.
+- `src/gateway/runtime.ts`: `refreshContextWindow()` at startup and before every run (alongside the MCP
+  startup wait); `session.compact` reports `hiddenMessageCount` as visible-before minus visible-after.
+- `src/cli.ts`: the `/compact` line says the model sees the summary and the operator's messages.
+- Docs: `docs/AGENT_LOOP.md` (new "Compaction keeps what people said"; context-window resolution),
+  `docs/SMALL_MODELS.md`, `docs/GATEWAY_PROTOCOL.md`, the `memory.autoCompactThresholdTokens` comment.
+
+### Tests and verification
+
+- New or changed: `tests/unit/lm-context-window.test.ts` (the incident's model list, an alias, an old
+  server), `tests/integration/agent-loop.test.ts` (retention budget and elision; threshold and overflow
+  cases check the replayed roles, the threshold case at the wire), `tests/integration/gateway-runtime.test.ts`
+  (messages survive `/compact`; the window is looked up per run), `tests/integration/memory-service.test.ts`.
+- `npm run test` green (one MCP lifecycle timing test failed once under full-suite load, then passed
+  four times alone and in a full rerun), typecheck and lint clean, `npm run build:node` rebuilt `dist/`.
+- The stuck session's real transcript, through the new filter and serializer, now renders and
+  generates in LM Studio (13,544 prompt tokens) instead of failing in 0 s.
+- Live: the rebuilt CLI in a sandbox (temporary `HOME`, `memory.autoCompactThresholdTokens: 1000`)
+  against `qwen3.8-27b-mlx`: turn 1 called `read_file` and compacted, turn 2 was sent as
+  `[user, assistant, tool]` and completed with the right answer.
+
+### Still open after this pass
+
+- Runtime nudges are mid-conversation `system` messages. LM Studio accepted them in every probe, but
+  the same Qwen 3.5-family template raises "System message must be at the beginning." for one, so a
+  renderer that runs the template as written (llama.cpp `--jinja`, vLLM) would refuse those requests.
+  Skill injections already use `user` for this reason (`docs/SKILLS.md`).
+- Templates that enforce strict user/assistant alternation (Gemma 3/3n, Mistral Small 4, Devstral 2,
+  Ministral 3) refuse two user turns in a row: a `/compact` followed by a new message, and shapes the
+  runtime already sent (steering or a tool image after tool results, a `$skill` injection after the
+  operator's message). Qwen 3.x and Gemma 4 templates do not check alternation.
+- The window lookup asks about the default provider's configured model, not a session's
+  `activeModelId`.
+
+## Addendum (2026-10-02b): a pasted prompt that never left the REPL
+
+After the fix above, the operator restarted `aia` in Terminal.app and pasted a long prompt while it
+started. The REPL printed `Session: …` and three MCP failures, then an empty `›`, and did nothing.
+No LM Studio error this time: the session had no messages and the gateway never got a
+`session.message`. Reproduced in a pseudo-terminal against the real CLI and config.
+
+### What happened
+
+- The prompt comes up before startup finishes (2026-09-28). The paste had no trailing newline, so
+  it sat in the terminal driver's line buffer: in line mode the kernel, not aia, holds a half-typed
+  line. When startup finished, the REPL moved off the prompt line, printed the session line and the
+  MCP notices, and drew a fresh prompt. The paste looked sent and ignored; Enter at the new prompt
+  would still have sent it.
+- Found on the way: that line mode caps a line at MAX_CANON, 1,024 bytes on macOS. A 1,023-byte line
+  arrived; a 1,024-byte one never did, and Enter did nothing.
+
+### Decisions (operator-confirmed: 1A 2A)
+
+- **1A**: readline edits the line while a prompt is up, at a terminal on both ends. This reverses
+  2026-09-28's "Line mode stays" for that case.
+- **2A**: a multi-line paste is still one message per line (open, below).
+
+### Changes
+
+- `src/commands/terminal-input.ts` (new): a fresh terminal-mode readline interface per prompt, closed
+  when the line is sent, so a turn runs in the terminal's line mode exactly as before (readline redraws
+  its line on edits and on every resize, which would erase streamed output). It carries a half-typed
+  line to the next prompt, shows a line sent with an earlier one (a multi-line paste) at the next
+  prompt, keeps history across prompts, routes Ctrl-C keystrokes to the REPL's interrupt handling and
+  abandons the line as the terminal would, resumes input on SIGCONT (readline pauses itself after
+  Ctrl-Z and `fg`), and treats Ctrl-D on an empty line as the end of input. `writeAbove` empties the line through readline, prints, and redraws the prompt and
+  the typed text with the cursor where it was, also when they wrap.
+- `discardBuffered` before a question or approval prompt: what the terminal held (lines and a half-typed
+  line) is read for 50 ms by an interface that shows and records nothing, and dropped. This closes
+  "a half-typed line then `a` reads as deny" (2026-09-25) at a terminal.
+- `src/cli.ts`: `ReplScreen` takes the terminal input. Everything the REPL writes goes through its
+  streams, so output while a prompt is up goes above it, and a prompt starts at column 0 (readline
+  redraws from there). Startup prints the session line above the prompt instead of breaking the line;
+  held lines break it before they run. Ctrl-C sources are merged (`mergeInterruptSources`). The startup
+  trust question goes through `askLine`. Piped input, test readers, and a terminal on one end only keep
+  the line reader.
+- `docs/AGENT_LOOP.md` ("The REPL at a terminal").
+
+### Tests and verification
+
+- `tests/unit/terminal-input.test.ts` (10 cases, screens read through `TerminalScreen` via
+  `tests/helpers/fake-terminal.ts`) and a REPL case in `tests/integration/cli-interactive.test.ts` (the
+  report's sequence). A mutation that stops `writeAbove` redrawing fails two cases; one that skips the
+  drain fails the drain case.
+- `npm run test` green (the MCP lifecycle timing test failed once under full load again, then the whole
+  integration suite passed), typecheck, lint and format clean, `dist/` rebuilt.
+- Live in a pseudo-terminal (`node-pty`, screens through `TerminalScreen`) against the real config and
+  `qwen3.8-27b-mlx`: text typed during startup stays on the prompt under the session line and is sent on
+  Enter; 1,500- and 5,000-byte lines arrive; Ctrl-C at the prompt exits 130; a real turn completes, text
+  typed during it reappears at the next prompt, and Ctrl-C cancels a second turn, after which Ctrl-C at
+  the prompt exits 130 at once; an `ask_user_question` prompt shows no text typed ahead of it and takes
+  the answer typed after; after SIGCONT a half-typed line is kept and sent. (Ctrl-Z itself could not be
+  exercised there: the kernel does not stop a process in an orphaned process group.)
+
+### Still open after this pass
+
+- A multi-line paste is one message per line (2A). Node 22's readline already reports bracketed-paste
+  markers (`paste-start`/`paste-end`), so the terminal input could collect a paste into one message.
+- The question-prompt drain is time-based: a held line read later than 50 ms after the prompt opens
+  (an event loop that is busy at that moment) would answer the question.
+- Output written straight to `process.stdout`/`stderr` by other code (a `console.error`) bypasses the
+  screen and can land inside a prompt.
+- Typed-ahead text shows twice: the terminal echoes it during the turn, and readline shows it again at
+  the next prompt, where it is sent or edited.
+
+## Addendum (2026-10-02c): "stream stalled" was a prompt the server had to re-read
+
+The operator's next session failed with "The lm_studio stream stalled: no new tokens arrived
+within the idle timeout" and suggested raising the timeout. The turn failed exactly 300 s after it
+started: the first-token budget, not the 60 s idle window, worded the same way.
+
+### What happened
+
+- The prompt had grown to ~89k tokens. LM Studio's server log (`~/.lmstudio/server-logs/`) shows the
+  turn before it reading its prompt in 18 s (mostly cached), and this one at ~2.5% every 18 s: 39%
+  after 5 minutes, when aia gave up. Reading all of it would have taken ~13 minutes (~107
+  tokens/s). LM Studio's OpenAI-compatible stream sends nothing while it reads.
+- Why uncached: the model had called `update_plan`, and the next run (resumed after the operator
+  answered a question) rebuilt the system prompt with the new plan in its Task State section,
+  ~4,000 characters in. A server reuses a prompt only up to its first change, and the whole
+  conversation follows the system prompt. The same happens after every accepted completion,
+  which rewrites this session's summary in the Durable Memory section. Across the operator's
+  logged runs, 6 of 37 run boundaries changed the system prompt (4 in Task State).
+
+### Decisions (operator-confirmed: 1A 2A 3A)
+
+- **1A**: `streamFirstTokenTimeoutMs` defaults to 30 min for LM Studio, llama.cpp and Ollama (a
+  full 119k window on this machine is ~20 min). Its own schema allows up to 24 h (other timeouts
+  stop at 10 min). The 60 s idle window is unchanged.
+- **2A**: Task State and this session's summary are rendered as of the last fold and left out
+  before the first one; the model sees its live plan through its plan-tool calls.
+- **3A**: the guard reports `first_token` or `idle` (codes `provider_stream_first_token`,
+  `provider_stream_idle`); the message names the budget and the setting
+  (`providers.lmStudio.streamFirstTokenTimeoutMs`), passed to each adapter as `settingsPath` by
+  the provider table.
+
+### Changes
+
+- `src/core/lm/shared.ts` (guard reason, `buildStreamAbortError`), `openai-compatible.ts`,
+  `ollama.ts`, `providers.ts`, `src/core/config/schema.ts`.
+- `src/core/agent/loop.ts`: `foldedSessionMetadata` writes the watermark and `compactedTaskState`
+  (progress and notes, not the plan record) at threshold and overflow folds; the gateway's
+  `/compact` uses it too. The prompt's task state comes from there (`resolvePromptTaskState`); a
+  session folded earlier without it keeps the live state.
+- `src/core/memory/service.ts`: folding triggers (`manual`, `overflow`, `threshold`) also write
+  `.aia/memory/folded-summaries/<id>.md`, which `getPromptContext` returns; the live
+  `chat-session-memory/` file still updates on completion. Sessions folded before this keep the
+  live summary. An unreadable compaction history no longer reaches prompt building.
+- Docs: `docs/AGENT_LOOP.md` (the timeout section and "The system prompt stays put between
+  runs"), `docs/SMALL_MODELS.md`.
+
+### Tests and verification
+
+- `tests/unit/lm-stream-guard.test.ts` (reasons and messages), `tests/integration/agent-loop.test.ts`
+  ("the system prompt between runs"), `tests/integration/memory-service.test.ts` (completion,
+  fold, later completion, a legacy folded session), `tests/integration/gateway-runtime.test.ts`.
+  `npm run test` green, typecheck and lint clean, `dist/` rebuilt; the operator's config resolves
+  to 30 min / 60 s.
+- Live in the REPL against `qwen3.8-27b-mlx`: two runs, each calling `update_plan`, the first
+  ending in an accepted completion. All four requests carried a byte-identical system prompt;
+  LM Studio read the second run's first prompt in 2 s.
+
+### Still open after this pass
+
+- `tool_search` activations change the tool list, which chat templates such as Qwen's render
+  ahead of the system message: everything after it is re-read.
+- Dropping an older turn's reasoning (`reasoningContextTurns: 1`) changes that message, so the
+  server re-reads from it on (13 s in the live check).
+- LM Studio 0.4's native `/api/v1` stream may report prompt-processing progress; using it would let
+  a first-token wait show progress instead of silence.
+- The session that failed (`session.d6acdf65…`) gets one more uncached read on its next run (its
+  system prompt loses the live Task State), ~13 minutes, now within the budget.
+
+## Addendum (2026-10-14): review of the uncommitted MCP, skills and provider work
+
+The operator asked for a full review of the uncommitted work (the 2026-09-30 to 2026-10-02 addenda
+above): complete, correct, readable, testable, secure, maintainable, fit to the design, performant,
+with tests and lint passing. The review filed 15 confirmed findings (several reproduced against the
+real CLI), plus about 130 smaller defects, test gaps and cleanup items. The operator answered two
+rounds of questions (`1A 2A 3A … 19C … 24B … 31B 32A 33B 34A`, then `1B 2A 3A 4A 5A 6A 7A 8A 9A`),
+and the fixes went in five stages with the full gate between them. **Nothing is committed.** The
+security fixes are listed in `docs/SECURITY_REVIEW.md` ("Fixed in the 2026-10-13 review pass").
+
+### Decisions (operator-confirmed)
+
+- Every confirmed defect in code this work added or touched is fixed in code (not only documented),
+  each with a regression test that fails without the fix (mutation-checked).
+- An untrusted workspace `aia.approvals.jsonc` can only tighten (append deny/ask rules, a stricter
+  `defaultMode`); an untrusted config layer withholds provider endpoints, headers, `apiKey` and
+  `requestExtras`, image/voice endpoints, external agents, gateway, tunnel, channels, MCP entries and
+  `skills.extraRoots`, and leaves its `${ENV}`/secret references unresolved. `aia trust` lists them.
+- A context overflow retries under a fresh queue id; nothing is ever cut to fit (no tool-output cap).
+- MCP server names are slugged or hashed wherever they become ids. A crash loop gets 5 reconnects;
+  the count resets after 60 s connected. MCP `url` is http(s) only.
+- One terminal sanitizer for everything printed from configs, SKILL.md files and MCP servers.
+- `tool_search` keeps activating every match (19C). Server instructions are indexed once per server at
+  low weight, not copied onto every tool or into queued requests. `mcp_status` marks a tool that is not
+  callable yet and points at `tool_search <server>`.
+- The repeat guard: two refused turns in a row are free, the third and later count toward the
+  no-progress limit, with a nudge (r2-1B). The llama.cpp 503 "loading" wait stays shared (24B).
+- The window is learned from overflow errors. Active Skills has its own budget
+  (`runtime.promptBudgets.activeSkillsChars`, 16,000) with a `read_file` pointer for the rest. A running
+  session follows `aia skills enable|disable`. Legacy skill layouts load, each with a diagnostic.
+- Changed exported APIs keep compatibility shims (33B); `context7` stays in the repo config (34A).
+
+### Changes
+
+- **Stage 1, trust and security**: everything in the SECURITY_REVIEW table, among them `__proto__`
+  keys refused in every parsed file, `mcp.imports` contents in the fingerprint, a trust key per
+  symlinked file, static MCP headers only to the server's own origin, `http(s)` only for browser
+  opens (Windows via `rundll32`), a field-less elicitation as an Accept/Decline question, project skill
+  roots confined to the project, no configured `clientSecret` persisted, deny rules reaching
+  `web_search` and `mcp_read_resource_template`, same-origin-only provider redirects.
+- **Stage 2, crashes and hangs**: the stream guard's timer is released on a failed request (`aia
+--prompt` hung 5 min); the overflow retry reuses no id; MCP names never crash event parsing; a stale
+  mid-turn MCP question is withdrawn and its read never shared; SKILL.md parsing hardened (alias
+  loops, quadratic repair, block scalars); config edits go to the file that defines the entry,
+  atomically, 0600, with `skills.disabled` merged across layers.
+- **Stage 3, MCP lifecycle and providers**: crash backoff with a give-up message, handshake crashes
+  keep their exit code and stderr, HTTP drops mark the server failed and reconnect, the 2,048-tool
+  cap counts after filtering, `needs_login` by error class, per-request listing signals, elicitation
+  attributed to the right call, a coalesced relist, one provider table and shared adapter, embedding
+  and image code reusing the shared HTTP helpers, `extractStructuredError` everywhere.
+- **Stage 4, skills and small models**: BM25 over a Unicode, camelCase-aware tokenizer shared with
+  memory search; mention fixes (code spans, URLs, trailing punctuation, ALL-CAPS shell variables,
+  `[$name](path)` by real path and case); the catalog never overshoots its budget or splits a
+  surrogate, and `skills.list` says when it trims; skill loads are recorded before an approval pause.
+- **Stage 5**: the coverage gaps below, and three defects they found. Calls in flight on a
+  streamable-HTTP session the server forgot failed with "Connection closed" when the first call's
+  recovery closed the old client; the old client now closes once they have their own answers (each
+  replays on its 404). A relist failing on a replaced connection no longer warns. A relative
+  `[$name](path)` resolves against the session's directory, not the process's. Smaller: `aia mcp
+list --json` leaves out `auth` for a stdio server (it printed `"-"`), and a bare `aia mcp` or
+  `aia skills` prints its help and exits 0, as `aia voice` does.
+
+### Tests and verification
+
+- New coverage: the queue keeps structured errors; superseded connects (by `reconnect()` or `close()`)
+  are closed and never installed; session-expiry replay runs a call once on one new session, three
+  concurrent calls included; the loader hashes the bytes it parsed even when the file is swapped
+  meanwhile; the context window is asked for the provider's own model; the `skill` tool refuses
+  disabled and operator-only skills however they are named; `oauth.clientSecret` is masked in
+  `mcp list|get --json`; a sessionless elicitation asks no one.
+- **Hermetic tests**: unit and integration files run with `HOME` set to an empty directory
+  (`tests/setup/isolated-home.ts`, one directory per run from `tests/setup/test-homes.ts`), and the e2e
+  dev server with `.aia/e2e/home`. Probing with a deliberately broken `HOME` found 57 tests (including
+  `agent-loop.test.ts` and the WhatsApp channel tests) reading the developer's `~/.aia` config, trust
+  store or skills, and two `aia attach` tests reading this repository's own `aia.config.jsonc`; each now
+  names its own home and workspace too. The e2e server no longer starts the MCP servers in your config.
+- Every `run.wait()` in tests passes `timeoutMs`, and ESLint (`no-restricted-syntax`, `tests/**`) now
+  refuses one that does not.
+- `tests/live/llama-cpp.live.test.ts` also runs aia itself (config, gateway runtime, file queue, loop):
+  a first message over the window fails at once with both sizes and the `-c` fix, and a refused prompt
+  folds the earlier history and retries as its own queue job. Both fail against the old queue.
+- Gates: each stage green (final: unit 681+, integration 615, e2e 15). Live against Gemma 4 E4B on
+  llama-server, with a sandbox HOME: the llama.cpp suite, the CLI suite (dist and src, 8/8), a REPL at a
+  real terminal (`/mcp`, `/skills`, a relative skill link, `/exit`), an oversized `--prompt` (exit 1 in
+  7 s with the explanation), `aia mcp|skills` one-shots; LM Studio, memory-embeddings and MCP live
+  suites. LM Studio was put back as found (server on, nothing loaded).
+
+### Still open after this pass
+
+- `aia --prompt` prints the session goal in its report, so a very long prompt is echoed back whole
+  (older than this work).
+- The default reconnect base delay (1 s) is only exercised with an injected one in tests.
+- The skills web view (still deferred), and OAuth refresh ahead of expiry (still on a 401).

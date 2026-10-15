@@ -11,6 +11,15 @@ import {
 import { messageSchema } from "@/core/contracts/messages";
 import { toolDefinitionSchema, toolInvocationNameSchema } from "@/core/contracts/tools";
 
+/**
+ * The structured error code for a prompt larger than the model's context
+ * window. Every language-model adapter classifies its provider's own spelling
+ * of that failure to this code (the built-in ones through
+ * `classifyContextOverflow`, which also records the provider's remedy in
+ * `details.remedy`), and the agent loop compacts and retries once on it.
+ */
+export const CONTEXT_WINDOW_EXCEEDED_ERROR_CODE = "context_window_exceeded";
+
 export const providerKindSchema = z.enum(["embedding", "image", "language_model", "voice"]);
 export const providerIdSchema = z
   .string()

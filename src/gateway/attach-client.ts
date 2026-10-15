@@ -46,18 +46,7 @@ export type AttachOptions = {
  * pressed Ctrl-] to detach).
  */
 export async function attachToExternalAgentSession(options: AttachOptions): Promise<number> {
-  const url = new URL(options.url);
-  if (options.token) {
-    url.searchParams.set("token", options.token);
-  }
-
-  const socket = options.createWebSocket
-    ? options.createWebSocket(url.toString())
-    : new (
-        require("ws") as {
-          WebSocket: new (target: string) => AttachWebSocketClient;
-        }
-      ).WebSocket(url.toString());
+  const socket = openGatewaySocket(options);
   const restoreStdin = configureRawStdin(options.streams.stdin);
 
   return new Promise<number>((resolve, reject) => {
@@ -163,20 +152,43 @@ export async function attachToExternalAgentSession(options: AttachOptions): Prom
   });
 }
 
+/**
+ * Opens a WebSocket to the gateway at `url`, carrying `token` the way the
+ * gateway reads it (the `token` query parameter). Every client process that
+ * talks to a running gateway (`aia attach`, `aia mcp reconnect`) opens its
+ * socket here.
+ */
+export function openGatewaySocket(params: {
+  createWebSocket?: (url: string) => AttachWebSocketClient;
+  token?: string;
+  url: string;
+}): AttachWebSocketClient {
+  const url = new URL(params.url);
+  if (params.token) {
+    url.searchParams.set("token", params.token);
+  }
+  return params.createWebSocket
+    ? params.createWebSocket(url.toString())
+    : new (require("ws") as { WebSocket: new (target: string) => AttachWebSocketClient }).WebSocket(url.toString());
+}
+
+/** A gateway request as a socket sends it, with a fresh id. */
+export function buildGatewayRequest(topic: string, payload: unknown) {
+  return {
+    createdAt: new Date().toISOString(),
+    id: `request.${crypto.randomUUID()}`,
+    metadata: {},
+    payload,
+    topic
+  };
+}
+
 function sendRequest(socket: AttachWebSocketClient, topic: string, payload: unknown): void {
   if (socket.readyState !== 1) {
     return;
   }
 
-  socket.send(
-    JSON.stringify({
-      createdAt: new Date().toISOString(),
-      id: `request.${crypto.randomUUID()}`,
-      metadata: {},
-      payload,
-      topic
-    })
-  );
+  socket.send(JSON.stringify(buildGatewayRequest(topic, payload)));
 }
 
 function configureRawStdin(stdin: NodeJS.ReadStream): () => void {

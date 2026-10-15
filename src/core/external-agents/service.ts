@@ -774,6 +774,12 @@ export class FileExternalAgentService implements ExternalAgentService {
     if (hydrated.status !== "running") {
       return hydrated;
     }
+    // A process this service started is finalized by its own exit event,
+    // which carries the exit code. A poll can see the process gone first, and
+    // finalizing then, with no exit code, called a failed run a success.
+    if (this.runningJobs.get(hydrated.id)?.child) {
+      return hydrated;
+    }
     if (hydrated.pid && (await isProcessAlive(hydrated.pid))) {
       return hydrated;
     }
@@ -1048,71 +1054,84 @@ export function createExternalAgentServiceFromConfig(params: {
 
 const UNGATED_EXTERNAL_AGENT_ACTIONS = new Set(["attach", "get", "list", "read", "send", "stop"]);
 
+/**
+ * What a call to the `external_agent` tool is approved as, next to the tool
+ * itself: the agent it starts, the command line that runs (the model's `args`
+ * included), and the directory. The tool adds these through its
+ * `resolveApprovalScope`, so they are weighed the way every tool's are.
+ */
+export async function resolveExternalAgentApprovalTargets(
+  service: Pick<ExternalAgentService, "getDefinition" | "getJob">,
+  call: ToolCallRecord
+): Promise<ApprovalEvaluationTarget[]> {
+  const action = typeof call.arguments.action === "string" ? call.arguments.action : undefined;
+  // Approval is gated on *opening* a channel to an external agent, not on
+  // every message through one. `run` and `start` are the moments a process is
+  // spawned; afterwards the operator has already consented to this agent in
+  // this directory, and re-asking on each turn would make an interactive
+  // session unusable. Read-only inspection is never gated.
+  if (action && UNGATED_EXTERNAL_AGENT_ACTIONS.has(action)) {
+    return [];
+  }
+
+  const resolved = await resolveApprovalJobContext(service, call);
+  if (!resolved.agentId) {
+    return [];
+  }
+
+  const definition = await service.getDefinition(resolved.agentId);
+  const targets: ApprovalEvaluationTarget[] = [
+    {
+      kind: "external_agent",
+      label: definition?.displayName ?? resolved.agentId,
+      value: resolved.agentId
+    }
+  ];
+
+  if (definition) {
+    // `start` spawns defaultArgs *plus* the preset's interactive args, which
+    // is where the bypass flags live. Approving a command string that hid
+    // them asked the operator to consent to something safer than what runs,
+    // and an approval-policy regex written against the command could never
+    // match `--dangerously-skip-permissions`.
+    const spawnArgs =
+      action === "start" ? [...definition.defaultArgs, ...definition.interactiveArgs] : definition.defaultArgs;
+    // Security review H4: the model fully controls `args`, and every preset
+    // splices them into the child argv. Leaving them out meant a model could
+    // pass `--dangerously-bypass-approvals-and-sandbox` (or
+    // `--allowedTools Bash`) while the operator was shown only "run codex",
+    // and no deny rule written against the command line could ever match.
+    // The rendered value is what actually gets spawned.
+    targets.push({
+      kind: "command",
+      label: "command",
+      value: stringifyArgv([definition.command, ...spawnArgs, ...readModelSuppliedArgs(call)]) ?? definition.command
+    });
+  }
+
+  const cwd = typeof call.arguments.cwd === "string" ? call.arguments.cwd : resolved.cwd;
+  if (cwd) {
+    targets.push({
+      kind: "path",
+      label: "cwd",
+      value: cwd
+    });
+  }
+
+  return targets;
+}
+
+/**
+ * @deprecated The `external_agent` tool adds these targets to its own
+ * approval now (see `resolveExternalAgentApprovalTargets`). Kept for hosts
+ * that still pass it to `createToolApprovalDecider` as
+ * `resolveAdditionalTargets`.
+ */
 export function createExternalAgentApprovalTargetResolver(params: {
   service: Pick<ExternalAgentService, "getDefinition" | "getJob">;
 }) {
-  return async (input: ToolApprovalDeciderParams): Promise<ApprovalEvaluationTarget[]> => {
-    if (input.definition.kind !== "external_agent") {
-      return [];
-    }
-
-    const action = typeof input.call.arguments.action === "string" ? input.call.arguments.action : undefined;
-    // Approval is gated on *opening* a channel to an external agent, not on
-    // every message through one. `run` and `start` are the moments a process is
-    // spawned; afterwards the operator has already consented to this agent in
-    // this directory, and re-asking on each turn would make an interactive
-    // session unusable. Read-only inspection is never gated.
-    if (action && UNGATED_EXTERNAL_AGENT_ACTIONS.has(action)) {
-      return [];
-    }
-
-    const resolved = await resolveApprovalJobContext(params.service, input.call);
-    if (!resolved.agentId) {
-      return [];
-    }
-
-    const definition = await params.service.getDefinition(resolved.agentId);
-    const targets: ApprovalEvaluationTarget[] = [
-      {
-        kind: "external_agent",
-        label: definition?.displayName ?? resolved.agentId,
-        value: resolved.agentId
-      }
-    ];
-
-    if (definition) {
-      // `start` spawns defaultArgs *plus* the preset's interactive args, which
-      // is where the bypass flags live. Approving a command string that hid
-      // them asked the operator to consent to something safer than what runs,
-      // and an approval-policy regex written against the command could never
-      // match `--dangerously-skip-permissions`.
-      const spawnArgs =
-        action === "start" ? [...definition.defaultArgs, ...definition.interactiveArgs] : definition.defaultArgs;
-      // Security review H4: the model fully controls `args`, and every preset
-      // splices them into the child argv. Leaving them out meant a model could
-      // pass `--dangerously-bypass-approvals-and-sandbox` (or
-      // `--allowedTools Bash`) while the operator was shown only "run codex",
-      // and no deny rule written against the command line could ever match.
-      // The rendered value is what actually gets spawned.
-      targets.push({
-        kind: "command",
-        label: "command",
-        value:
-          stringifyArgv([definition.command, ...spawnArgs, ...readModelSuppliedArgs(input.call)]) ?? definition.command
-      });
-    }
-
-    const cwd = typeof input.call.arguments.cwd === "string" ? input.call.arguments.cwd : resolved.cwd;
-    if (cwd) {
-      targets.push({
-        kind: "path",
-        label: "cwd",
-        value: cwd
-      });
-    }
-
-    return targets;
-  };
+  return async (input: ToolApprovalDeciderParams): Promise<ApprovalEvaluationTarget[]> =>
+    input.definition.kind === "external_agent" ? resolveExternalAgentApprovalTargets(params.service, input.call) : [];
 }
 
 /**
@@ -1648,7 +1667,14 @@ function resolveTerminalStatus(
   if (exit.exitCode === 0) {
     return "succeeded";
   }
-  if ((job.resultArtifact || job.structuredResult !== undefined) && exit.exitCode === undefined && !exit.signal) {
+  // Without an exit code (a job recovered after a restart), a result counts as
+  // success, unless the agent said in it that it failed.
+  if (
+    (job.resultArtifact || job.structuredResult !== undefined) &&
+    exit.exitCode === undefined &&
+    !exit.signal &&
+    job.metadata.agentReportedError !== true
+  ) {
     return "succeeded";
   }
   // An agent that reported its own failure is finished, not interrupted: it ran

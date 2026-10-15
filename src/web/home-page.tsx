@@ -350,7 +350,10 @@ export function HomePage({ dashboard, flash, flashError, memoryText = "", redire
 
                 <section>
                   <h3>Approvals</h3>
-                  <div className="list-stack">
+                  {/* Swapped for a fresh copy when an approval comes or goes (the
+                      live script below): an MCP server's question arrives mid-run,
+                      and the page used to show it only after a reload. */}
+                  <div className="list-stack" id="session-approvals">
                     {selectedApprovals.length === 0 ? (
                       <p className="empty">No approvals for this session.</p>
                     ) : (
@@ -599,6 +602,23 @@ function buildLiveStreamScript(sessionId: string): string {
     '  var out = document.getElementById("live-stream-output");',
     '  var reasoningOut = document.getElementById("live-reasoning-output");',
     '  if (!out || typeof EventSource === "undefined") { return; }',
+    // The approvals panel, re-read from a fresh copy of this page, unless the
+    // operator is in the middle of answering there: then they are told instead.
+    "  var notice = null;",
+    "  function refreshApprovals(){",
+    '    var panel = document.getElementById("session-approvals");',
+    "    if (!panel) { return; }",
+    '    var typing = panel.contains(document.activeElement) || Array.prototype.some.call(panel.querySelectorAll("input[type=text]"), function(input){ return input.value !== ""; });',
+    "    if (typing) {",
+    '      if (!notice) { notice = document.createElement("p"); notice.className = "empty"; notice.textContent = "Approvals changed. Reload the page to see them."; panel.parentNode.insertBefore(notice, panel); }',
+    "      return;",
+    "    }",
+    '    fetch(window.location.href, { credentials: "same-origin" }).then(function(r){ return r.text(); }).then(function(html){',
+    '      var fresh = new DOMParser().parseFromString(html, "text/html").getElementById("session-approvals");',
+    '      var current = document.getElementById("session-approvals");',
+    "      if (fresh && current) { current.replaceWith(fresh); }",
+    "    }).catch(function(){});",
+    "  }",
     '  var es = new EventSource("/api/control-plane/events/stream?sessionId=" + encodeURIComponent(id));',
     "  es.onmessage = function(e){",
     "    try {",
@@ -607,6 +627,7 @@ function buildLiveStreamScript(sessionId: string): string {
     '      else if (ev.topic === "message.reasoning") { if (reasoningOut && ev.payload.final !== true) { reasoningOut.textContent += ev.payload.delta; } }',
     '      else if (ev.topic === "tool.updated") { out.textContent += "\\n[tool] " + ev.payload.toolName + ": " + ev.payload.status + "\\n"; }',
     '      else if (ev.topic === "message.created" && ev.payload.role === "assistant") { out.textContent += "\\n"; }',
+    '      else if (ev.topic === "approval.requested" || ev.topic === "approval.resolved") { refreshApprovals(); }',
     "    } catch (err) {}",
     "  };",
     '  window.addEventListener("beforeunload", function(){ es.close(); });',
@@ -650,6 +671,8 @@ function describeEvent(event: GatewayEvent): string {
       return event.payload.message;
     case "memory.updated":
       return `${event.payload.scope}:${event.payload.entryId}`;
+    case "mcp.updated":
+      return `MCP ${event.payload.server.serverName} is ${event.payload.server.state}`;
   }
 }
 

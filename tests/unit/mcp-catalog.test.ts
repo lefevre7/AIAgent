@@ -21,26 +21,34 @@ function toolCap(params: { name: string; serverName: string; tags?: string[]; di
 }
 
 describe("MCPCapabilityCatalog.search", () => {
-  test("scores tags once at their best tier instead of accumulating per tag", () => {
+  test("an exact name outranks a capability whose tags merely repeat the word", () => {
     const exactName = toolCap({ name: "search", serverName: "a", tags: [] });
     const tagHeavy = toolCap({
       displayName: "Other",
       name: "other",
       serverName: "b",
-      tags: ["search", "websearch", "research"]
+      tags: ["search", "web-search", "research"]
     });
     const catalog = new MCPCapabilityCatalog([exactName, tagHeavy]);
 
     const matches = catalog.search({ limit: 10, query: "search" });
-    const tagHeavyMatch = matches.find((m) => m.capability.name === "other");
 
-    // Three tags contain "search"; the old accumulating scorer would give
-    // 80 + 55 + 55 = 190 and let it outrank an exact name match (95). The fix
-    // caps the tag contribution to a single best-tier add (80).
-    expect(tagHeavyMatch?.score).toBe(80);
-    // The exact name match therefore ranks first.
-    expect(matches[0]?.capability.name).toBe("search");
-    expect(matches[0]!.score).toBeGreaterThan(tagHeavyMatch!.score);
+    expect(matches.map((match) => match.capability.name)).toEqual(["search", "other"]);
+    expect(matches[0]!.score).toBeGreaterThan(matches[1]!.score);
+  });
+
+  test("ranks with tool_search's BM25: a rare word over a common one, and a camelCase or plural query", () => {
+    // The tier scorer it replaced matched the whole query as one substring, so
+    // "file screenshot" found nothing and the order differed from tool_search.
+    const catalog = new MCPCapabilityCatalog([
+      toolCap({ displayName: "Read File", name: "read_file", serverName: "fs", tags: ["files"] }),
+      toolCap({ displayName: "Write File", name: "write_file", serverName: "fs", tags: ["files"] }),
+      toolCap({ displayName: "Take Screenshot", name: "take_screenshot", serverName: "browser" })
+    ]);
+
+    expect(catalog.search({ limit: 3, query: "file screenshot" })[0]?.capability.name).toBe("take_screenshot");
+    expect(catalog.search({ limit: 3, query: "readFile" })[0]?.capability.name).toBe("read_file");
+    expect(catalog.search({ limit: 3, query: "screenshots" })[0]?.capability.name).toBe("take_screenshot");
   });
 
   test("filters by serverNames", () => {

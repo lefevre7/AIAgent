@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   DEFAULT_APPROVAL_SETTINGS,
   createDefaultAppConfig,
+  noWorkspaceTrustNeeded,
   type LanguageModelAdapter,
   type LanguageModelCallOptions,
   type LanguageModelDescriptor,
@@ -296,12 +297,7 @@ function createExampleLoadedConfig(params: {
   return {
     approvals: DEFAULT_APPROVAL_SETTINGS,
     config,
-    workspaceTrust: {
-      fingerprint: null,
-      required: false,
-      trusted: true,
-      untrustedProviderNames: []
-    },
+    workspaceTrust: noWorkspaceTrustNeeded(),
     paths: {
       globalApprovalsPath: path.join(params.userStateDirectory, "approvals.global.jsonc"),
       globalConfigPath: path.join(params.userStateDirectory, "config.global.jsonc"),

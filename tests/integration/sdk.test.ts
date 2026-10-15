@@ -7,6 +7,9 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   DEFAULT_APPROVAL_SETTINGS,
   createDefaultAppConfig,
+  loadAIAgentConfig,
+  noWorkspaceTrustNeeded,
+  setSkillDisabledInConfigFile,
   type EmbeddingAdapter,
   type EmbeddingAdapterRegistration,
   type LanguageModelAdapter,
@@ -100,7 +103,7 @@ describe("node sdk", () => {
         })
       );
     }, 0);
-    await expect(created.run!.wait()).resolves.toMatchObject({
+    await expect(created.run!.wait({ timeoutMs: 10_000 })).resolves.toMatchObject({
       id: created.run!.runId,
       status: "completed"
     });
@@ -198,12 +201,7 @@ describe("node sdk", () => {
     const loaded: LoadedAIAgentConfig = {
       approvals: DEFAULT_APPROVAL_SETTINGS,
       config,
-      workspaceTrust: {
-        fingerprint: null,
-        required: false,
-        trusted: true,
-        untrustedProviderNames: []
-      },
+      workspaceTrust: noWorkspaceTrustNeeded(),
       paths: {
         globalApprovalsPath: path.join(root, "approvals.global.json"),
         globalConfigPath: path.join(root, "config.global.json"),
@@ -244,7 +242,137 @@ describe("node sdk", () => {
 
     await sdk.close();
   });
+
+  test("lists the workspace's skills through the gateway", async () => {
+    const root = await createTempRoot();
+    const workspaceRoot = path.join(root, "workspace");
+    const home = path.join(root, "home");
+    await fs.mkdir(path.join(workspaceRoot, ".git"), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, ".agents", "skills", "release-notes"), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, ".agents", "skills", "broken"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".agents", "skills", "release-notes", "SKILL.md"),
+      "---\nname: release-notes\ndescription: Draft release notes.\n---\nSteps.\n"
+    );
+    await fs.writeFile(path.join(workspaceRoot, ".agents", "skills", "broken", "SKILL.md"), "---\nname: broken\n");
+
+    const config = createDefaultAppConfig({ userStateDirectory: path.join(home, ".aia") });
+    config.memory.stateRoot = path.join(workspaceRoot, ".aia");
+    config.memory.sqlitePath = path.join(workspaceRoot, ".aia", "memory.sqlite");
+    config.memory.workspaceRoot = path.join(workspaceRoot, "memory");
+    config.memory.userGlobalRoot = path.join(home, ".aia", "memory");
+    config.memory.chatSessionRoot = path.join(workspaceRoot, "chat-session-memory");
+    config.memory.embeddingProvider = "factory_embed";
+    config.providers.lmStudio.enabled = false;
+    config.providers.llamaCpp.enabled = false;
+    config.providers.ollama.enabled = false;
+    config.runtime.defaultProvider = "factory_lm";
+    config.skills.bundled = false;
+
+    const sdk = await createAIAgentSdkFromConfig({
+      cwd: workspaceRoot,
+      loaded: buildLoadedConfig({ config, root, workspaceRoot }),
+      providers: {
+        embeddingAdapters: [createEmbeddingRegistration("factory_embed")],
+        languageModelAdapters: [createLanguageModelRegistration("factory_lm")]
+      },
+      userHomeDirectory: home
+    });
+
+    try {
+      const listing = await sdk.skills.list();
+      expect(listing.skills.map((skill) => `${skill.scope}:${skill.name}`)).toEqual(["project:release-notes"]);
+      // Summaries only: the instructions stay on disk until a run loads them.
+      expect(listing.skills[0]).not.toHaveProperty("body");
+      expect(listing.diagnostics).toEqual([
+        expect.objectContaining({ kind: "invalid", message: "the YAML frontmatter is never closed with ---" })
+      ]);
+    } finally {
+      await sdk.close();
+    }
+  });
 });
+
+describe("a running gateway's skills settings", () => {
+  test("follow the config files: a skill disabled after start is disabled at the next listing", async () => {
+    // They were read once at start, so `aia skills disable` in another
+    // terminal changed nothing for a session already running.
+    const root = await fs.realpath(await createTempRoot());
+    const workspaceRoot = path.join(root, "workspace");
+    const home = path.join(root, "home");
+    await fs.mkdir(path.join(workspaceRoot, ".git"), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, ".agents", "skills", "deploy"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, ".agents", "skills", "deploy", "SKILL.md"),
+      "---\nname: deploy\ndescription: Ship it.\n---\nSteps.\n"
+    );
+    const userConfig = path.join(home, ".aia", "config.jsonc");
+    await fs.mkdir(path.dirname(userConfig), { recursive: true });
+    await fs.writeFile(
+      userConfig,
+      JSON.stringify({
+        configVersion: 1,
+        memory: {
+          chatSessionRoot: path.join(workspaceRoot, "chat-session-memory"),
+          embeddingProvider: "factory_embed",
+          sqlitePath: path.join(workspaceRoot, ".aia", "memory.sqlite"),
+          stateRoot: path.join(workspaceRoot, ".aia"),
+          userGlobalRoot: path.join(home, ".aia", "memory"),
+          workspaceRoot: path.join(workspaceRoot, "memory")
+        },
+        providers: { llamaCpp: { enabled: false }, lmStudio: { enabled: false }, ollama: { enabled: false } },
+        runtime: { defaultProvider: "factory_lm" },
+        skills: { bundled: false }
+      })
+    );
+    const loaded = await loadAIAgentConfig({ cwd: workspaceRoot, env: {}, userHomeDirectory: home });
+    const sdk = await createAIAgentSdkFromConfig({
+      cwd: workspaceRoot,
+      env: {},
+      loaded,
+      providers: {
+        embeddingAdapters: [createEmbeddingRegistration("factory_embed")],
+        languageModelAdapters: [createLanguageModelRegistration("factory_lm")]
+      },
+      userHomeDirectory: home
+    });
+
+    try {
+      const enabled = async () => (await sdk.skills.list()).skills.find((skill) => skill.name === "deploy")?.enabled;
+      expect(await enabled()).toBe(true);
+      await setSkillDisabledInConfigFile({ configPath: userConfig, disabled: true, name: "deploy" });
+      expect(await enabled()).toBe(false);
+    } finally {
+      await sdk.close();
+    }
+  });
+});
+
+function buildLoadedConfig(params: {
+  config: ReturnType<typeof createDefaultAppConfig>;
+  root: string;
+  workspaceRoot: string;
+}): LoadedAIAgentConfig {
+  return {
+    approvals: DEFAULT_APPROVAL_SETTINGS,
+    config: params.config,
+    paths: {
+      globalApprovalsPath: path.join(params.root, "approvals.global.json"),
+      globalConfigPath: path.join(params.root, "config.global.json"),
+      globalConfigPaths: [path.join(params.root, "config.global.json")],
+      userStateDirectory: path.join(params.root, "home", ".aia"),
+      workspaceApprovalsPath: path.join(params.workspaceRoot, "approvals.json"),
+      workspaceConfigPath: path.join(params.workspaceRoot, "aiagent.config.json"),
+      workspaceRoot: params.workspaceRoot
+    },
+    resolvedConfig: params.config,
+    sources: {
+      approvals: { env: false, global: null, workspace: null },
+      config: { env: false, global: [], workspace: null }
+    },
+    workspaceTrust: noWorkspaceTrustNeeded()
+  };
+}
 
 function buildGatewayRequest(requestTopic: GatewayRequest["topic"], payload: unknown): GatewayRequest {
   return gatewayRequestSchema.parse({

@@ -9,6 +9,14 @@ import {
 } from "@/core/contracts/common";
 import { messagePartSchema } from "@/core/contracts/messages";
 
+/**
+ * Message metadata key the gateway sets (true or false, after any adapter
+ * metadata, so a remote sender cannot supply it) on a channel message: whether
+ * the sender is one of the channel's `operatorIdentities`. Core code that
+ * trusts only the operator, such as `$name` skill mentions, reads it.
+ */
+export const CHANNEL_OPERATOR_METADATA_KEY = "channelOperator";
+
 export const channelKindSchema = z.enum(["cli", "discord", "gateway", "imessage", "sdk", "teams", "web", "whatsapp"]);
 export const channelCapabilitySchema = z.enum([
   "approvals",

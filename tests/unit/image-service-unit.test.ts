@@ -109,7 +109,17 @@ describe("createImageServiceFromConfig", () => {
     const config = createDefaultAppConfig({ userStateDirectory: "/tmp/aiagent-image-home" });
     config.providers.imageProviders.comfyui_local.enabled = true;
     (config.providers.imageProviders.comfyui_local as { apiKey?: unknown }).apiKey = { key: "FOO", source: "env" };
-    expect(() => createImageServiceFromConfig(config)).toThrow(/unresolved secret reference/u);
+    expect(() => createImageServiceFromConfig(config)).toThrow(/unresolved secret-backed apiKey/u);
+  });
+
+  test("an Authorization header set by hand wins over apiKey, which is then not needed", () => {
+    // As for llama.cpp: the image provider used to require a resolved key it
+    // was not going to send.
+    const config = createDefaultAppConfig({ userStateDirectory: "/tmp/aiagent-image-home" });
+    config.providers.imageProviders.comfyui_local.enabled = true;
+    config.providers.imageProviders.comfyui_local.headers = { Authorization: "Basic abc" };
+    (config.providers.imageProviders.comfyui_local as { apiKey?: unknown }).apiKey = { key: "FOO", source: "env" };
+    expect(() => createImageServiceFromConfig(config)).not.toThrow();
   });
 
   test("throws for an unsupported provider kind", () => {

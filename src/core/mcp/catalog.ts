@@ -1,6 +1,33 @@
 import type { MCPCapability, MCPCapabilitySearchMatch, MCPCapabilitySearchQuery } from "@/core/contracts";
+import { FieldSearchRanker, tokenizeForSearch, type IndexedSearchDocument } from "@/core/text/search";
+
+// A query that is exactly a capability's name outranks everything else.
+const EXACT_NAME_BOOST = 100;
+
+// Ranked the way tool_search ranks tools (the same BM25 and tokenizer), so the
+// model gets one order for a query whichever of the two it asks.
+const CAPABILITY_FIELD_WEIGHTS = {
+  access: 0.5,
+  description: 1,
+  displayName: 2,
+  kind: 1,
+  name: 3,
+  serverName: 1.5,
+  tags: 2,
+  title: 2,
+  uri: 2,
+  uriTemplate: 2
+} as const;
+
+type CapabilityField = keyof typeof CAPABILITY_FIELD_WEIGHTS;
+
+const capabilityRanker = new FieldSearchRanker(CAPABILITY_FIELD_WEIGHTS);
 
 export class MCPCapabilityCatalog {
+  // A catalog never changes once built (the manager builds a new one), so
+  // each capability is indexed once, on the first search.
+  private indexed?: Array<IndexedSearchDocument<CapabilityField>>;
+
   constructor(private readonly capabilities: MCPCapability[] = []) {}
 
   list(): MCPCapability[] {
@@ -13,143 +40,78 @@ export class MCPCapabilityCatalog {
   }
 
   search(query: MCPCapabilitySearchQuery): MCPCapabilitySearchMatch[] {
-    const normalizedQuery = query.query?.trim().toLowerCase() ?? "";
-    const kindFilter = new Set(query.kinds ?? []);
-    const scopeFilter = new Set(query.scopes ?? []);
-    const serverFilter = new Set(query.serverNames ?? []);
+    const kinds = new Set(query.kinds ?? []);
+    const scopes = new Set(query.scopes ?? []);
+    const serverNames = new Set(query.serverNames ?? []);
+    const filtered = this.capabilities.flatMap((capability, position) =>
+      passesFilters(capability, kinds, scopes, serverNames) ? [{ capability, position }] : []
+    );
 
-    const matches = this.capabilities
-      .map((capability) => scoreCapability(capability, normalizedQuery, kindFilter, scopeFilter, serverFilter))
-      .filter((match): match is MCPCapabilitySearchMatch => match !== null)
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-        return left.capability.displayName.localeCompare(right.capability.displayName);
-      });
+    const rawQuery = query.query?.trim() ?? "";
+    if (!rawQuery) {
+      return filtered
+        .map(({ capability }) => ({ capability, matchedOn: [], score: 1 }))
+        .sort(byDisplayName)
+        .slice(0, query.limit);
+    }
 
-    return matches.slice(0, query.limit);
+    const indexed = this.index();
+    const scores = capabilityRanker.rank(
+      filtered.map(({ position }) => indexed[position]!),
+      tokenizeForSearch(rawQuery)
+    );
+    const normalizedQuery = rawQuery.toLowerCase();
+    const matches: MCPCapabilitySearchMatch[] = [];
+    filtered.forEach(({ capability }, position) => {
+      const matchedOn = new Set<string>(scores[position]!.matchedOn);
+      let score = scores[position]!.score;
+      if ([capability.name, capability.displayName].some((name) => name.toLowerCase() === normalizedQuery)) {
+        score += EXACT_NAME_BOOST;
+        matchedOn.add("name");
+      }
+      if (score > 0) {
+        matches.push({ capability, matchedOn: [...matchedOn], score: Math.round(score * 1000) / 1000 });
+      }
+    });
+    return matches.sort((left, right) => right.score - left.score || byDisplayName(left, right)).slice(0, query.limit);
+  }
+
+  private index(): Array<IndexedSearchDocument<CapabilityField>> {
+    this.indexed ??= this.capabilities.map((capability) =>
+      capabilityRanker.index({
+        access: [capability.access],
+        description: capability.description ? [capability.description] : [],
+        displayName: [capability.displayName],
+        kind: [capability.kind],
+        name: [capability.name],
+        serverName: capability.serverName ? [capability.serverName] : [],
+        tags: capability.tags,
+        title: "title" in capability && typeof capability.title === "string" ? [capability.title] : [],
+        uri: "uri" in capability && typeof capability.uri === "string" ? [capability.uri] : [],
+        uriTemplate:
+          "uriTemplate" in capability && typeof capability.uriTemplate === "string" ? [capability.uriTemplate] : []
+      })
+    );
+    return this.indexed;
   }
 }
 
-function scoreCapability(
+function passesFilters(
   capability: MCPCapability,
-  normalizedQuery: string,
   kinds: Set<MCPCapability["kind"]>,
   scopes: Set<"connected" | "templates">,
   serverNames: Set<string>
-): MCPCapabilitySearchMatch | null {
+): boolean {
   if (kinds.size > 0 && !kinds.has(capability.kind)) {
-    return null;
+    return false;
   }
-
   const scope = capability.kind === "server_template" ? "templates" : "connected";
   if (scopes.size > 0 && !scopes.has(scope)) {
-    return null;
+    return false;
   }
-
-  if (serverNames.size > 0) {
-    if (!capability.serverName || !serverNames.has(capability.serverName)) {
-      return null;
-    }
-  }
-
-  if (!normalizedQuery) {
-    return {
-      capability,
-      matchedOn: [],
-      score: 1
-    };
-  }
-
-  const matchedOn: string[] = [];
-  let score = 0;
-  const add = (field: string, increment: number) => {
-    score += increment;
-    if (!matchedOn.includes(field)) {
-      matchedOn.push(field);
-    }
-  };
-
-  matchText(capability.name, normalizedQuery, "name", 95, 80, 70, add);
-  matchText(capability.displayName, normalizedQuery, "displayName", 92, 76, 66, add);
-  matchText(capability.description, normalizedQuery, "description", 0, 0, 40, add);
-
-  if (capability.serverName) {
-    matchText(capability.serverName, normalizedQuery, "serverName", 75, 60, 45, add);
-  }
-
-  if ("title" in capability && typeof capability.title === "string") {
-    matchText(capability.title, normalizedQuery, "title", 82, 68, 48, add);
-  }
-
-  if ("uri" in capability && typeof capability.uri === "string") {
-    matchText(capability.uri, normalizedQuery, "uri", 88, 72, 52, add);
-  }
-
-  if ("uriTemplate" in capability && typeof capability.uriTemplate === "string") {
-    matchText(capability.uriTemplate, normalizedQuery, "uriTemplate", 88, 72, 52, add);
-  }
-
-  // Score tags once at their best tier rather than accumulating per matching
-  // tag. Every capability carries injected tags ("mcp", the kind, plus the
-  // server's configured tags), so summing per-tag matches let tag-heavy
-  // capabilities outrank an exact name/displayName match on another capability.
-  let bestTagScore = 0;
-  for (const tag of capability.tags) {
-    const normalizedTag = tag.toLowerCase();
-    if (normalizedTag === normalizedQuery) {
-      bestTagScore = Math.max(bestTagScore, 80);
-    } else if (normalizedTag.startsWith(normalizedQuery)) {
-      bestTagScore = Math.max(bestTagScore, 65);
-    } else if (normalizedTag.includes(normalizedQuery)) {
-      bestTagScore = Math.max(bestTagScore, 55);
-    }
-  }
-  if (bestTagScore > 0) {
-    add("tags", bestTagScore);
-  }
-
-  if (capability.kind.includes(normalizedQuery)) {
-    add("kind", 20);
-  }
-
-  if (capability.access.includes(normalizedQuery)) {
-    add("access", 18);
-  }
-
-  return score > 0
-    ? {
-        capability,
-        matchedOn,
-        score
-      }
-    : null;
+  return serverNames.size === 0 || (capability.serverName !== undefined && serverNames.has(capability.serverName));
 }
 
-function matchText(
-  value: string | undefined,
-  query: string,
-  field: string,
-  exact: number,
-  prefix: number,
-  contains: number,
-  add: (field: string, increment: number) => void
-): void {
-  if (!value) {
-    return;
-  }
-
-  const normalized = value.toLowerCase();
-  if (normalized === query && exact > 0) {
-    add(field, exact);
-    return;
-  }
-  if (normalized.startsWith(query) && prefix > 0) {
-    add(field, prefix);
-    return;
-  }
-  if (normalized.includes(query) && contains > 0) {
-    add(field, contains);
-  }
+function byDisplayName(left: MCPCapabilitySearchMatch, right: MCPCapabilitySearchMatch): number {
+  return left.capability.displayName.localeCompare(right.capability.displayName);
 }

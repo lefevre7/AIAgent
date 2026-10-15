@@ -4,7 +4,13 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { loadAIAgentConfig, MCPManager, StateRootUnavailableError } from "@/core";
+import {
+  fingerprintWorkspaceConfigFile,
+  grantConfigTrust,
+  loadAIAgentConfig,
+  MCPManager,
+  StateRootUnavailableError
+} from "@/core";
 import { createGatewayRuntimeFromLoadedConfig, GatewayRuntime } from "@/gateway";
 
 const STDIO_FIXTURE = path.resolve("tests/fixtures/mcp/stdio-server.mjs");
@@ -19,18 +25,29 @@ afterEach(async () => {
   }
 });
 
-async function workspaceWithConfig(config: Record<string, unknown>): Promise<{ home: string; workspace: string }> {
+async function workspaceWithConfig(
+  config: Record<string, unknown>,
+  options: { trusted?: boolean } = {}
+): Promise<{ home: string; workspace: string }> {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-runtime-startup-")));
   roots.push(root);
   const home = path.join(root, "home");
   const workspace = path.join(root, "workspace");
   await fs.mkdir(path.join(home, ".aia"), { recursive: true });
   await fs.mkdir(workspace, { recursive: true });
+  const configPath = path.join(workspace, "aia.config.jsonc");
   await fs.writeFile(
-    path.join(workspace, "aia.config.jsonc"),
+    configPath,
     JSON.stringify({ configVersion: 1, memory: { embeddingsEnabled: false }, ...config }),
     "utf8"
   );
+  // These are the operator's own configs; untrusted ones are tested separately.
+  if (options.trusted ?? true) {
+    const fingerprint = await fingerprintWorkspaceConfigFile(configPath);
+    if (fingerprint) {
+      await grantConfigTrust(path.join(home, ".aia"), fingerprint);
+    }
+  }
   return { home, workspace };
 }
 
@@ -97,5 +114,46 @@ describe("gateway runtime startup failures", () => {
     expect(failure).toBeInstanceOf(StateRootUnavailableError);
     expect((failure as Error).message).toContain(`${workspace}/.aia`);
     expect(initialize).not.toHaveBeenCalled();
+  });
+});
+
+// Security review M11: the whole point of the gate. A stdio server's command
+// ran the moment aia started, so a cloned repo could run anything by
+// declaring one. The marker proves the command was never executed.
+describe("untrusted workspace MCP servers", () => {
+  test("are never spawned, and are reported as untrusted", async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-untrusted-mcp-")));
+    roots.push(root);
+    const marker = path.join(root, "spawned.txt");
+    const { home, workspace } = await workspaceWithConfig(
+      {
+        mcp: {
+          servers: {
+            payload: {
+              ...stdioServer,
+              args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`]
+            }
+          }
+        }
+      },
+      { trusted: false }
+    );
+
+    const runtime = await build(workspace, home);
+    try {
+      const response = await runtime.request({
+        createdAt: new Date().toISOString(),
+        id: "req.mcp.list",
+        metadata: {},
+        payload: {},
+        topic: "mcp.list"
+      });
+      const { servers } = response.payload as { servers: Array<{ error?: string; serverName: string; state: string }> };
+      expect(servers).toEqual([expect.objectContaining({ serverName: "payload", state: "untrusted" })]);
+      expect(servers[0]?.error).toContain("aia trust");
+    } finally {
+      await runtime.close();
+    }
+    await expect(fs.access(marker)).rejects.toThrow();
   });
 });

@@ -1,4 +1,5 @@
 export * from "@/core/config/constants";
+export * from "@/core/config/edit";
 export * from "@/core/config/env-overrides";
 export * from "@/core/config/jsonc";
 export * from "@/core/config/load";

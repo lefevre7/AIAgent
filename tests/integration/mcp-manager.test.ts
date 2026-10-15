@@ -4,12 +4,14 @@ import path from "node:path";
 import net from "node:net";
 import type { AddressInfo } from "node:net";
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 
 import {
   DEFAULT_APPROVAL_SETTINGS,
@@ -20,12 +22,16 @@ import {
   createDefaultToolRuntime,
   createMcpManagerFromLoadedConfig,
   createToolApprovalDecider,
+  fingerprintWorkspaceConfigFile,
+  grantConfigTrust,
   loadAIAgentConfig,
   sanitizeMcpInvocationName,
   sessionRecordSchema,
   toolCallRecordSchema,
   turnRecordSchema,
-  withMcpTrustRules
+  withMcpTrustRules,
+  type ConnectMcpClientParams,
+  type McpConnection
 } from "@/core";
 
 const tempRoots: string[] = [];
@@ -35,6 +41,17 @@ const TOOLS_ONLY_FIXTURE_PATH = path.resolve("tests/fixtures/mcp/stdio-tools-onl
 const FLAKY_FIXTURE_PATH = path.resolve("tests/fixtures/mcp/stdio-flaky-server.mjs");
 const CAN_BIND_LOOPBACK = await canBindLoopback();
 const httpTransportTest = CAN_BIND_LOOPBACK ? test : test.skip;
+
+// The workspace configs these tests write are the operator's own, so they are
+// trusted the way the operator would trust them (security review M11 withholds
+// an untrusted workspace's MCP entries).
+async function trustWorkspaceConfig(home: string, workspace: string): Promise<void> {
+  const fingerprint = await fingerprintWorkspaceConfigFile(path.join(workspace, "aia.config.jsonc"));
+  if (!fingerprint) {
+    throw new Error(`No workspace config to trust in ${workspace}.`);
+  }
+  await grantConfigTrust(path.join(home, ".aia"), fingerprint);
+}
 
 afterEach(async () => {
   await Promise.allSettled(cleanups.splice(0).map((cleanup) => cleanup()));
@@ -151,6 +168,44 @@ describe("MCP manager", () => {
     expect(health.servers.some((server) => server.serverName === "docs")).toBe(true);
   });
 
+  test("builds every server's status for statuses_changed and refreshed only when something listens", async () => {
+    const config = createDefaultAppConfig({
+      userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
+    });
+    config.mcp.servers.docs = {
+      args: [STDIO_FIXTURE_PATH],
+      command: process.execPath,
+      enabled: true,
+      env: {},
+      required: true,
+      stderr: "pipe",
+      tags: [],
+      type: "stdio"
+    };
+    const manager = new MCPManager({ config, watch: false });
+    cleanups.push(() => manager.close());
+    let built = 0;
+    const getServerStatuses = manager.getServerStatuses.bind(manager);
+    manager.getServerStatuses = () => {
+      built += 1;
+      return getServerStatuses();
+    };
+
+    // Connecting is several transitions; each used to build every status.
+    await manager.initialize();
+    expect(built).toBe(0);
+
+    const heard: string[][] = [];
+    let refreshed = 0;
+    manager.on("statuses_changed", ({ statuses }) => heard.push(statuses.map((status) => status.serverName)));
+    manager.on("refreshed", () => {
+      refreshed += 1;
+    });
+    await manager.refresh();
+    expect(heard.at(-1)).toEqual(["docs"]);
+    expect(refreshed).toBe(1);
+  });
+
   test("records an error status when a server fails to connect", async () => {
     const config = createDefaultAppConfig({
       userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
@@ -250,9 +305,9 @@ describe("MCP manager", () => {
     const secondStarted = new Promise<void>((resolve) => {
       markSecondStarted = resolve;
     });
-    const connect = vi
-      .spyOn(MCPManager.prototype as unknown as { connectServer(serverName: string): Promise<never> }, "connectServer")
-      .mockImplementation(async (serverName: string) => {
+    const manager = new MCPManager({
+      config,
+      connectClient: async ({ serverName }) => {
         started.push(serverName);
         if (serverName === "first") {
           await secondStarted;
@@ -260,10 +315,10 @@ describe("MCP manager", () => {
           markSecondStarted();
         }
         throw new Error(`${serverName} refused the connection`);
-      });
-    const manager = new MCPManager({ config, watch: false });
+      },
+      watch: false
+    });
     cleanups.push(async () => {
-      connect.mockRestore();
       await manager.close();
     });
 
@@ -277,6 +332,75 @@ describe("MCP manager", () => {
       "first:failed",
       "second:failed"
     ]);
+  });
+
+  // Each connect carries an epoch, and a reconnect, reload or close moves it
+  // on. A connect that was superseded while it ran must close its client when
+  // it finishes, never take over from the newer connection.
+  describe("a connect that finishes after it was superseded", () => {
+    async function createGatedManager() {
+      const config = createDefaultAppConfig({
+        userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
+      });
+      // A short grace (0 would wait for every server), so startup returns
+      // while the first connect is held.
+      config.mcp.optionalStartupGraceMs = 50;
+      config.mcp.servers.docs = {
+        args: [],
+        command: process.execPath,
+        enabled: true,
+        env: {},
+        required: false,
+        stderr: "pipe",
+        tags: [],
+        type: "stdio"
+      };
+      let releaseFirst!: () => void;
+      const firstMayFinish = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const closed: string[] = [];
+      let attempts = 0;
+      const manager = new MCPManager({
+        config,
+        connectClient: async (params) => {
+          attempts += 1;
+          const label = attempts === 1 ? "first" : `attempt-${attempts}`;
+          const connection = await connectInMemory(label, params, () => closed.push(label));
+          if (label === "first") {
+            await firstMayFinish;
+          }
+          return connection;
+        },
+        watch: false
+      });
+      cleanups.push(() => manager.close());
+      await manager.initialize();
+      expect(manager.getServerStatuses()[0]?.state).toBe("connecting");
+      return { closed, manager, releaseFirst };
+    }
+
+    test("a reconnect meanwhile: the late client is closed and the newer one keeps serving", async () => {
+      const { closed, manager, releaseFirst } = await createGatedManager();
+
+      expect((await manager.reconnect("docs")).state).toBe("connected");
+      releaseFirst();
+      await waitForCondition(() => closed.includes("first"));
+
+      expect(closed).toEqual(["first"]);
+      expect(manager.getServerStatuses()[0]?.state).toBe("connected");
+      expect(JSON.stringify(await manager.callTool("docs", "whoami", {}))).toContain("attempt-2");
+    });
+
+    test("a close meanwhile: the late client is closed, not left running", async () => {
+      const { closed, manager, releaseFirst } = await createGatedManager();
+
+      await manager.close();
+      releaseFirst();
+
+      await waitForCondition(() => closed.includes("first"));
+      expect(closed).toEqual(["first"]);
+    });
   });
 
   test("keeps a tools-only server connected instead of failing on missing resources/prompts", async () => {
@@ -504,6 +628,7 @@ describe("MCP manager", () => {
       "utf8"
     );
 
+    await trustWorkspaceConfig(home, workspace);
     const loaded = await loadAIAgentConfig({
       cwd: workspace,
       env: {},
@@ -600,6 +725,59 @@ describe("MCP manager", () => {
     });
   });
 
+  test("a reload after a config change does not repeat the untrusted-config warning", async () => {
+    const root = await createTempRoot();
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+    const userConfig = path.join(home, ".aia", "config.jsonc");
+    await fs.writeFile(userConfig, '{ "configVersion": 1 }', "utf8");
+    await fs.writeFile(
+      path.join(workspace, "aia.config.jsonc"),
+      JSON.stringify({
+        mcp: {
+          servers: { repo: { args: [], command: "node", enabled: true, required: false, tags: [], type: "stdio" } }
+        }
+      }),
+      "utf8"
+    );
+    const loaded = await loadAIAgentConfig({
+      cwd: workspace,
+      env: {},
+      userHomeDirectory: home,
+      warnWhenUntrusted: false
+    });
+    const manager = createMcpManagerFromLoadedConfig({
+      cwd: workspace,
+      env: {},
+      loaded,
+      userHomeDirectory: home,
+      // Reloaded by hand below: a write made just after a watch starts is not
+      // always reported on macOS, and the test then waited out its timeout.
+      watch: false
+    });
+    cleanups.push(() => manager.close());
+    await manager.initialize();
+    const warnings: string[] = [];
+    const listener = (warning: Error & { code?: string }) => {
+      if (warning.code === "AIA_UNTRUSTED_CONFIG") {
+        warnings.push(warning.message);
+      }
+    };
+    process.on("warning", listener);
+    try {
+      await fs.writeFile(userConfig, '{ "configVersion": 1, "mcp": { "watch": true } }', "utf8");
+      await manager.refresh();
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("warning", listener);
+    }
+    // Said once at startup; every reload used to say it again.
+    expect(warnings).toEqual([]);
+    expect(manager.getServerStatuses().map((status) => status.state)).toEqual(["untrusted"]);
+  });
+
   test("attaches config watchers when watch mode is enabled", async () => {
     const root = await createTempRoot();
     const home = path.join(root, "home");
@@ -627,6 +805,7 @@ describe("MCP manager", () => {
       "utf8"
     );
 
+    await trustWorkspaceConfig(home, workspace);
     const loaded = await loadAIAgentConfig({
       cwd: workspace,
       env: {},
@@ -645,6 +824,110 @@ describe("MCP manager", () => {
     expect(manager.getServerStatuses().find((status) => status.serverName === "docs")?.state).toBe("connected");
     const health = await manager.getHealth();
     expect(health.servers.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("reports an untrusted workspace server, and starts it on the next refresh once trust is granted", async () => {
+    const root = await createTempRoot();
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "aia.config.jsonc"),
+      JSON.stringify({
+        mcp: {
+          servers: {
+            docs: {
+              args: [STDIO_FIXTURE_PATH],
+              command: process.execPath,
+              enabled: true,
+              env: {},
+              required: false,
+              stderr: "pipe",
+              tags: [],
+              type: "stdio"
+            }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const loaded = await loadAIAgentConfig({
+      cwd: workspace,
+      env: {},
+      userHomeDirectory: home,
+      warnWhenUntrusted: false
+    });
+    const manager = createMcpManagerFromLoadedConfig({
+      cwd: workspace,
+      env: {},
+      loaded,
+      userHomeDirectory: home,
+      watch: false
+    });
+    cleanups.push(() => manager.close());
+    await manager.initialize();
+
+    const [untrusted] = manager.summarizeServers();
+    expect(untrusted).toMatchObject({ serverName: "docs", state: "untrusted", tools: [], transport: "stdio" });
+    expect(untrusted?.error).toContain("has not been trusted");
+    await expect(manager.callTool("docs", "docs.lookup", { topic: "x" })).rejects.toThrow(/has not been trusted/u);
+
+    await trustWorkspaceConfig(home, workspace);
+    await manager.refresh();
+
+    expect(manager.getServerStatuses()).toEqual([expect.objectContaining({ serverName: "docs", state: "connected" })]);
+  });
+
+  test("installing into an untrusted workspace config does not trust the rest of it", async () => {
+    const root = await createTempRoot();
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "aia.config.jsonc"),
+      JSON.stringify({
+        mcp: { servers: { payload: { command: "sh", enabled: true, required: false, tags: [], type: "stdio" } } }
+      }),
+      "utf8"
+    );
+
+    const loaded = await loadAIAgentConfig({
+      cwd: workspace,
+      env: {},
+      userHomeDirectory: home,
+      warnWhenUntrusted: false
+    });
+    const manager = createMcpManagerFromLoadedConfig({
+      cwd: workspace,
+      env: {},
+      loaded,
+      userHomeDirectory: home,
+      watch: false
+    });
+    cleanups.push(() => manager.close());
+    await manager.initialize();
+    await manager.installTemplate({
+      destination: "workspace",
+      overrides: { args: [STDIO_FIXTURE_PATH], command: process.execPath, type: "stdio" },
+      serverName: "installed_docs",
+      templateId: "custom-stdio"
+    });
+
+    await expect(fs.access(path.join(home, ".aia", "trust.json"))).rejects.toThrow();
+    const reloaded = await loadAIAgentConfig({
+      cwd: workspace,
+      env: {},
+      userHomeDirectory: home,
+      warnWhenUntrusted: false
+    });
+    expect(reloaded.workspaceTrust.trusted).toBe(false);
+    expect(reloaded.workspaceTrust.untrustedMcpEntries.map((entry) => entry.name).sort()).toEqual([
+      "installed_docs",
+      "payload"
+    ]);
   });
 
   test("connects to a server defined in the user-global ~/.aia/config.jsonc", async () => {
@@ -696,6 +979,42 @@ describe("MCP manager", () => {
     expect(status?.transport).toBe("stdio");
   });
 
+  test("installTemplate into the user scope writes ~/.aia/config.jsonc when it exists, as aia mcp add does", async () => {
+    const root = await createTempRoot();
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(path.join(home, ".aia", "config.jsonc"), '{ "configVersion": 1 }\n', "utf8");
+    const loaded = await loadAIAgentConfig({ cwd: workspace, env: {}, userHomeDirectory: home });
+    const manager = createMcpManagerFromLoadedConfig({
+      cwd: workspace,
+      env: {},
+      loaded,
+      userHomeDirectory: home,
+      watch: false
+    });
+    cleanups.push(() => manager.close());
+    await manager.initialize();
+
+    const installed = await manager.installTemplate({
+      destination: "user",
+      overrides: { enabled: false },
+      serverName: "docs7",
+      templateId: "context7-remote"
+    });
+
+    // It used to go to ~/.aia/aia.config.jsonc, next to the file in use.
+    expect(installed.configPath).toBe(path.join(home, ".aia", "config.jsonc"));
+    const written = await fs.readFile(installed.configPath, "utf8");
+    expect(written).toContain('"docs7"');
+    expect(written).toContain('"templateId": "context7-remote"');
+    await expect(fs.stat(path.join(home, ".aia", "aia.config.jsonc"))).rejects.toThrow();
+    await expect(manager.installTemplate({ destination: "user", templateId: "nope" })).rejects.toThrow(
+      /No MCP server template "nope"\. Known: .*context7-remote/u
+    );
+  });
+
   test("summarizeServers and the mcp_status tool report connected, failed, and disabled servers with their tools", async () => {
     const config = createDefaultAppConfig({
       userStateDirectory: path.join(await createTempRoot(), "home", ".aia")
@@ -735,7 +1054,16 @@ describe("MCP manager", () => {
     cleanups.push(() => manager.close());
     await manager.initialize();
 
+    // The catalog is listed (and sorted) once for all the servers, not once each.
+    let listed = 0;
+    const getToolCapabilities = manager.getToolCapabilities.bind(manager);
+    manager.getToolCapabilities = () => {
+      listed += 1;
+      return getToolCapabilities();
+    };
     const summaries = Object.fromEntries(manager.summarizeServers().map((server) => [server.serverName, server]));
+    expect(listed).toBe(1);
+    expect(manager.summarizeServers(new Set(["docs"])).map((server) => server.serverName)).toEqual(["docs"]);
     const docsInvocation = sanitizeMcpInvocationName("docs", "docs.lookup");
     expect(summaries.docs?.state).toBe("connected");
     expect(summaries.docs?.tools.map((tool) => tool.invocationName)).toContain(docsInvocation);
@@ -1053,6 +1381,43 @@ function createToolCall(overrides: Partial<Parameters<typeof toolCallRecordSchem
     turnId: "turn.mcp.integration.1",
     ...overrides
   });
+}
+
+/**
+ * A real MCP client and server joined in memory, for a `connectClient` stand-in:
+ * its `whoami` tool answers with `label`, and `onClose` runs when the manager
+ * closes the client.
+ */
+async function connectInMemory(
+  label: string,
+  params: ConnectMcpClientParams,
+  onClose: () => void
+): Promise<McpConnection> {
+  const server = new McpServer({ name: `${label}-fixture`, version: "1.0.0" });
+  server.registerTool("whoami", { description: "Says which connection answered." }, async () => ({
+    content: [{ text: label, type: "text" }]
+  }));
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  const client = new Client({ name: "aia-test", version: "1.0.0" }, { capabilities: { elicitation: {} } });
+  params.configureClient?.(client);
+  await client.connect(clientTransport);
+  const close = client.close.bind(client);
+  client.close = async () => {
+    onClose();
+    await close();
+  };
+  return { client, transport: "stdio" };
+}
+
+async function waitForCondition(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for the condition.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 async function createTempRoot(): Promise<string> {

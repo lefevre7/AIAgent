@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { ToolDefinition } from "@/core/contracts";
+import type { MCPServerSummary, ToolDefinition } from "@/core/contracts";
 import type { MCPManager } from "@/core/mcp/manager";
 import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
 
@@ -13,10 +13,11 @@ const inputSchema = z
 export function createMcpStatusTool(params: { mcpManager: MCPManager }): RuntimeTool {
   return {
     definition: mcpStatusToolDefinition,
-    async execute(call): Promise<RuntimeToolResult> {
+    async execute(call, context): Promise<RuntimeToolResult> {
       const input = inputSchema.parse(call.arguments as unknown);
-      const filter = input.serverNames ? new Set(input.serverNames) : null;
-      const servers = params.mcpManager.summarizeServers().filter((server) => !filter || filter.has(server.serverName));
+      const servers = params.mcpManager
+        .summarizeServers(input.serverNames ? new Set(input.serverNames) : undefined)
+        .map((server) => withCallability(server, context.callableToolNames));
 
       return {
         display: [{ kind: "text", text: renderServers(servers) }],
@@ -26,7 +27,29 @@ export function createMcpStatusTool(params: { mcpManager: MCPManager }): Runtime
   };
 }
 
-function renderServers(servers: ReturnType<MCPManager["summarizeServers"]>): string {
+type ReportedServer = Omit<MCPServerSummary, "tools"> & {
+  /** The tool_search arguments that make this server's other tools callable. */
+  activateWith?: { limit: number; query: string };
+  tools: Array<MCPServerSummary["tools"][number] & { callable?: false }>;
+};
+
+// Under the lean profile an MCP server's tools become callable only once
+// tool_search finds them. Listed as if they were callable, a small model
+// called them, was refused, and asked mcp_status again, in a loop. A tool not
+// callable this turn is marked, with the search that activates the server's.
+function withCallability(server: MCPServerSummary, callable: ReadonlySet<string> | undefined): ReportedServer {
+  const notCallable = callable ? server.tools.filter((tool) => !callable.has(tool.invocationName)) : [];
+  if (notCallable.length === 0) {
+    return server;
+  }
+  return {
+    ...server,
+    activateWith: { limit: Math.min(100, server.tools.length), query: server.serverName },
+    tools: server.tools.map((tool) => (callable!.has(tool.invocationName) ? tool : { ...tool, callable: false }))
+  };
+}
+
+function renderServers(servers: ReportedServer[]): string {
   if (servers.length === 0) {
     return "No MCP servers are configured.";
   }
@@ -34,13 +57,22 @@ function renderServers(servers: ReturnType<MCPManager["summarizeServers"]>): str
     .map((server) => {
       const header = `${server.serverName} [${server.state}, ${server.transport}]`;
       const errorLine = server.error ? `\n  error: ${server.error}` : "";
+      const instructionsLine = server.instructions ? `\n  instructions: ${server.instructions}` : "";
       const toolLines =
         server.tools.length > 0
           ? server.tools
-              .map((tool) => `\n  - ${tool.invocationName}${tool.description ? `: ${tool.description}` : ""}`)
+              .map(
+                (tool) =>
+                  `\n  - ${tool.invocationName}${tool.callable === false ? " (not callable yet)" : ""}${
+                    tool.description ? `: ${tool.description}` : ""
+                  }`
+              )
               .join("")
           : "\n  (no tools exposed)";
-      return `${header}${errorLine}${toolLines}`;
+      const activateLine = server.activateWith
+        ? `\n  To call the tools marked "not callable yet", first call tool_search with ${JSON.stringify(server.activateWith)}.`
+        : "";
+      return `${header}${errorLine}${instructionsLine}${toolLines}${activateLine}`;
     })
     .join("\n");
 }

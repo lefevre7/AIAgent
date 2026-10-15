@@ -48,6 +48,21 @@ describe("parseChannelCommand", () => {
     expect(parseChannelCommand(message("/cancel"))?.kind).toBe("approval");
   });
 
+  test("reads the first word as a request id only when it is an approval id", () => {
+    // Answers to an MCP server's question often contain a dot; they are the
+    // answer, not the id of some request.
+    expect(parseChannelCommand(message("/approve 3.5"))).toMatchObject({ comment: "3.5", requestId: undefined });
+    expect(parseChannelCommand(message("/approve me@example.com"))).toMatchObject({
+      comment: "me@example.com",
+      requestId: undefined
+    });
+    // A model's call id can carry characters like "_" into the approval id.
+    expect(parseChannelCommand(message("/approve approval.call_9f.turn.1.command ok"))).toMatchObject({
+      comment: "ok",
+      requestId: "approval.call_9f.turn.1.command"
+    });
+  });
+
   test("treats a bare /steer as help and a populated one as steering", () => {
     expect(parseChannelCommand(message("/steer"))).toEqual({ kind: "help" });
     expect(parseChannelCommand(message("/steer run the tests first"))).toEqual({

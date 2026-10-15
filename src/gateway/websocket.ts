@@ -15,7 +15,11 @@ import {
   type GatewayAuthorizationResult
 } from "@/gateway/auth";
 import { handleGatewayRequest } from "@/gateway/router";
-import { eventMatchesGatewaySubscription, type GatewayRuntimeLike } from "@/gateway/runtime";
+import {
+  eventMatchesGatewaySubscription,
+  subscriptionShowsApprovals,
+  type GatewayRuntimeLike
+} from "@/gateway/runtime";
 
 const require = createRequire(import.meta.url);
 const { WebSocketServer } = require("ws") as {
@@ -145,16 +149,21 @@ export function bindGatewayWebSocketConnection(
   // cannot clear the gate out from under the newer one.
   let liveGateActive = false;
   let sweepGeneration = 0;
-  const unsubscribe = options.runtime.subscribe((event) => {
-    if (!subscription || !eventMatchesGatewaySubscription(event, subscription) || websocket.readyState !== 1) {
-      return;
-    }
-    if (liveGateActive && event.cursor) {
-      return;
-    }
+  const unsubscribe = options.runtime.subscribe(
+    (event) => {
+      if (!subscription || !eventMatchesGatewaySubscription(event, subscription) || websocket.readyState !== 1) {
+        return;
+      }
+      if (liveGateActive && event.cursor) {
+        return;
+      }
 
-    websocket.send(JSON.stringify(event));
-  });
+      websocket.send(JSON.stringify(event));
+    },
+    {
+      showsApprovals: (sessionId) => websocket.readyState === 1 && subscriptionShowsApprovals(subscription, sessionId)
+    }
+  );
 
   websocket.on("message", (data, isBinary) => {
     if (isBinary) {

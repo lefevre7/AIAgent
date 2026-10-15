@@ -24,7 +24,7 @@ describe("gateway errors", () => {
 
   test("normalizeGatewayError passes through structured errors", () => {
     const structured = createGatewayError("not_found", "missing");
-    expect(normalizeGatewayError(structured)).toBe(structured);
+    expect(normalizeGatewayError(structured)).toEqual(structured);
   });
 
   test("normalizeGatewayError maps zod errors to invalid_request", () => {

@@ -2,33 +2,47 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   AgentLoop,
   ApprovalCoordinator,
   COMPACTION_WATERMARK_METADATA_KEY,
   COMPLETION_SUMMARY_MESSAGE_TAG,
+  CONTEXT_WINDOW_EXCEEDED_ERROR_CODE,
   FileSessionStore,
+  LanguageModelRuntime,
+  ProviderRequestError,
+  createDefaultAppConfig,
   filterModelVisibleMessages,
   type AgentLoopCompletionDecision,
   type AgentLoopModel,
   type AgentLoopStatusMetrics,
   type AgentLoopToolExecutionResult,
+  type AgentLoopToolExecutor,
   type ApprovalRequest,
   type ApprovalResolution,
+  type LanguageModelAdapter,
   type LanguageModelCallOptions,
   type LanguageModelRequest,
   type LanguageModelResponse,
   type Message,
   type SessionRecord,
   type SteeringInjection,
+  type TaskStateSnapshot,
   type ToolCallRecord,
-  type ToolDefinition,
-  type TurnRecord
+  type ToolDefinition
 } from "@/core";
+import { serializeOpenAICompatibleMessages } from "@/core/lm/shared";
 
 const tempRoots: string[] = [];
+
+// Each loop gets an empty home of its own: left to default, it would discover
+// skills from the operator's ~/.aia/skills and ~/.agents/skills.
+let emptyHome = "";
+beforeEach(async () => {
+  emptyHome = await createTempRoot();
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -526,10 +540,7 @@ describe("agent loop", () => {
         ]
       })
     ]);
-    const loop = new AgentLoop({
-      model,
-      sessions: store
-    });
+    const loop = new AgentLoop({ userHomeDirectory: emptyHome, model, sessions: store });
     const steering = buildSteering(session.id);
 
     const paused = await loop.run({
@@ -589,10 +600,7 @@ describe("agent loop", () => {
         ]
       })
     ]);
-    const loop = new AgentLoop({
-      model,
-      sessions: store
-    });
+    const loop = new AgentLoop({ userHomeDirectory: emptyHome, model, sessions: store });
 
     const resumed = await loop.run({
       availableTools: [buildAttemptCompleteTool()],
@@ -735,6 +743,7 @@ describe("agent loop", () => {
   });
 
   test("activates tools discovered through tool_search on the next turn", async () => {
+    const callable = new Map<string, string[]>();
     const browserTool = buildReadFileTool();
     browserTool.invocationName = "browser_open";
     browserTool.name = "browser_open";
@@ -764,6 +773,11 @@ describe("agent loop", () => {
           ]
         }),
         buildModelResponse({
+          messageText: "Opening it.",
+          sessionId: "session.loop.1",
+          toolCalls: [{ arguments: {}, callId: "tool.browser.1", toolName: "browser_open" }]
+        }),
+        buildModelResponse({
           messageText: "Done.",
           sessionId: "session.loop.1",
           toolCalls: [
@@ -780,11 +794,15 @@ describe("agent loop", () => {
           getDefinition: (toolName) => catalog.get(toolName) ?? null
         },
         toolExecutor: {
-          async execute(call): Promise<AgentLoopToolExecutionResult> {
+          async execute(call, context): Promise<AgentLoopToolExecutionResult> {
+            // A tool is told what the model can call this turn (mcp_status
+            // marks the rest).
+            callable.set(call.toolName, [...(context.callableToolNames ?? [])].sort());
             return {
               toolCall: {
                 ...call,
                 completedAt: new Date().toISOString(),
+                metadata: { ...call.metadata, activatesTools: ["browser_open"] },
                 result: {
                   matches: [{ invocationName: "browser_open" }]
                 },
@@ -807,6 +825,8 @@ describe("agent loop", () => {
     const secondRequest = model.requests[1];
     expect(secondRequest?.availableTools.some((tool) => tool.invocationName === "browser_open")).toBe(true);
     expect(model.requests[0]?.availableTools.some((tool) => tool.invocationName === "browser_open")).toBe(false);
+    expect(callable.get("tool_search")).toEqual(["attempt_complete", "tool_search"]);
+    expect(callable.get("browser_open")).toEqual(["attempt_complete", "browser_open", "tool_search"]);
   });
 
   test("compacts the session and stops replaying pre-compaction history once the token threshold is crossed", async () => {
@@ -883,11 +903,437 @@ describe("agent loop", () => {
       sessionId: "session.loop.1",
       trigger: "threshold"
     });
-    // After compaction the original user message must no longer be replayed;
-    // the post-compaction request should start from the compaction watermark.
-    const secondRequest = model.requests[1];
-    expect(secondRequest?.messages.some((message) => message.id === "message.user.loop.1")).toBe(false);
-    expect(secondRequest?.messages.some((message) => message.role === "tool")).toBe(true);
+    // Compaction folds the turn's history into the summary but keeps what the
+    // operator asked: the summary records no requests, and a history that
+    // opens with the assistant's tool call is refused by chat templates such
+    // as Qwen 3.5's ("No user query found in messages."), which is how every
+    // later request in a compacted LM Studio session failed (2026-10-02).
+    const secondRequest = model.requests[1]!;
+    expect(secondRequest.messages.map((message) => message.id)[0]).toBe("message.user.loop.1");
+    expect(secondRequest.messages.some((message) => message.role === "tool")).toBe(true);
+    const wire = await serializeOpenAICompatibleMessages({
+      ...secondRequest,
+      modelId: "qwen3.8-27b-mlx",
+      provider: "lm_studio"
+    });
+    expect(wire.map((message) => message.role)).toEqual(["system", "user", "assistant", "tool"]);
+  });
+
+  // The provider refused a prompt larger than its context window (llama.cpp's
+  // exceed_context_size_error). The loop folds the history before the current
+  // task into the session summary and asks once more, with the task intact.
+  describe("context window overflow", () => {
+    // As the llama.cpp adapter reports one: with the provider's own remedy.
+    const overflow = (remedy: string | null = "Start llama-server with a larger context (-c)") =>
+      new ProviderRequestError({
+        code: CONTEXT_WINDOW_EXCEEDED_ERROR_CODE,
+        details: { contextWindowTokens: 32_768, promptTokens: 40_000, ...(remedy ? { remedy } : {}) },
+        message: "request (40000 tokens) exceeds the available context size (32768 tokens), try increasing it",
+        retriable: false
+      });
+    const readTurn = () =>
+      buildModelResponse({
+        messageText: "Reading the file.",
+        sessionId: "session.loop.1",
+        toolCalls: [{ arguments: { path: "AGENTS.md" }, callId: "tool.read.overflow", toolName: "read_file" }]
+      });
+    const completeTurn = (callId = "tool.complete.overflow") =>
+      buildModelResponse({
+        messageText: "Done.",
+        sessionId: "session.loop.1",
+        toolCalls: [{ arguments: {}, callId, toolName: "attempt_complete" }]
+      });
+    const recordingLifecycle = (calls: Array<{ sourceTokenCount?: number; trigger: string }>) => ({
+      async compactSession(params: { sourceTokenCount?: number; trigger: string }) {
+        calls.push({ sourceTokenCount: params.sourceTokenCount, trigger: params.trigger });
+      },
+      async initializeSessionMemory() {
+        // no-op
+      }
+    });
+    const succeedingReads = {
+      async execute(call: ToolCallRecord): Promise<AgentLoopToolExecutionResult> {
+        return {
+          toolCall: { ...call, completedAt: new Date().toISOString(), result: { content: "huge" }, status: "succeeded" }
+        };
+      }
+    };
+    const secondRequest: Message = {
+      ...buildUserMessage(),
+      createdAt: "2026-03-27T12:05:00.000Z",
+      id: "message.user.loop.2",
+      parts: [{ kind: "text", text: "Now read AGENTS.md." }],
+      turnId: "turn.user.loop.2"
+    };
+    const tools = () => [buildAttemptCompleteTool(), buildReadFileTool()];
+
+    test("folds the history before this task once, and retries with the task intact under a new id", async () => {
+      const compactCalls: Array<{ sourceTokenCount?: number; trigger: string }> = [];
+      const { loop, model } = await createLoop(
+        [completeTurn("tool.complete.first"), readTurn(), overflow(), completeTurn()],
+        { memoryLifecycle: recordingLifecycle(compactCalls), toolExecutor: succeedingReads }
+      );
+      const first = await loop.run({
+        availableTools: tools(),
+        session: buildSession(),
+        userMessages: [buildUserMessage()]
+      });
+      expect(first.stopReason).toBe("completed");
+
+      const result = await loop.run({
+        availableTools: tools(),
+        maxTurns: 4,
+        session: first.session,
+        userMessages: [secondRequest]
+      });
+
+      expect(result.stopReason).toBe("completed");
+      expect(compactCalls).toContainEqual({ sourceTokenCount: 40_000, trigger: "overflow" });
+      const [, , overflowed, retried] = model.requests;
+      // A queue refuses a job id it has seen, so the retry needs its own.
+      expect(retried?.id).toBe(`${overflowed?.id}.overflow-retry`);
+      expect(new Set(model.requests.map((request) => request.id)).size).toBe(model.requests.length);
+      // The earlier task is folded (only what its operator said is kept); this
+      // task, its tool call and the result included, is not.
+      const retriedIds = retried?.messages.map((message) => message.id) ?? [];
+      expect(retriedIds.slice(0, 2)).toEqual(["message.user.loop.1", "message.user.loop.2"]);
+      expect(retried?.messages.map((message) => message.role)).toEqual(["user", "user", "assistant", "tool"]);
+      expect(retriedIds).not.toContain(first.messages.find((message) => message.role === "assistant")?.id);
+    });
+
+    test("reports both sizes and the fix when the prompt still does not fit after compacting", async () => {
+      const compactCalls: Array<{ sourceTokenCount?: number; trigger: string }> = [];
+      const { loop, store } = await createLoop(
+        [completeTurn("tool.complete.first"), readTurn(), overflow(), overflow()],
+        { memoryLifecycle: recordingLifecycle(compactCalls), toolExecutor: succeedingReads }
+      );
+      const first = await loop.run({
+        availableTools: tools(),
+        session: buildSession(),
+        userMessages: [buildUserMessage()]
+      });
+
+      const result = await loop.run({
+        availableTools: tools(),
+        maxTurns: 4,
+        session: first.session,
+        userMessages: [secondRequest]
+      });
+
+      expect(result.stopReason).toBe("failed");
+      expect(compactCalls.filter((call) => call.trigger === "overflow")).toHaveLength(1);
+      const lastError = (await store.getSessionSnapshot("session.loop.1"))?.session.lastError;
+      expect(lastError?.code).toBe(CONTEXT_WINDOW_EXCEEDED_ERROR_CODE);
+      expect(lastError?.message).toContain(
+        "The prompt (40000 tokens) is larger than the model's context window (32768 tokens), even after compacting the session."
+      );
+      // The failing provider's remedy, not every provider's settings.
+      expect(lastError?.message).toContain("Start llama-server with a larger context (-c), or start a new session.");
+      expect(lastError?.message).not.toContain("LM Studio");
+    });
+
+    test("does not fold the task's own work: with nothing before it, it fails at once and says why", async () => {
+      // One run: its own tool result is what overflows. Folding it would hand
+      // the model its request and nothing it had done; no output cap trims it.
+      const compactCalls: Array<{ sourceTokenCount?: number; trigger: string }> = [];
+      // A provider an SDK host registered gives no remedy: the advice is generic.
+      const { loop, model, store } = await createLoop([readTurn(), overflow(null)], {
+        memoryLifecycle: recordingLifecycle(compactCalls),
+        toolExecutor: succeedingReads
+      });
+
+      const result = await loop.run({
+        availableTools: tools(),
+        maxTurns: 4,
+        session: buildSession(),
+        userMessages: [buildUserMessage()]
+      });
+
+      expect(result.stopReason).toBe("failed");
+      expect(compactCalls).toEqual([]);
+      expect(model.requests).toHaveLength(2);
+      const lastError = (await store.getSessionSnapshot("session.loop.1"))?.session.lastError;
+      expect(lastError?.message).toContain(
+        "(32768 tokens), and nothing from before this task is left to fold: the task's own messages and tool results do not fit."
+      );
+      expect(lastError?.message).toContain("a line range, a narrower search");
+      expect(lastError?.message).toContain("Load the model with a larger context window, or ask for less");
+    });
+
+    test("tells the host the window the refusal named, so later compaction uses it", async () => {
+      const learned: Array<{ contextWindowTokens?: number; promptTokens?: number }> = [];
+      const root = await createTempRoot();
+      const store = new FileSessionStore(path.join(root, ".aia"));
+      await store.saveSession(buildSession());
+      const loop = new AgentLoop({
+        userHomeDirectory: emptyHome,
+        model: new FakeModel([overflow()]),
+        onContextWindowExceeded: (details) => learned.push(details),
+        sessions: store
+      });
+
+      await loop.run({ availableTools: tools(), session: buildSession(), userMessages: [buildUserMessage()] });
+
+      expect(learned).toEqual([{ contextWindowTokens: 32_768, promptTokens: 40_000 }]);
+    });
+
+    test("retries through the real file-backed model queue", async () => {
+      const root = await createTempRoot();
+      const config = createDefaultAppConfig({ userStateDirectory: path.join(root, "home", ".aia") });
+      config.memory.stateRoot = path.join(root, ".aia");
+      const scripted: Array<Error | LanguageModelResponse> = [
+        completeTurn("tool.complete.first"),
+        overflow(),
+        completeTurn()
+      ];
+      const seenIds: string[] = [];
+      const adapter: LanguageModelAdapter = {
+        async generate(request) {
+          seenIds.push(request.id);
+          const next = scripted.shift();
+          if (!next || next instanceof Error) {
+            throw next ?? new Error("Unexpected model turn.");
+          }
+          return { ...next, modelId: request.modelId, provider: request.provider };
+        },
+        async health() {
+          return { checkedAt: new Date().toISOString(), details: {}, providerId: "lm_studio", status: "healthy" };
+        },
+        async listModels() {
+          return [];
+        },
+        provider: "lm_studio",
+        providerId: "lm_studio"
+      };
+      const runtime = new LanguageModelRuntime({ adapters: [{ adapter }], config });
+      const store = new FileSessionStore(path.join(root, "sessions"));
+      await store.saveSession(buildSession());
+      const compactCalls: Array<{ sourceTokenCount?: number; trigger: string }> = [];
+      const loop = new AgentLoop({
+        userHomeDirectory: emptyHome,
+        memoryLifecycle: recordingLifecycle(compactCalls),
+        model: runtime,
+        sessions: store
+      });
+      try {
+        const first = await loop.run({
+          availableTools: tools(),
+          session: buildSession(),
+          userMessages: [buildUserMessage()]
+        });
+        const result = await loop.run({
+          availableTools: tools(),
+          session: first.session,
+          userMessages: [secondRequest]
+        });
+
+        // The queue used to refuse the retry: 'Language model queue job "…" already exists.'
+        expect(result.stopReason).toBe("completed");
+        expect(seenIds[2]).toBe(`${seenIds[1]}.overflow-retry`);
+      } finally {
+        await runtime.close();
+      }
+    });
+  });
+
+  // The session summary records tool calls and narration, never the requests,
+  // so what people said is the one part of the folded history that is kept.
+  describe("compaction keeps the conversation's own messages", () => {
+    const message = (id: string, overrides: Partial<Message> = {}): Message => ({
+      createdAt: "2026-10-02T15:00:00.000Z",
+      id,
+      metadata: {},
+      parts: [{ kind: "text", text: id }],
+      role: "user",
+      sessionId: "session.loop.1",
+      source: "user",
+      tags: [],
+      visibility: "default",
+      ...overrides
+    });
+    const compactedThrough = (messageId: string): SessionRecord => ({
+      ...buildSession(),
+      metadata: { [COMPACTION_WATERMARK_METADATA_KEY]: messageId }
+    });
+    const textOf = (entry: Message | undefined) =>
+      (entry?.parts ?? []).map((part) => (part.kind === "text" ? part.text : "")).join("");
+
+    test("keeps operator, steering, and channel messages newest first within Codex's budget", () => {
+      const history = [
+        message("message.oldest"),
+        message("message.long", { parts: [{ kind: "text", text: "A".repeat(50_000) }] }),
+        message("message.reply", { role: "assistant", source: "assistant" }),
+        message("message.skill", { source: "system", tags: ["skill"], visibility: "compact" }),
+        message("message.channel", { parts: [{ kind: "text", text: "B".repeat(70_000) }], source: "channel" }),
+        message("message.screenshot", {
+          parts: [
+            { kind: "text", text: "Look at this screenshot:" },
+            { kind: "image", uri: "file:///tmp/shot.png" }
+          ]
+        }),
+        message("message.steering", {
+          parts: [{ kind: "text", text: "Also update the docs." }],
+          source: "operator",
+          tags: ["steering"]
+        }),
+        message("message.status", {
+          parts: [{ kind: "status", state: "idle", summary: "Turn 1" }],
+          role: "status",
+          source: "system",
+          visibility: "hidden"
+        }),
+        message("message.tool-call", {
+          parts: [{ arguments: {}, callId: "call.1", kind: "tool_call", toolName: "read_file" }],
+          role: "assistant",
+          source: "assistant"
+        }),
+        message("message.tool-result", { metadata: { toolCallId: "call.1" }, role: "tool", source: "tool_runtime" })
+      ];
+
+      const visible = filterModelVisibleMessages(history, compactedThrough("message.status"));
+
+      // The skill's instructions are restated by the prompt instead, and the
+      // assistant's reply was folded into the summary.
+      expect(visible.map((entry) => entry.id)).toEqual([
+        "message.long",
+        "message.channel",
+        "message.screenshot",
+        "message.steering",
+        "message.tool-call",
+        "message.tool-result"
+      ]);
+      // 80,000 characters: the newest three take 70,045, so the 50,000-character
+      // message keeps 9,955 of its own (start and end) and the older one is dropped.
+      const long = textOf(visible[0]);
+      expect(
+        long.startsWith(
+          `${"A".repeat(4_978)}\n\n[40,045 characters of this message were dropped when the session was compacted]\n\nA`
+        )
+      ).toBe(true);
+      expect(long.replace(/[^A]/gu, "")).toHaveLength(9_955);
+      // Text only: an image in a folded message is not replayed.
+      expect(visible[2]?.parts).toEqual([{ kind: "text", text: "Look at this screenshot:" }]);
+      // A text message that fits whole is replayed as stored.
+      expect(visible[3]).toBe(history[6]);
+    });
+
+    test("changes nothing for a session that has never been compacted", () => {
+      const history = [message("message.user"), message("message.reply", { role: "assistant", source: "assistant" })];
+      expect(filterModelVisibleMessages(history, buildSession())).toEqual(history);
+    });
+  });
+
+  // A local server reuses what it has already read of a prompt only up to the
+  // first change, and the whole conversation follows the system prompt. A plan
+  // update between two runs once made LM Studio re-read 80k tokens: 13 minutes,
+  // past the first-token budget (2026-10-02).
+  describe("the system prompt between runs", () => {
+    const taskStateWith = (completed: number, nextStep: string): TaskStateSnapshot => ({
+      blockers: [],
+      nextStep: {
+        createdAt: "2026-10-02T23:50:00.000Z",
+        id: `note.next.${completed}`,
+        kind: "next_step",
+        metadata: {},
+        priority: "high",
+        sessionId: "session.loop.1",
+        text: nextStep
+      },
+      plan: null,
+      progress: { blocked: 0, cancelled: 0, completed, inProgress: 1, pending: 5 - completed, total: 6 },
+      recentAttempts: [],
+      sessionId: "session.loop.1",
+      summary: "Add the search MCP server",
+      updatedAt: "2026-10-02T23:50:00.000Z",
+      workingMemory: []
+    });
+    const completeTurn = (callId: string) =>
+      buildModelResponse({
+        sessionId: "session.loop.1",
+        toolCalls: [{ arguments: { summary: "done" }, callId, toolName: "attempt_complete" }]
+      });
+    const followUp = (): Message => ({
+      ...buildUserMessage(),
+      id: "message.user.loop.2",
+      parts: [{ kind: "text", text: "Carry on." }]
+    });
+
+    test("stays the same while the plan changes, before anything is folded", async () => {
+      let state = taskStateWith(0, "Read the docs");
+      const { loop, model } = await createLoop([completeTurn("tool.complete.a"), completeTurn("tool.complete.b")], {
+        taskStateProvider: { getTaskState: async () => state }
+      });
+
+      const first = await loop.run({
+        availableTools: [buildAttemptCompleteTool()],
+        session: buildSession(),
+        userMessages: [buildUserMessage()]
+      });
+      state = taskStateWith(1, "Write the config");
+      await loop.run({
+        availableTools: [buildAttemptCompleteTool()],
+        session: first.session,
+        userMessages: [followUp()]
+      });
+
+      expect(model.requests[1]?.instructions).toBe(model.requests[0]?.instructions);
+      // The model sees its plan through its own plan-tool calls until a fold.
+      expect(model.requests[0]?.instructions).not.toContain("Task State");
+    });
+
+    test("shows the task state as of the last fold, and keeps it until the next one", async () => {
+      let state = taskStateWith(1, "Write the config");
+      const readTurn = buildModelResponse({
+        messageText: "Reading the file.",
+        sessionId: "session.loop.1",
+        toolCalls: [{ arguments: { path: "AGENTS.md" }, callId: "tool.read.fold", toolName: "read_file" }]
+      });
+      readTurn.usage = { inputTokens: 5_000, outputTokens: 10, totalTokens: 5_010 };
+      const { loop, model } = await createLoop(
+        [readTurn, completeTurn("tool.complete.fold"), completeTurn("tool.complete.later")],
+        {
+          autoCompactThresholdTokens: 1_000,
+          memoryLifecycle: {
+            async compactSession() {
+              // no-op
+            },
+            async initializeSessionMemory() {
+              // no-op
+            }
+          },
+          taskStateProvider: { getTaskState: async () => state },
+          toolExecutor: {
+            async execute(call): Promise<AgentLoopToolExecutionResult> {
+              return {
+                toolCall: {
+                  ...call,
+                  completedAt: new Date().toISOString(),
+                  result: { content: "x" },
+                  status: "succeeded"
+                }
+              };
+            }
+          }
+        }
+      );
+
+      const first = await loop.run({
+        availableTools: [buildAttemptCompleteTool(), buildReadFileTool()],
+        session: buildSession(),
+        userMessages: [buildUserMessage()]
+      });
+      // Folded after the read: the next request shows the plan as of the fold.
+      expect(model.requests[1]?.instructions).toContain("Progress: 1/6 completed");
+      expect(model.requests[1]?.instructions).toContain("Next step: Write the config");
+
+      state = taskStateWith(2, "Test the connection");
+      await loop.run({
+        availableTools: [buildAttemptCompleteTool(), buildReadFileTool()],
+        session: first.session,
+        userMessages: [followUp()]
+      });
+      expect(model.requests[2]?.instructions).toBe(model.requests[1]?.instructions);
+    });
   });
 
   test("persists a failed session when the model throws an unexpected error", async () => {
@@ -1166,6 +1612,7 @@ describe("agent loop", () => {
 
     const metricsSeen: AgentLoopStatusMetrics[] = [];
     const loop = new AgentLoop({
+      userHomeDirectory: emptyHome,
       contextWindowTokens: 100,
       model: new FakeModel([
         buildModelResponse({
@@ -1211,6 +1658,7 @@ describe("agent loop", () => {
 
     const metricsSeen: AgentLoopStatusMetrics[] = [];
     const loop = new AgentLoop({
+      userHomeDirectory: emptyHome,
       model: new FakeModel([
         buildModelResponse({
           messageText: "Done.",
@@ -1253,6 +1701,7 @@ describe("agent loop", () => {
 
     const metricsSeen: AgentLoopStatusMetrics[] = [];
     const loop = new AgentLoop({
+      userHomeDirectory: emptyHome,
       model: new FakeModel([
         buildModelResponse({
           messageText: "Reading first.",
@@ -1351,7 +1800,7 @@ describe("agent loop run control", () => {
         controller.abort();
       });
     });
-    const loop = new AgentLoop({ model, sessions: store });
+    const loop = new AgentLoop({ userHomeDirectory: emptyHome, model, sessions: store });
 
     const result = await loop.run({
       availableTools: [buildAttemptCompleteTool()],
@@ -1436,6 +1885,7 @@ describe("agent loop run control", () => {
           })
     );
     const loop = new AgentLoop({
+      userHomeDirectory: emptyHome,
       model,
       sessions: store,
       toolExecutor: {
@@ -1484,7 +1934,7 @@ describe("agent loop run control", () => {
         toolCalls: [{ arguments: {}, callId: `tool.complete.${index}`, toolName: "attempt_complete" }]
       });
     });
-    const loop = new AgentLoop({ model, sessions: store });
+    const loop = new AgentLoop({ userHomeDirectory: emptyHome, model, sessions: store });
 
     const result = await loop.run({
       availableTools: [buildAttemptCompleteTool()],
@@ -1522,7 +1972,7 @@ class ScriptedModel implements AgentLoopModel {
 }
 
 async function createLoop(
-  responses: LanguageModelResponse[],
+  responses: Array<Error | LanguageModelResponse>,
   overrides: {
     autoCompactThresholdTokens?: number;
     completionGate?: (params: {
@@ -1533,21 +1983,17 @@ async function createLoop(
     memoryLifecycle?: {
       compactSession(params: {
         sessionId: string;
-        trigger: "completion" | "threshold";
+        trigger: "completion" | "overflow" | "threshold";
         sourceTokenCount?: number;
         threshold?: number;
       }): Promise<void>;
       initializeSessionMemory(session: SessionRecord): Promise<void>;
     };
+    taskStateProvider?: { getTaskState(sessionId: string): Promise<TaskStateSnapshot | null> };
     toolCatalog?: {
       getDefinition(toolName: string): ToolDefinition | null;
     };
-    toolExecutor?: {
-      execute(
-        call: ToolCallRecord,
-        context: { session: SessionRecord; turn: TurnRecord }
-      ): Promise<AgentLoopToolExecutionResult>;
-    };
+    toolExecutor?: AgentLoopToolExecutor;
   } = {}
 ) {
   const root = await createTempRoot();
@@ -1558,11 +2004,13 @@ async function createLoop(
 
   return {
     loop: new AgentLoop({
+      userHomeDirectory: emptyHome,
       autoCompactThresholdTokens: overrides.autoCompactThresholdTokens,
       completionGate: overrides.completionGate,
       memoryLifecycle: overrides.memoryLifecycle,
       model,
       sessions: store,
+      taskStateProvider: overrides.taskStateProvider,
       toolCatalog: overrides.toolCatalog,
       toolExecutor: overrides.toolExecutor
     }),
@@ -1587,7 +2035,8 @@ class FakeModel implements AgentLoopModel {
   > = [];
   private index = 0;
 
-  constructor(private readonly responses: LanguageModelResponse[]) {}
+  // An Error entry is thrown for that call, as a provider failure would be.
+  constructor(private readonly responses: Array<Error | LanguageModelResponse>) {}
 
   async generate(
     request: Omit<LanguageModelRequest, "modelId" | "provider"> & {
@@ -1601,6 +2050,9 @@ class FakeModel implements AgentLoopModel {
       throw new Error(`Unexpected model turn ${this.index + 1}.`);
     }
     this.index += 1;
+    if (response instanceof Error) {
+      throw response;
+    }
     return response;
   }
 }

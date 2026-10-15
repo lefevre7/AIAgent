@@ -26,6 +26,19 @@ export const approvalPolicyModeSchema = z.enum(["allow", "ask", "deny"]);
 export const steeringStateSchema = z.enum(["applied", "discarded", "queued"]);
 export const steeringSourceSchema = z.enum(["channel", "operator", "sdk", "system", "user"]);
 
+/**
+ * One thing an approval is weighed on (a command line, a path, an MCP server
+ * a call reaches, the external agent it starts): the approval policy's rules
+ * match on these, and a request names the one that decided.
+ */
+export const approvalTargetSchema = z
+  .object({
+    kind: approvalTargetKindSchema,
+    label: z.string().min(1).max(512),
+    value: z.string().min(1)
+  })
+  .strict();
+
 export const approvalRequestSchema = z
   .object({
     createdAt: isoTimestampSchema,
@@ -35,13 +48,7 @@ export const approvalRequestSchema = z
     riskSummary: z.string().min(1),
     sessionId: entityIdSchema,
     status: approvalStatusSchema,
-    target: z
-      .object({
-        kind: approvalTargetKindSchema,
-        label: z.string().min(1).max(512),
-        value: z.string().min(1)
-      })
-      .strict(),
+    target: approvalTargetSchema,
     toolCallId: entityIdSchema.optional(),
     turnId: entityIdSchema
   })
@@ -62,7 +69,7 @@ export function readApprovalTargets(
   const recorded = request.metadata?.[APPROVAL_TARGETS_METADATA_KEY];
   const targets = Array.isArray(recorded)
     ? recorded.flatMap((entry) => {
-        const parsed = approvalRequestSchema.shape.target.safeParse(entry);
+        const parsed = approvalTargetSchema.safeParse(entry);
         return parsed.success ? [parsed.data] : [];
       })
     : [];
@@ -158,6 +165,7 @@ export type ApprovalRequest = z.infer<typeof approvalRequestSchema>;
 export type ApprovalResolution = z.infer<typeof approvalResolutionSchema>;
 export type ApprovalStatus = z.infer<typeof approvalStatusSchema>;
 export type ApprovalTargetKind = z.infer<typeof approvalTargetKindSchema>;
+export type ApprovalTarget = z.infer<typeof approvalTargetSchema>;
 export type SteeringInjection = z.infer<typeof steeringInjectionSchema>;
 export type SteeringSource = z.infer<typeof steeringSourceSchema>;
 export type SteeringState = z.infer<typeof steeringStateSchema>;

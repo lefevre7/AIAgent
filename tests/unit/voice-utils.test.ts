@@ -125,7 +125,7 @@ describe("voice utils", () => {
 
   test("normalizeVoiceError handles structured errors, Errors, and primitives", () => {
     const structured = createVoiceError("voice_existing", "already structured");
-    expect(normalizeVoiceError(structured)).toBe(structured);
+    expect(normalizeVoiceError(structured)).toEqual(structured);
     expect(normalizeVoiceError(new Error("native crash"))).toMatchObject({
       code: "voice_operation_failed",
       message: "native crash"

@@ -14,7 +14,11 @@ import {
   type ExternalAgentSessionTurn,
   type ToolDefinition
 } from "@/core/contracts";
-import { buildExternalAgentArtifacts, readExternalAgentJobOutput } from "@/core/external-agents";
+import {
+  buildExternalAgentArtifacts,
+  readExternalAgentJobOutput,
+  resolveExternalAgentApprovalTargets
+} from "@/core/external-agents";
 import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
 
 const timeoutMsSchema = z.number().int().positive().max(3_600_000).optional();
@@ -140,6 +144,12 @@ export function createExternalAgentTool(params: {
 }): RuntimeTool {
   return {
     definition: externalAgentToolDefinition,
+    // Approved as itself, and as the agent it starts and the command line
+    // that runs (see resolveExternalAgentApprovalTargets).
+    resolveApprovalScope: async (call) => ({
+      approvalMode: externalAgentToolDefinition.approvalMode,
+      targets: await resolveExternalAgentApprovalTargets(params.externalAgentService, call)
+    }),
     async execute(call, context): Promise<RuntimeToolResult> {
       const input = externalAgentInputSchema.parse(call.arguments as unknown);
 

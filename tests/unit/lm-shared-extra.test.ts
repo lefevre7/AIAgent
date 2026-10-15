@@ -103,6 +103,23 @@ describe("lm shared transforms", () => {
     expect(jsonDef.function.description).toContain("Purpose:");
   });
 
+  test("a tool schema's own additionalProperties is kept, and a schema that says nothing gets false", () => {
+    const open: ToolDefinition = {
+      ...thinkToolDefinition,
+      inputSchema: { additionalProperties: true, properties: {}, type: "object" }
+    };
+    const described: ToolDefinition = {
+      ...thinkToolDefinition,
+      inputSchema: { additionalProperties: { type: "string" }, properties: {}, type: "object" }
+    };
+    const silent: ToolDefinition = { ...thinkToolDefinition, inputSchema: { properties: {}, type: "object" } };
+
+    const [openDef, describedDef, silentDef] = serializeToolDefinitions([open, described, silent]);
+    expect(openDef.function.parameters.additionalProperties).toBe(true);
+    expect(describedDef.function.parameters.additionalProperties).toEqual({ type: "string" });
+    expect(silentDef.function.parameters.additionalProperties).toBe(false);
+  });
+
   test("response-format serializers cover every format kind", () => {
     expect(serializeOpenAICompatibleResponseFormat({ kind: "text" })).toBeUndefined();
     expect(serializeOpenAICompatibleResponseFormat({ kind: "json_object" })).toEqual({ type: "json_object" });

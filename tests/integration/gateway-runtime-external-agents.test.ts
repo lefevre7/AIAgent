@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
+  MCPManager,
   FileExternalAgentService,
   FileSessionStore,
   createDefaultAppConfig,
@@ -43,7 +44,7 @@ async function buildRuntime(options: { withExternalAgents: boolean }) {
     approvals: { configVersion: 1, defaultMode: "allow", rules: [] },
     config,
     externalAgentService,
-    mcpManager: { close: async () => undefined },
+    mcpManager: new MCPManager({ config, watch: false }),
     memoryService: {
       compactSession: async () => undefined,
       getPromptContext: async () => null,
@@ -137,7 +138,7 @@ describe("gateway external-agent dispatch", () => {
         stopSession: async () => ({}) as never,
         writeHumanInput: async () => undefined
       },
-      mcpManager: { close: async () => undefined },
+      mcpManager: new MCPManager({ config, watch: false }),
       memoryService: {
         compactSession: async () => undefined,
         getPromptContext: async () => null,

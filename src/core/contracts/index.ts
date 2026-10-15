@@ -11,6 +11,7 @@ export * from "@/core/contracts/messages";
 export * from "@/core/contracts/plans";
 export * from "@/core/contracts/providers";
 export * from "@/core/contracts/sessions";
+export * from "@/core/contracts/skills";
 export * from "@/core/contracts/tools";
 export * from "@/core/contracts/tunnel";
 export * from "@/core/contracts/voice";

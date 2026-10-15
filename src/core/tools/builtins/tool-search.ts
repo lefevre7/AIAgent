@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { ToolSearchQuery } from "@/core/contracts";
-import { toolSearchQuerySchema, type ToolDefinition } from "@/core/contracts";
+import { ACTIVATES_TOOLS_METADATA_KEY, toolSearchQuerySchema, type ToolDefinition } from "@/core/contracts";
 import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
 
 const inputSchema = toolSearchQuerySchema.extend({
@@ -13,13 +13,23 @@ export function createToolSearchTool(): RuntimeTool {
     definition: toolSearchToolDefinition,
     async execute(call, context): Promise<RuntimeToolResult> {
       const query = inputSchema.parse(call.arguments as unknown) as ToolSearchQuery;
-      const matches = context.registry
-        .searchDefinitions(query)
-        .map((match) => serializeMatch(match.definition, match.matchedOn, match.score));
+      const found = context.registry.searchDefinitions(query);
+      // Each matched MCP server's own usage notes, once per server rather than
+      // repeated on every one of its tools.
+      const serverInstructions = Object.fromEntries(
+        [...new Set(found.flatMap((match) => match.definition.source.serverName ?? []))].flatMap((serverName) => {
+          const instructions = context.registry.getServerInstructions?.(serverName);
+          return instructions ? [[serverName, instructions]] : [];
+        })
+      );
 
       return {
+        // The tools it found become callable for the rest of the session
+        // (the agent loop reads this, whatever the tool is called).
+        metadata: { [ACTIVATES_TOOLS_METADATA_KEY]: found.map((match) => match.definition.invocationName) },
         result: {
-          matches
+          matches: found.map((match) => serializeMatch(match.definition, match.matchedOn, match.score)),
+          ...(Object.keys(serverInstructions).length > 0 ? { serverInstructions } : {})
         }
       };
     }
@@ -119,6 +129,11 @@ export const toolSearchToolDefinition: ToolDefinition = {
   outputSchema: {
     additionalProperties: false,
     properties: {
+      serverInstructions: {
+        additionalProperties: { type: "string" },
+        description: "Usage notes from the MCP servers of the matched tools, by server name.",
+        type: "object"
+      },
       matches: {
         items: {
           additionalProperties: false,

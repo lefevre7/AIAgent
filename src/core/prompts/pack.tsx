@@ -1,21 +1,47 @@
+import { readFileSync } from "node:fs";
+
 import React from "react";
 
 import type { TaskStateSnapshot, ToolDefinition } from "@/core/contracts";
 import type { MemoryPromptContext } from "@/core/memory";
-import type { DiscoveredSkill } from "@/core/skills";
-import { discoverSkills } from "@/core/skills";
+import {
+  DEFAULT_SKILLS_SETTINGS,
+  findSkills,
+  loadSkillContent,
+  renderSkillCatalog,
+  resolveSkillCatalogBudgetChars,
+  selectModelVisibleSkills,
+  toDiscoveredSkill,
+  type DiscoveredSkill,
+  type SkillDiscovery,
+  type SkillRecord,
+  type SkillsSettings
+} from "@/core/skills";
 import { loadAgentsInstructionDocuments, type AgentsInstructionDocument } from "@/core/prompts/agents-documents";
 import { renderPrompt } from "@/core/prompts/render";
+import { sliceUtf16 } from "@/core/text/strings";
+
+export type PromptPackSkill = SkillRecord & DiscoveredSkill;
 
 export type PromptPack = {
   agentsDocuments: {
     project: AgentsInstructionDocument[];
     user: AgentsInstructionDocument | null;
   };
-  availableSkills: DiscoveredSkill[];
+  /**
+   * The skills in the catalog: enabled, and not reserved for `$name`
+   * mentions. Each also carries the fields the earlier `DiscoveredSkill` had
+   * (deprecated): `skillDirectory`, `skillFilePath`, `source`, and `content`,
+   * the whole SKILL.md, read when it is asked for.
+   */
+  availableSkills: PromptPackSkill[];
+  /** How the catalog fit its budget: skills left out, and descriptions shortened. */
+  skillCatalog: { omitted: number; trimmed: number };
   nudges: {
     completionBlocked: string;
     noProgress: string;
+    /** After turns whose every tool call the runtime refused as a repeat. */
+    repeatedCalls: string;
     statusUpdate: string;
     steeringResume: string;
     taskContinuation: string;
@@ -24,41 +50,86 @@ export type PromptPack = {
 };
 
 export async function buildPromptPack(params: {
+  /**
+   * Skills loaded earlier in the session whose instructions compaction has
+   * since folded out of the replayed transcript. They are restated in full in
+   * an "Active Skills" section so compaction never silently unloads a skill.
+   */
+  activeSkills?: SkillRecord[];
+  /** All of `activeSkills` together; past it a skill is cut, or named with its SKILL.md to read. */
+  activeSkillsCharBudget?: number;
   availableTools?: ToolDefinition[];
+  /** Sizes the skill catalog's budget when `skillSettings.maxCatalogChars` is unset. */
+  contextWindowTokens?: number;
   cwd: string;
+  /** @deprecated Set `skillSettings.extraRoots`, or pass the run's `skills`. */
   extraSkillRoots?: string[];
   instructionDocCharBudget?: number;
   memorySummaryCharBudget?: number;
   projectRootMarkers?: string[];
+  /** Skills already found for `cwd` (the agent loop's, so its catalog and `skill` tool agree); discovered here when omitted. */
+  skills?: SkillDiscovery;
+  skillSettings?: SkillsSettings;
   taskSummary?: string;
   taskState?: TaskStateSnapshot | null;
   memoryContext?: MemoryPromptContext | null;
   userHomeDirectory?: string;
 }): Promise<PromptPack> {
-  const [agentsDocuments, availableSkills] = await Promise.all([
+  const [agentsDocuments, discovery] = await Promise.all([
     loadAgentsInstructionDocuments({
       cwd: params.cwd,
       projectRootMarkers: params.projectRootMarkers,
       userHomeDirectory: params.userHomeDirectory
     }),
-    discoverSkills({
-      cwd: params.cwd,
-      extraRoots: params.extraSkillRoots,
-      projectRootMarkers: params.projectRootMarkers,
-      userHomeDirectory: params.userHomeDirectory
-    })
+    // A host that found the skills (the agent loop) passes them; otherwise
+    // they are found here, the same way.
+    params.skills ??
+      findSkills({
+        cwd: params.cwd,
+        projectRootMarkers: params.projectRootMarkers,
+        ...(params.skillSettings || params.extraSkillRoots
+          ? {
+              settings: {
+                ...(params.skillSettings ?? DEFAULT_SKILLS_SETTINGS),
+                ...(params.extraSkillRoots ? { extraRoots: params.extraSkillRoots } : {})
+              }
+            }
+          : {}),
+        userHomeDirectory: params.userHomeDirectory
+      })
   ]);
 
   const skillToolAvailable = (params.availableTools ?? []).some((tool) => tool.name === "skill");
+  // Pointers to a file say "with read_file" only when the model has it.
+  const readFileAvailable = (params.availableTools ?? []).some((tool) => tool.name === "read_file");
   const toolSearchAvailable = (params.availableTools ?? []).some((tool) => tool.name === "tool_search");
   const mcpStatusAvailable = (params.availableTools ?? []).some((tool) => tool.name === "mcp_status");
+  const availableSkills = selectModelVisibleSkills(discovery.skills);
+  const catalog = renderSkillCatalog(availableSkills, {
+    budgetChars: resolveSkillCatalogBudgetChars({
+      configured: params.skillSettings?.maxCatalogChars,
+      contextWindowTokens: params.contextWindowTokens
+    })
+  });
+  const activeSkillContents = fitActiveSkills(
+    await Promise.all(
+      (params.activeSkills ?? []).map(async (skill) => ({
+        content: await loadSkillContent(skill),
+        skill
+      }))
+    ),
+    params.activeSkillsCharBudget,
+    readFileAvailable
+  );
   const prompt = renderPrompt(
     <SystemPromptTemplate
+      activeSkillContents={activeSkillContents}
       agentsDocuments={agentsDocuments}
-      availableSkills={availableSkills}
       instructionDocCharBudget={params.instructionDocCharBudget}
       mcpStatusAvailable={mcpStatusAvailable}
       memorySummaryCharBudget={params.memorySummaryCharBudget}
+      readFileAvailable={readFileAvailable}
+      skillCatalog={catalog.text}
       skillToolAvailable={skillToolAvailable}
       taskSummary={params.taskSummary}
       taskState={params.taskState}
@@ -69,12 +140,15 @@ export async function buildPromptPack(params: {
 
   return {
     agentsDocuments,
-    availableSkills,
+    availableSkills: availableSkills.map(withDiscoveredSkillFields),
+    skillCatalog: { omitted: catalog.omitted, trimmed: catalog.trimmed },
     nudges: {
       completionBlocked:
         "Your `attempt_complete` request was rejected because required work is still unresolved. Read the rejection reasons carefully, fix the remaining issues, then provide a brief update and call `attempt_complete` again only when the task is truly done.",
       noProgress:
         "You have spent consecutive turns only thinking or revising the plan without taking a concrete action. Stop planning now: either call an action tool that makes real progress on the task, or call `attempt_complete` if the task is already done. Do not call `think` or `update_plan` again until you have taken a real action.",
+      repeatedCalls:
+        "Your last tool calls repeated earlier calls with exactly the same arguments, and the runtime refused them. Their results are already in the conversation above: use them. Call a different tool, change the arguments, or call `attempt_complete` if the task is done.",
       statusUpdate:
         "Before your next major action, restate the current goal, what you tried most recently, what changed, and the next concrete step. Keep it short and action-oriented.",
       steeringResume:
@@ -87,14 +161,16 @@ export async function buildPromptPack(params: {
 }
 
 function SystemPromptTemplate(props: {
+  activeSkillContents: string[];
   agentsDocuments: {
     project: AgentsInstructionDocument[];
     user: AgentsInstructionDocument | null;
   };
-  availableSkills: DiscoveredSkill[];
   instructionDocCharBudget?: number;
   mcpStatusAvailable: boolean;
   memorySummaryCharBudget?: number;
+  readFileAvailable: boolean;
+  skillCatalog: string;
   skillToolAvailable: boolean;
   taskSummary?: string;
   taskState?: TaskStateSnapshot | null;
@@ -184,6 +260,34 @@ function SystemPromptTemplate(props: {
         </p>
       </section>
 
+      {/* Before the task and memory sections, which change when history is
+          folded (the loop renders them as of the last fold, so they stay put
+          between runs), so the catalog stays inside the prompt prefix a local
+          server can reuse. */}
+      {props.skillCatalog ? (
+        <section>
+          <h2>Available Skills</h2>
+          <p>Skills are instructions for particular kinds of task, loaded only when a task needs them.</p>
+          <ul>
+            <li>
+              When a task matches a skill&apos;s description,{" "}
+              {props.skillToolAvailable
+                ? "load it with the `skill` tool before acting, then follow its instructions."
+                : props.readFileAvailable
+                  ? "read its SKILL.md at the listed location with `read_file` before acting, then follow its instructions."
+                  : "read its SKILL.md at the listed location before acting, then follow its instructions."}
+            </li>
+            <li>A skill the operator names as `$name` is loaded for you; follow it.</li>
+            <li>Load only the skills the task needs. A loaded skill stays loaded for the whole session.</li>
+            <li>
+              Files a skill mentions (scripts/, references/, assets/) are in its skill directory; open them only when
+              its instructions call for them.
+            </li>
+          </ul>
+          <pre>{props.skillCatalog}</pre>
+        </section>
+      ) : null}
+
       {props.taskSummary ? (
         <section>
           <h2>Current Task</h2>
@@ -229,7 +333,8 @@ function SystemPromptTemplate(props: {
               {truncateForPrompt(
                 props.memoryContext.workspaceSummary,
                 props.memorySummaryCharBudget,
-                "the workspace memory files"
+                "the workspace memory files",
+                props.readFileAvailable
               )}
             </pre>
           ) : null}
@@ -238,7 +343,8 @@ function SystemPromptTemplate(props: {
               {truncateForPrompt(
                 props.memoryContext.userGlobalSummary,
                 props.memorySummaryCharBudget,
-                "the user-global memory files"
+                "the user-global memory files",
+                props.readFileAvailable
               )}
             </pre>
           ) : null}
@@ -247,29 +353,23 @@ function SystemPromptTemplate(props: {
               {truncateForPrompt(
                 props.memoryContext.sessionSummary,
                 props.memorySummaryCharBudget,
-                "the chat session memory files"
+                "the chat session memory files",
+                props.readFileAvailable
               )}
             </pre>
           ) : null}
         </section>
       ) : null}
 
-      {props.availableSkills.length > 0 ? (
+      {props.activeSkillContents.length > 0 ? (
         <section>
-          <h2>Available Skills</h2>
+          <h2>Active Skills</h2>
           <p>
-            When a task matches a skill description,{" "}
-            {props.skillToolAvailable
-              ? "use the `skill` tool to load the full skill instructions."
-              : "read the corresponding SKILL.md content through the available file-reading path as soon as the skill is relevant."}
+            These skills were loaded earlier in this session. Their instructions still apply; do not load them again.
           </p>
-          <ul>
-            {props.availableSkills.map((skill) => (
-              <li key={`${skill.source}:${skill.name}`}>
-                <code>{skill.name}</code> ({skill.source}): {skill.description}. Path: {skill.skillFilePath}
-              </li>
-            ))}
-          </ul>
+          {props.activeSkillContents.map((content, index) => (
+            <pre key={index}>{content}</pre>
+          ))}
         </section>
       ) : null}
 
@@ -284,14 +384,16 @@ function SystemPromptTemplate(props: {
             <pre>{`# User-level instructions\nPath: ${props.agentsDocuments.user.path}\n\n${truncateForPrompt(
               props.agentsDocuments.user.content,
               props.instructionDocCharBudget,
-              props.agentsDocuments.user.path
+              props.agentsDocuments.user.path,
+              props.readFileAvailable
             )}`}</pre>
           ) : null}
           {props.agentsDocuments.project.map((document) => (
             <pre key={document.path}>{`# Project instructions\nPath: ${document.path}\n\n${truncateForPrompt(
               document.content,
               props.instructionDocCharBudget,
-              document.path
+              document.path,
+              props.readFileAvailable
             )}`}</pre>
           ))}
         </section>
@@ -300,10 +402,61 @@ function SystemPromptTemplate(props: {
   );
 }
 
-function truncateForPrompt(content: string, budgetChars: number | undefined, source: string): string {
+function truncateForPrompt(
+  content: string,
+  budgetChars: number | undefined,
+  source: string,
+  readFileAvailable: boolean
+): string {
   if (!budgetChars || budgetChars <= 0 || content.length <= budgetChars) {
     return content;
   }
 
-  return `${content.slice(0, budgetChars)}\n\n[Truncated to ${budgetChars} of ${content.length} characters. Read ${source} with read_file when you need the rest.]`;
+  return `${sliceUtf16(content, budgetChars)}\n\n[Truncated to ${budgetChars} of ${content.length} characters. ${
+    readFileAvailable ? `Read ${source} with read_file when you need the rest.` : `The rest is in ${source}.`
+  }]`;
+}
+
+/**
+ * The Active Skills, within their budget (`runtime.promptBudgets.
+ * activeSkillsChars`), in the order they were loaded: each whole while it
+ * fits, then one cut at what is left, then the rest named with the SKILL.md to
+ * read. Restated without a limit, a large skill made every later prompt of the
+ * session overflow, and compaction could not help: the skill came straight
+ * back. A budget of 0 (or none) restates every skill whole.
+ */
+function fitActiveSkills(
+  skills: Array<{ content: string; skill: SkillRecord }>,
+  budgetChars: number | undefined,
+  readFileAvailable: boolean
+): string[] {
+  if (!budgetChars || budgetChars <= 0) {
+    return skills.map(({ content }) => content);
+  }
+  let remaining = budgetChars;
+  return skills.map(({ content, skill }) => {
+    if (content.length <= remaining) {
+      remaining -= content.length;
+      return content;
+    }
+    const where = readFileAvailable ? `read ${skill.filePath} with read_file` : `they are in ${skill.filePath}`;
+    if (remaining <= 0) {
+      return `[The "${skill.name}" skill is still loaded, but its instructions do not fit in the Active Skills budget (runtime.promptBudgets.activeSkillsChars): ${where}.]`;
+    }
+    const kept = sliceUtf16(content, remaining);
+    remaining = 0;
+    return `${kept}\n\n[Cut to ${kept.length} of ${content.length} characters by the Active Skills budget (runtime.promptBudgets.activeSkillsChars). For the rest, ${where}.]`;
+  });
+}
+
+// The earlier `DiscoveredSkill` fields, for code written against them.
+// `content` is read only when something asks for it: the prompt is built
+// every run, and nothing in aia reads it.
+function withDiscoveredSkillFields(skill: SkillRecord): PromptPackSkill {
+  const withFields = { ...skill, ...toDiscoveredSkill(skill) };
+  Object.defineProperty(withFields, "content", {
+    enumerable: false,
+    get: () => readFileSync(skill.filePath, "utf8")
+  });
+  return withFields as PromptPackSkill;
 }

@@ -309,6 +309,17 @@ test("exits when a required MCP server cannot connect instead of hanging", async
       url: "http://127.0.0.1:9/mcp"
     };
     await fs.writeFile(path.join(workspace, "aia.config.jsonc"), JSON.stringify(config), "utf8");
+    // A workspace config's MCP servers start only once it is trusted
+    // (security review M11); trust it the way an operator would.
+    const granted = await runCommand(
+      process.execPath,
+      ["--import", "tsx", "src/cli.ts", "trust", "--grant", "--cwd", workspace],
+      sandboxEnv(path.join(root, "home"), fakeBaseUrl),
+      "",
+      20_000
+    );
+    expect(granted.exitCode).toBe(0);
+    expect(granted.stdout).toContain("Now allowed: MCP server docs, MCP server needed");
 
     const result = await runCommand(
       process.execPath,
@@ -321,6 +332,50 @@ test("exits when a required MCP server cannot connect instead of hanging", async
     expect(result.timedOut).toBe(false);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("Required MCP servers failed to connect");
+  });
+});
+
+// Security review M11 end to end: merely running `aia` in a cloned repo used
+// to run any stdio MCP command its config declared.
+test("never runs the MCP servers of an untrusted workspace config, and says why", async () => {
+  await withStateTree(async (root, fakeBaseUrl) => {
+    const workspace = path.join(root, "workspace");
+    const marker = path.join(root, "payload-ran.txt");
+    await fs.mkdir(workspace);
+    await fs.writeFile(
+      path.join(workspace, "aia.config.jsonc"),
+      JSON.stringify({
+        configVersion: 1,
+        mcp: {
+          servers: {
+            payload: {
+              args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`],
+              command: process.execPath,
+              enabled: true,
+              env: {},
+              required: false,
+              tags: [],
+              type: "stdio"
+            }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const result = await runCommand(
+      process.execPath,
+      ["--import", "tsx", "src/cli.ts", "--cwd", workspace],
+      sandboxEnv(path.join(root, "home"), fakeBaseUrl),
+      "/mcp\n/exit\n",
+      20_000
+    );
+
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toContain("AIA_UNTRUSTED_CONFIG");
+    expect(result.stdout).toContain("payload  [untrusted, stdio]");
+    await expect(fs.access(marker)).rejects.toThrow();
   });
 });
 

@@ -148,6 +148,33 @@ model.
 `sdk.tools.list()` uses it. Without it the usual `limit` applies (default 10, at most 100), as for
 the model's own `tool_search`.
 
+### MCP
+
+- `mcp.list { serverNames? }` returns `{ servers }`: every configured server with its state
+  (`connecting`, `connected`, `failed`, `needs_login`, `disabled`, `untrusted`), error,
+  instructions, and tools.
+- `mcp.reconnect { serverName }` drops the server's connection, connects it again now, and
+  returns `{ server }`.
+- The `mcp.updated` event (`{ previousState?, server }`) fires whenever a server's state or
+  tool list changes. `server` is the server's summary without `tools` and `instructions`
+  (state, transport, capability counts, error, errorCode, lastConnectedAt); `mcp.list` has the
+  rest. It is live only (never in the events log, since a server's state belongs to the running
+  process) and reaches session-filtered subscribers too.
+- An MCP server's mid-call question arrives as `approval.requested` with
+  `metadata.interaction: "elicitation"` and target kind `question`, one per form field; resolve
+  it with the answer as the comment while the run is still going.
+
+A subscriber declares which events it shows (`runtime.subscribe(listener, { wants })`; the SDK,
+the WebSocket server, and the web control plane pass it). That is how the runtime tells a surface
+that would put a question in front of the operator from one only waiting for a run to end.
+
+### Skills
+
+`skills.list` `{ cwd? }` returns `{ skills, diagnostics }`: the Agent Skills that apply in `cwd`
+(default: the gateway's workspace root) as summaries without their instructions, and every
+SKILL.md that failed to load, was shadowed, or broke a spec rule. `sdk.skills.list()` wraps it.
+It reads the same discovery the agent loop and the `skill` tool use. See [SKILLS.md](SKILLS.md).
+
 ### Interactive External-Agent Sessions
 
 Long-lived external-agent terminals are driven through:
@@ -256,6 +283,8 @@ Request payload: `{ sessionId }`. Response: `{ compactedThroughMessageId?, hidde
 
 Summarizes the session transcript into chat-session memory through the shared memory
 lifecycle (trigger `manual`) and sets the session's compaction watermark so later model
-requests no longer replay the summarized messages. Rejected with `busy` while the session
+requests no longer replay the summarized messages, except the operator's own (they carry what
+was asked, which the summary does not). `hiddenMessageCount` is how many messages left the
+model's view. Rejected with `busy` while the session
 has an active run or pending approvals. Emits `session.updated` and `memory.updated`
 (with `metadata.sessionId`). See `docs/AGENT_LOOP.md` → "Manual compaction".

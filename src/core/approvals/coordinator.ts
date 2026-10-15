@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 
-import type { ApprovalActor, ApprovalResolution, SteeringInjection, SteeringSource } from "@/core/contracts";
+import {
+  CHANNEL_OPERATOR_METADATA_KEY,
+  type ApprovalActor,
+  type ApprovalResolution,
+  type SteeringInjection,
+  type SteeringSource
+} from "@/core/contracts";
 import type { FileSessionStore } from "@/core/sessions";
 
 export class ApprovalCoordinator {
@@ -44,6 +50,10 @@ export function createSteeringFromDeniedResolution(
     metadata: {
       approvalDecision: resolution.decision,
       approvalRequestId: resolution.requestId,
+      // A channel resolves an approval only for an allowlisted operator (the
+      // gateway checks before any channel command), so a `/deny` reason is
+      // the operator's, like `/steer`: a `$name` in it loads the skill.
+      ...(actor === "channel" ? { [CHANNEL_OPERATOR_METADATA_KEY]: true } : {}),
       generatedFrom: "approval_resolution"
     },
     sessionId,

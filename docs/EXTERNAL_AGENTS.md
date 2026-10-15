@@ -182,10 +182,15 @@ Mitigations in place:
 A spawned agent does **not** inherit your shell. It receives exactly three things, most-specific-wins:
 
 1. **A fixed floor** it cannot run without: `PATH`, `HOME`, `SHELL`, `TERM`/`TERMINFO`/`COLORTERM`,
-   `LANG`/`LC_ALL`/`LC_CTYPE`, `TMPDIR`/`TMP`/`TEMP`, `TZ`, `USER`/`LOGNAME`/`HOSTNAME`, the proxy
-   variables in both cases, and `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`/`SSL_CERT_DIR`. Everything here
-   decides whether the process _runs_, not what it can reach. `listBaseEnvironmentAllowlist()` is the
-   single source of truth.
+   `LANG`/`LANGUAGE` and the locale categories by name (`LC_ALL`, `LC_CTYPE`, `LC_MESSAGES`, ...; not
+   every `LC_*`, which sshd forwards by default), `TMPDIR`/`TMP`/`TEMP`, `TZ`,
+   `USER`/`LOGNAME`/`HOSTNAME`, macOS's `__CF_USER_TEXT_ENCODING`, the proxy variables in both cases,
+   and the CA-bundle variables (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+   `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, ...). On Windows, names match in any case
+   (`Path` is `PATH`), and `SystemRoot`, `windir`, `ComSpec`, `PATHEXT` and the profile folders
+   (`USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, ...) are on it too. Everything here decides whether the
+   process _runs_, not what it can reach. `listBaseEnvironmentAllowlist()` is the single source of
+   truth.
 2. **`externalAgents.passEnv`** — a global list applied to every agent.
 3. **The agent's own `passEnv`**, then its literal **`env`** map, then per-call overrides.
 

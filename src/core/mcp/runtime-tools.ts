@@ -3,12 +3,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import type { ArtifactReference, JsonValue, MCPToolCapability, ToolDefinition } from "@/core/contracts";
-import { artifactReferenceSchema } from "@/core/contracts";
+import { artifactReferenceSchema, toJsonValue } from "@/core/contracts";
 import type { MCPManager } from "@/core/mcp/manager";
-import { disambiguateInvocationName } from "@/core/mcp/names";
+import { disambiguateInvocationName, formatMcpToolName } from "@/core/mcp/names";
 import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
 import type { ExecutableToolRegistry } from "@/core/tools/registry";
 import { createExecutableToolRegistry } from "@/core/tools/registry";
+import { searchToolDefinitions } from "@/core/tools/search";
 
 export type McpRuntimeToolOptions = {
   // Directory under which non-text MCP tool output (images/audio/binary
@@ -31,10 +32,7 @@ export function createMcpRuntimeTools(manager: MCPManager, options: McpRuntimeTo
   const usedInvocationNames = new Set<string>();
   return manager.getToolCapabilities().map((capability) => {
     const invocationName = disambiguateInvocationName(capability.invocationName, usedInvocationNames);
-    return createMcpRuntimeTool(manager, capability, {
-      ...options,
-      invocationName
-    });
+    return createMcpRuntimeTool(manager, capability, { ...options, invocationName });
   });
 }
 
@@ -53,11 +51,17 @@ export function createMcpRuntimeTool(
   const registryInvocationName = options.invocationName ?? capability.invocationName;
   return {
     definition: buildMcpToolDefinition(capability, registryInvocationName),
-    async execute(call): Promise<RuntimeToolResult> {
+    async execute(call, context): Promise<RuntimeToolResult> {
       // Route by the capability's own (per-server unique) invocation name — the
       // registry-facing name may have been disambiguated for a cross-server
-      // clash, but the manager resolves the raw tool name from this one.
-      const result = await manager.callTool(capability.serverName ?? "", capability.invocationName, call.arguments);
+      // clash, but the manager resolves the raw tool name from this one. The
+      // session travels with the call so a question the server asks mid-call
+      // (elicitation) reaches the operator of this session.
+      const result = await manager.callTool(capability.serverName ?? "", capability.invocationName, call.arguments, {
+        sessionId: context.session.id,
+        toolCallId: call.id,
+        turnId: context.turn.id
+      });
       const content = Array.isArray(result.content) ? result.content : [];
       const { artifacts, display } = await extractContent(content, options.artifactRoot, call.id);
 
@@ -71,7 +75,7 @@ export function createMcpRuntimeTool(
         result: {
           content: content as JsonValue,
           isError: result.isError === true,
-          structuredContent: toJsonCompatibleValue(result.structuredContent) ?? null
+          structuredContent: toJsonValue(result.structuredContent) ?? null
         }
       };
     }
@@ -285,7 +289,7 @@ function buildMcpToolDefinition(capability: MCPToolCapability, invocationName: s
     invocationName,
     kind: "mcp",
     metadata: capability.metadata,
-    name: `${capability.serverName}.${capability.rawName}`,
+    name: formatMcpToolName(capability.serverName ?? "", capability.rawName),
     outputKind: "json",
     outputSchema: capability.outputSchema,
     retryable: true,
@@ -316,13 +320,6 @@ function resolveSideEffects(params: {
     return ["remote_mutation"];
   }
   return params.openWorld ? ["network_write"] : ["remote_mutation"];
-}
-
-function toJsonCompatibleValue(value: unknown): JsonValue | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -378,8 +375,17 @@ class DynamicMcpToolRegistry implements ExecutableToolRegistry {
     return this.snapshot().listDefinitions();
   }
 
+  getServerInstructions(serverName: string): string | undefined {
+    return this.manager.getServerInstructions(serverName);
+  }
+
+  // Each server's instructions are searched once per server, from the manager,
+  // rather than carried on every one of its tools: a tool definition travels
+  // in every model request (and the queue keeps each one).
   searchDefinitions(query: Parameters<ExecutableToolRegistry["searchDefinitions"]>[0]) {
-    return this.snapshot().searchDefinitions(query);
+    return searchToolDefinitions(this.listDefinitions(), query, {
+      serverInstructions: (serverName) => this.manager.getServerInstructions(serverName)
+    });
   }
 
   // Rebuild only when the manager's capability set may have changed (tracked by

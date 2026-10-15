@@ -278,4 +278,23 @@ describe("ComfyUI generation error branches", () => {
       code: "image_generation_download_failed"
     });
   });
+
+  test("does not follow a download redirect to another origin, so its headers stay home", async () => {
+    // fetch's own redirects carry custom headers (an API key) along.
+    const seen: string[] = [];
+    const base = fakeComfy();
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+      seen.push(url.origin);
+      if (url.pathname === "/view") {
+        expect(init?.redirect).toBe("manual");
+        return new Response(null, { headers: { location: "https://elsewhere.example/steal" }, status: 302 });
+      }
+      return base(input);
+    }) as unknown as typeof fetch;
+    const service = await buildService(fetchImpl);
+
+    await expect(service.generate(request() as never)).rejects.toThrow("redirected to https://elsewhere.example");
+    expect(seen).not.toContain("https://elsewhere.example");
+  });
 });

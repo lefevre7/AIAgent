@@ -5,17 +5,31 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
+  extractStructuredError,
   FileLanguageModelQueue,
   languageModelQueueJobSchema,
+  ProviderRequestError,
   type LanguageModelAdapter,
   type LanguageModelRequest,
-  type LanguageModelResponse
+  type LanguageModelResponse,
+  type StructuredError
 } from "@/core";
 import { writeJsonAtomic } from "@/core/io/files";
 
 const tempRoots: string[] = [];
+const queues: FileLanguageModelQueue[] = [];
+
+async function createQueueFor(adapter: LanguageModelAdapter): Promise<FileLanguageModelQueue> {
+  const queue = new FileLanguageModelQueue({
+    resolveAdapter: () => adapter,
+    stateRoot: path.join(await createTempRoot(), ".aia")
+  });
+  queues.push(queue);
+  return queue;
+}
 
 afterEach(async () => {
+  await Promise.all(queues.splice(0).map((queue) => queue.close()));
   await Promise.all(
     tempRoots.splice(0).map(async (root) => {
       await fs.rm(root, { force: true, recursive: true });
@@ -251,6 +265,58 @@ describe("file language-model queue streaming and failures", () => {
     });
 
     await expect(queue.execute(buildRequest("queue.fail.1"))).rejects.toThrow(/provider exploded/u);
+  });
+
+  // The agent loop acts on a provider error's code (a context overflow is
+  // folded and retried), not its message, so the queue hands back the whole
+  // structured error. It used to rethrow a plain Error with the message only.
+  test("keeps the provider's structured error, from a stream or a failed generate", async () => {
+    const overflow: StructuredError = {
+      code: "context_window_exceeded",
+      details: { contextWindowTokens: 16_384, remedy: "Load the model with a larger context.", requestTokens: 20_000 },
+      message: "The request needs 20000 tokens, but the model's context window is 16384.",
+      retriable: false
+    };
+    const adapter = (failure: Pick<LanguageModelAdapter, "generate" | "stream">): LanguageModelAdapter => ({
+      ...failure,
+      health: async () => ({
+        checkedAt: new Date().toISOString(),
+        details: {},
+        providerId: "lm_studio",
+        status: "healthy"
+      }),
+      listModels: async () => [],
+      provider: "lm_studio",
+      providerId: "lm_studio"
+    });
+    const streaming = adapter({
+      generate: async (request) => buildResponse(request, "unused"),
+      async *stream() {
+        yield { delta: "partial", kind: "response.delta" };
+        yield { error: overflow, kind: "response.error" };
+      }
+    });
+    const generating = adapter({
+      generate: async () => {
+        throw new ProviderRequestError(overflow);
+      }
+    });
+
+    // Each rejection is caught as it is made, so neither goes unhandled.
+    const rejectionOf = (attempt: Promise<unknown>) =>
+      attempt.then(
+        () => null,
+        (rejection: unknown) => rejection
+      );
+    const errors = [
+      await rejectionOf(
+        (await createQueueFor(streaming)).stream(buildRequest("queue.overflow.stream"), () => undefined)
+      ),
+      await rejectionOf((await createQueueFor(generating)).execute(buildRequest("queue.overflow.generate")))
+    ];
+    for (const error of errors) {
+      expect(extractStructuredError(error)).toEqual(overflow);
+    }
   });
 
   test("breaks through a stale queue lock left behind by a crashed process", async () => {

@@ -53,6 +53,42 @@ describe("chat model provenance", () => {
     expect(message).not.toContain("built-in default");
   });
 
+  it("names the model the provider will actually be asked for, and that provider's setting", () => {
+    // A turn asks for the provider's own `model` first; the hint used to name
+    // runtime.defaultModel and always point at providers.lmStudio.model.
+    const loaded = {
+      paths: { workspaceRoot: "/repo" },
+      resolvedConfig: {
+        providers: { llamaCpp: { baseUrl: "http://127.0.0.1:8080/v1", enabled: true, model: "gemma-4-e4b" } },
+        runtime: { defaultModel: DEFAULT_LM_STUDIO_MODEL, defaultProvider: "llama_cpp" }
+      },
+      sources: { config: { env: false, global: [], workspace: path.join("/repo", APP_CONFIG_FILE_NAME) } }
+    } as unknown as LoadedAIAgentConfig;
+
+    const message = formatChatModelProvenance(loaded);
+
+    expect(message).toContain('Chat model requested: "gemma-4-e4b".');
+    expect(message).toContain("providers.llamaCpp.model");
+  });
+
+  it("names no providers.* setting for a provider an SDK host registered", () => {
+    // It used to point every such provider at providers.lmStudio.model.
+    const loaded = {
+      paths: { workspaceRoot: "/repo" },
+      resolvedConfig: {
+        providers: {},
+        runtime: { defaultModel: "house-model", defaultProvider: "house_llm" }
+      },
+      sources: { config: { env: false, global: [], workspace: null } }
+    } as unknown as LoadedAIAgentConfig;
+
+    const message = formatChatModelProvenance(loaded);
+
+    expect(message).toContain('Chat model requested: "house-model".');
+    expect(message).toContain("Set runtime.defaultModel in whichever should apply");
+    expect(message).not.toContain("providers.");
+  });
+
   it("recognizes a real provider model error and ignores unrelated ones", () => {
     // Verbatim from LM Studio when it refused to load the previous default.
     expect(

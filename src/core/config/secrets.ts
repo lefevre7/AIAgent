@@ -71,6 +71,73 @@ async function resolveUnknownValue(
   return value;
 }
 
+/**
+ * Whether a config value would be resolved as a secret: a `{ source, id }`
+ * reference or a whole-string `${NAME}` template. Workspace trust withholds
+ * such values from an untrusted config, which could otherwise copy any of the
+ * operator's environment variables into a header, a URL, or a prompt.
+ */
+export function isSecretReferenceValue(value: unknown): boolean {
+  if (secretRefSchema.safeParse(value).success) {
+    return true;
+  }
+  return typeof value === "string" && ENV_TEMPLATE_PATTERN.test(value.trim());
+}
+
+/** A short spelling of a secret reference for the operator: `${NAME}` or `exec:/path`. */
+export function describeSecretReference(value: unknown): string {
+  const parsed = secretRefSchema.safeParse(value);
+  if (parsed.success) {
+    return `${parsed.data.source}:${parsed.data.id}${parsed.data.provider ? ` (provider ${parsed.data.provider})` : ""}`;
+  }
+  return typeof value === "string" ? value.trim() : String(value);
+}
+
+/**
+ * Config values (headers, env) as plain strings, for a connection being made.
+ * Secret references must be resolved already (`loadAIAgentConfig` returns
+ * `resolvedConfig` with them resolved); one left over is a wiring bug, so it
+ * fails loudly instead of sending the reference object as a value. `owner`
+ * and `kind` name the value in the error: 'MCP server "docs"', "header".
+ */
+export function materializeSecretRecord(
+  values: Record<string, SecretInput>,
+  owner: string,
+  kind: string
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(values).map(([key, value]) => {
+      if (typeof value !== "string") {
+        throw new Error(`${owner} has an unresolved secret-backed ${kind} "${key}". Use resolvedConfig.`);
+      }
+      return [key, value];
+    })
+  );
+}
+
+/**
+ * `headers` with `Authorization: Bearer <apiKey>`, unless there is no key or
+ * an Authorization header is configured already (that header wins, and the
+ * key is not used). The key must be resolved, as for `materializeSecretRecord`.
+ */
+export function withBearerApiKey(
+  headers: Record<string, string>,
+  apiKey: SecretInput | undefined,
+  owner: string
+): Record<string, string> {
+  if (
+    apiKey === undefined ||
+    apiKey === "" ||
+    Object.keys(headers).some((name) => name.toLowerCase() === "authorization")
+  ) {
+    return headers;
+  }
+  if (typeof apiKey !== "string") {
+    throw new Error(`${owner} has an unresolved secret-backed apiKey. Use resolvedConfig.`);
+  }
+  return { ...headers, Authorization: `Bearer ${apiKey}` };
+}
+
 function coerceSecretRef(value: unknown, config: AppConfig): SecretRef | null {
   const parsed = secretRefSchema.safeParse(value);
   if (parsed.success) {
@@ -113,19 +180,18 @@ async function resolveSecretReference(
   environment: Record<string, string | undefined>,
   options: SecretResolutionOptions = {}
 ): Promise<string> {
+  // H3: the provider is declared by a workspace config the operator has not
+  // trusted, so it was withheld from the merged config. Say so rather than
+  // "not configured", which would send the operator looking in the wrong place.
+  if (ref.provider && options.untrustedProviderNames?.includes(ref.provider)) {
+    throw new SecretResolutionError(
+      `Secret provider "${ref.provider}" is declared by an untrusted workspace config, so it was not used for ` +
+        `${ref.source}:${ref.id}. Run \`aia trust\` in this workspace to see what it would do, then grant it if you agree.`
+    );
+  }
   const provider = config.secrets.providers[ref.provider ?? ""];
   if (!provider) {
     throw new SecretResolutionError(`Secret provider "${ref.provider}" is not configured for ${ref.source}:${ref.id}.`);
-  }
-  // H3: the provider exists but comes from a workspace config the operator has
-  // not trusted, and it can run a command or read an arbitrary path. Refuse
-  // here rather than at load, so a declared-but-unused provider costs nothing.
-  if (ref.provider && options.untrustedProviderNames?.includes(ref.provider)) {
-    throw new SecretResolutionError(
-      `Secret provider "${ref.provider}" is declared by an untrusted workspace config and can run commands or ` +
-        `read arbitrary files, so it was not used for ${ref.source}:${ref.id}. ` +
-        "Run `aia trust` in this workspace to see what it would do, then grant it if you agree."
-    );
   }
   if (provider.source !== ref.source) {
     throw new SecretResolutionError(

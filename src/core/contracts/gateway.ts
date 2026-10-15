@@ -34,7 +34,7 @@ import {
   externalAgentSessionStopRequestSchema,
   externalAgentSessionTurnSchema
 } from "@/core/contracts/external-agents";
-import { mcpServerSummarySchema } from "@/core/contracts/mcp";
+import { mcpServerConnectionStateSchema, mcpServerSummarySchema, mcpServerUpdateSchema } from "@/core/contracts/mcp";
 import { memoryHitSchema, memoryQuerySchema } from "@/core/contracts/memory";
 import { messagePartSchema, messageSchema } from "@/core/contracts/messages";
 import { taskStateSnapshotSchema } from "@/core/contracts/plans";
@@ -45,6 +45,7 @@ import {
   sessionStatusSchema,
   turnRecordSchema
 } from "@/core/contracts/sessions";
+import { skillDiagnosticSchema, skillSummarySchema } from "@/core/contracts/skills";
 import {
   toolCallRecordSchema,
   toolDefinitionSchema,
@@ -135,6 +136,7 @@ export const gatewayEventTopicSchema = z.enum([
   "external_agent.updated",
   "gateway.status",
   "log.emitted",
+  "mcp.updated",
   "memory.updated",
   "message.created",
   "message.delta",
@@ -195,6 +197,16 @@ export const gatewayEventSchema = z.discriminatedUnion("topic", [
     .extend({
       payload: externalAgentJobRecordSchema,
       topic: z.literal("external_agent.updated")
+    })
+    .strict(),
+  // One MCP server changed: connected, failed, needs a login, reconnected, or
+  // listed new tools. Live only; never written to the events log.
+  gatewayEventBaseSchema
+    .extend({
+      payload: z
+        .object({ previousState: mcpServerConnectionStateSchema.optional(), server: mcpServerUpdateSchema })
+        .strict(),
+      topic: z.literal("mcp.updated")
     })
     .strict(),
   gatewayEventBaseSchema
@@ -452,6 +464,7 @@ export const gatewayRequestTopicSchema = z.enum([
   "gateway.health",
   "gateway.subscribe",
   "mcp.list",
+  "mcp.reconnect",
   "memory.query",
   "model.health",
   "run.cancel",
@@ -463,6 +476,7 @@ export const gatewayRequestTopicSchema = z.enum([
   "session.message",
   "session.resume",
   "session.snapshot",
+  "skills.list",
   "steering.inject",
   "tool.execute",
   "tool.search"
@@ -520,6 +534,8 @@ export const gatewayRequestPayloadSchemas = {
   "gateway.health": z.object({}).strict(),
   "gateway.subscribe": gatewaySubscriptionSchema,
   "mcp.list": z.object({ serverNames: z.array(z.string().min(1)).max(64).optional() }).strict(),
+  // Drops a server's connection and connects it again now.
+  "mcp.reconnect": z.object({ serverName: z.string().min(1).max(128) }).strict(),
   "memory.query": memoryQuerySchema,
   "model.health": z.object({ provider: providerIdSchema.optional() }).strict(),
   "run.cancel": gatewayRunCancelRequestSchema,
@@ -531,6 +547,8 @@ export const gatewayRequestPayloadSchemas = {
   "session.message": gatewaySessionMessageRequestSchema,
   "session.resume": gatewaySessionResumeRequestSchema,
   "session.snapshot": gatewaySessionSnapshotRequestSchema,
+  // The skills that apply in `cwd` (default: the gateway's workspace root).
+  "skills.list": z.object({ cwd: z.string().min(1).max(4096).optional() }).strict(),
   "steering.inject": steeringInjectionSchema,
   "tool.execute": gatewayToolExecuteRequestSchema,
   // `all` is for gateway clients (the SDK's tools.list()); the model's own
@@ -576,6 +594,7 @@ export const gatewayResponsePayloadSchemas = {
     })
     .strict(),
   "mcp.list": z.object({ servers: z.array(mcpServerSummarySchema) }).strict(),
+  "mcp.reconnect": z.object({ server: mcpServerSummarySchema }).strict(),
   "memory.query": z.object({ hits: z.array(memoryHitSchema) }).strict(),
   "model.health": providerHealthSchema,
   "run.cancel": z.object({ run: gatewayRunRecordSchema }).strict(),
@@ -602,6 +621,9 @@ export const gatewayResponsePayloadSchemas = {
     })
     .strict(),
   "session.snapshot": gatewaySessionSnapshotSchema,
+  "skills.list": z
+    .object({ diagnostics: z.array(skillDiagnosticSchema), skills: z.array(skillSummarySchema) })
+    .strict(),
   "steering.inject": steeringInjectionSchema,
   "tool.execute": z
     .object({

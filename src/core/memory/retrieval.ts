@@ -6,6 +6,7 @@ import path from "node:path";
 import type { MemoryEntry, MemoryHit, MemoryQuery } from "@/core/contracts";
 import type { ProviderHealthStatus } from "@/core/contracts";
 import type { EmbeddingRuntime } from "@/core/memory/embeddings";
+import { splitSearchWords, tokenizeForSearch } from "@/core/text/search";
 
 // Minimal structural surface of the synchronous SQLite driver we use. Node's
 // built-in `node:sqlite` DatabaseSync satisfies this, and so does the
@@ -597,7 +598,7 @@ export class MemoryRetrievalEngine {
         if (text.includes(normalized)) {
           return { chunk, lexicalScore: 0.5 };
         }
-        const words = splitLexicalWords(text);
+        const words = splitSearchWords(text);
         const matched = tokens.filter((token) => words.some((word) => word.startsWith(token))).length;
         return { chunk, lexicalScore: matched === 0 ? 0 : (0.4 * matched) / tokens.length };
       })
@@ -891,66 +892,14 @@ function formatCitation(filePath: string, startLine: number, endLine: number): s
   return startLine === endLine ? `${filePath}#L${startLine}` : `${filePath}#L${startLine}-L${endLine}`;
 }
 
-// Words so common in a question that matching them ranks every chunk.
-const LEXICAL_STOPWORDS = new Set([
-  "about",
-  "and",
-  "any",
-  "are",
-  "but",
-  "can",
-  "could",
-  "did",
-  "does",
-  "for",
-  "from",
-  "had",
-  "has",
-  "have",
-  "how",
-  "into",
-  "its",
-  "not",
-  "our",
-  "should",
-  "that",
-  "the",
-  "their",
-  "them",
-  "then",
-  "there",
-  "these",
-  "they",
-  "this",
-  "those",
-  "was",
-  "were",
-  "what",
-  "when",
-  "where",
-  "which",
-  "who",
-  "why",
-  "will",
-  "with",
-  "would",
-  "you",
-  "your"
-]);
-
-function splitLexicalWords(text: string): string[] {
-  return text.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 0);
-}
-
 /**
- * Query words worth matching on their own. Two characters and under are
- * dropped, as in tool_search ("of", "to", "a"), and so are common question
- * words, which match nearly every chunk.
+ * Query words worth matching on their own, read as tool_search reads them
+ * (tokenizeForSearch) but taken as written: each is matched as the start of a
+ * word in the chunk, so two characters (which begin nearly every chunk) are
+ * too few, and a stem or a camelCase split would only loosen that further.
  */
 function tokenizeLexicalQuery(normalizedQuery: string): string[] {
-  return [
-    ...new Set(splitLexicalWords(normalizedQuery).filter((token) => token.length > 2 && !LEXICAL_STOPWORDS.has(token)))
-  ];
+  return [...new Set(tokenizeForSearch(normalizedQuery, { camelCase: false, minLength: 3, stem: false }))];
 }
 
 /**

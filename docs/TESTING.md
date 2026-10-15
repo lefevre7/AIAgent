@@ -24,6 +24,15 @@ keepNames, so no other test sees what tsx does to functions sent into a page.
 `voice-apple-helper-compile.test.ts` needs macOS with `/usr/bin/swiftc`. It compiles the Swift voice
 helper with the adapter's flags and runs nothing that reaches the microphone or speech recognition.
 
+## Isolation from your own ~/.aia
+
+Unit and integration test files run with `HOME` (and `USERPROFILE`) set to an empty
+temporary directory (`tests/setup/isolated-home.ts`), and the e2e dev server uses
+`.aia/e2e/home`. A test that names no `userHomeDirectory` therefore never reads your
+config, MCP servers and credentials, trust grants or skills, and never writes into your
+state directory. A test that needs a user config writes one into a home of its own and
+passes that as `userHomeDirectory`. Only the live suites below use your real HOME.
+
 ## Coverage
 
 ```bash
@@ -125,6 +134,13 @@ Current live commands and flags:
   question for you. Codex asks whether to trust every new folder, so against Codex the test trusts the
   temporary folder it created, for that run only (`-c projects={"<folder>"={trust_level="trusted"}}`,
   which Codex does not save).
+- llama.cpp (a running `llama-server`, see `docs/PROVIDERS.md`):
+  `AIA_RUN_LIVE_LLAMA_CPP_TESTS=1 npm run test:live:llama-cpp`
+  Optional: `AIA_LIVE_LLAMA_CPP_BASE_URL` (default `http://127.0.0.1:8080/v1`), `AIA_LIVE_LLAMA_CPP_MODEL`
+  (default: the first model the server lists), `AIA_LIVE_LLAMA_CPP_MAX_OUTPUT_TOKENS` (default 2048). Covers health,
+  the loaded context window, a streamed answer, a native tool call through the streamed deltas, and a prompt larger
+  than the window being classified as `context_window_exceeded`. Verified 2026-09-30 against Homebrew `llama.cpp`
+  0.5.0 serving LM Studio's `gemma-4-E4B-it-Q4_K_M.gguf` with `-c 8192`.
 - LM Studio:
   `AIA_RUN_LIVE_LM_STUDIO_TESTS=1 npm run test:live:lm-studio`
   Optional: `AIA_LIVE_LM_STUDIO_BASE_URL`, `AIA_LIVE_LM_STUDIO_MODEL`, `AIA_LIVE_LM_STUDIO_MAX_OUTPUT_TOKENS`

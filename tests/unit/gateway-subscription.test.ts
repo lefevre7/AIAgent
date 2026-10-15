@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { gatewayEventSchema } from "@/core/contracts";
-import { deriveGatewayEventSessionId, eventMatchesGatewaySubscription } from "@/gateway";
+import { deriveGatewayEventSessionId, eventMatchesGatewaySubscription, subscriptionShowsApprovals } from "@/gateway";
 
 function messageDeltaEvent(sessionId: string) {
   return gatewayEventSchema.parse({
@@ -104,5 +104,24 @@ describe("gateway event subscription matching", () => {
     for (const testCase of cases) {
       expect(deriveGatewayEventSessionId(testCase.event)).toBe(testCase.expected);
     }
+  });
+});
+
+describe("subscriptionShowsApprovals", () => {
+  test("a subscriber that named approval.requested shows its session's approvals, or every session's", () => {
+    expect(subscriptionShowsApprovals({ topics: ["approval.requested"] }, "session.a")).toBe(true);
+    expect(
+      subscriptionShowsApprovals({ sessionId: "session.a", topics: ["approval.requested", "run.updated"] }, "session.a")
+    ).toBe(true);
+    expect(subscriptionShowsApprovals({ sessionId: "session.b", topics: ["approval.requested"] }, "session.a")).toBe(
+      false
+    );
+  });
+
+  test("a subscriber to every topic (a logger, an events() loop) or to others shows none", () => {
+    expect(subscriptionShowsApprovals({}, "session.a")).toBe(false);
+    expect(subscriptionShowsApprovals({ sessionId: "session.a" }, "session.a")).toBe(false);
+    expect(subscriptionShowsApprovals({ topics: ["run.updated"] }, "session.a")).toBe(false);
+    expect(subscriptionShowsApprovals(null, "session.a")).toBe(false);
   });
 });

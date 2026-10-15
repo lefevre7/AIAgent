@@ -39,7 +39,7 @@ describe("AIAgent SDK client", () => {
         const run = await handle.sendMessage({ text: "Say hello." });
         expect(run.runId).toBeTruthy();
         expect(run.sessionId).toBe(created.session.id);
-        const finished = await run.wait();
+        const finished = await run.wait({ timeoutMs: 10_000 });
         expect(["cancelled", "completed", "failed"]).toContain(finished.status);
         // waitForRun on an already-terminal run returns immediately.
         await expect(sdk.waitForRun(finished)).resolves.toMatchObject({ id: finished.id });
@@ -56,7 +56,7 @@ describe("AIAgent SDK client", () => {
           }
         })();
         const streamed = await handle.sendMessage({ text: "stream please" });
-        await streamed.wait();
+        await streamed.wait({ timeoutMs: 10_000 });
         eventController.abort();
         await iterating;
         expect(Array.isArray(seenTopics)).toBe(true);

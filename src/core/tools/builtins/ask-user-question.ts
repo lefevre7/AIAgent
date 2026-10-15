@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { matchQuestionOption } from "@/core/approvals/questions";
 import type { JsonSchemaDocument, JsonValue, ToolDefinition } from "@/core/contracts";
 import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
 
@@ -32,7 +33,8 @@ export function createAskUserQuestionTool(): RuntimeTool {
       const input = askUserQuestionInputSchema.parse(call.arguments as unknown);
       const rawAnswer = call.metadata[ANSWER_METADATA_KEY];
       const answer = typeof rawAnswer === "string" ? rawAnswer.trim() : "";
-      const selectedOption = matchSelectedOption(answer, input.options);
+      // Matched as on every surface: a label, or a position ("2" over a channel).
+      const selectedOption = matchQuestionOption(input.options ?? [], answer)?.label;
 
       return {
         display: [
@@ -55,14 +57,6 @@ export function createAskUserQuestionTool(): RuntimeTool {
       };
     }
   };
-}
-
-function matchSelectedOption(answer: string, options?: Array<{ label: string }>): string | undefined {
-  if (!options || answer.length === 0) {
-    return undefined;
-  }
-  const normalized = answer.toLowerCase();
-  return options.find((option) => option.label.toLowerCase() === normalized)?.label;
 }
 
 const askUserQuestionOutputSchema: JsonSchemaDocument = {

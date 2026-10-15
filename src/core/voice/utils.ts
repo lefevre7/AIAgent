@@ -4,7 +4,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { ArtifactReference, JsonValue, StructuredError, VoiceJobStatus } from "@/core/contracts";
+import {
+  extractStructuredError,
+  type ArtifactReference,
+  type JsonValue,
+  type StructuredError,
+  type VoiceJobStatus
+} from "@/core/contracts";
 import { createArtifactReferenceFromFile } from "@/core/io/artifacts";
 
 export type RunProcessOptions = {
@@ -96,8 +102,9 @@ export function normalizeLocale(value: string | undefined): string | undefined {
 }
 
 export function normalizeVoiceError(error: unknown, fallbackCode = "voice_operation_failed"): StructuredError {
-  if (isStructuredError(error)) {
-    return error;
+  const structured = extractStructuredError(error);
+  if (structured) {
+    return structured;
   }
 
   if (error instanceof Error) {
@@ -240,16 +247,5 @@ export function voiceInputPathFromUri(uri: string): string {
     {
       uri
     }
-  );
-}
-
-function isStructuredError(error: unknown): error is StructuredError {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    "message" in error &&
-    "retriable" in error &&
-    "details" in error
   );
 }

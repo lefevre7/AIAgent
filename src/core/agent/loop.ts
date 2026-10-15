@@ -20,12 +20,34 @@ import type {
   ToolDefinition,
   TurnRecord
 } from "@/core/contracts";
-import { COMPLETION_SUMMARY_MESSAGE_TAG } from "@/core/contracts";
+import {
+  ACTIVATES_TOOLS_METADATA_KEY,
+  CHANNEL_OPERATOR_METADATA_KEY,
+  COMPLETION_SUMMARY_MESSAGE_TAG,
+  CONTEXT_WINDOW_EXCEEDED_ERROR_CODE,
+  extractStructuredError,
+  taskStateSnapshotSchema
+} from "@/core/contracts";
 import type { MemoryContextProvider } from "@/core/memory";
 import type { SessionMemoryLifecycle } from "@/core/memory";
 import type { TaskStateProvider } from "@/core/plans";
 import type { FileSessionStore } from "@/core/sessions";
 import { buildPromptPack } from "@/core/prompts";
+import {
+  createSkillProvider,
+  loadSkillContent,
+  narrowSkillToolDefinition,
+  readSkillActivations,
+  recordSkillLoads,
+  resolveSkillMentions,
+  selectModelVisibleSkills,
+  SKILL_NAME_METADATA_KEY,
+  SKILL_TOOL_NAME,
+  withSkillActivations,
+  type SkillDiscovery,
+  type SkillProvider,
+  type SkillRecord
+} from "@/core/skills";
 
 export type AgentLoopStatusMetrics = {
   contextWindowPercentage?: number;
@@ -93,7 +115,14 @@ export interface AgentLoopToolExecutionResult {
 export interface AgentLoopToolExecutor {
   execute(
     call: ToolCallRecord,
-    context: { session: SessionRecord; turn: TurnRecord }
+    context: {
+      /** The tools the model can call this turn (its profile's, plus any tool_search activated). */
+      callableToolNames?: ReadonlySet<string>;
+      session: SessionRecord;
+      /** The skills found for this run, which the `skill` tool loads from. */
+      skills?: SkillDiscovery;
+      turn: TurnRecord;
+    }
   ): Promise<AgentLoopToolExecutionResult>;
 }
 
@@ -107,6 +136,12 @@ type AgentLoopOptions = {
   // A number, or a getter so the host can resolve it lazily (e.g. after querying
   // the provider for the model's context window).
   contextWindowTokens?: number | (() => number | undefined);
+  /**
+   * Told what a provider's "prompt too long" refusal said, before the loop
+   * compacts and retries: the window it names (llama.cpp's n_ctx) is the one
+   * requests really get, so the host can use it from then on.
+   */
+  onContextWindowExceeded?: (details: { contextWindowTokens?: number; promptTokens?: number }) => void;
   model: AgentLoopModel;
   modelSettings?: {
     frequencyPenalty?: number;
@@ -132,10 +167,14 @@ type AgentLoopOptions = {
   // be able to abort the run it is reporting on.
   onToolUpdated?: (params: { sessionId: string; toolCall: ToolCallRecord }) => Promise<void> | void;
   promptBudgets?: {
+    activeSkillsChars?: number;
     instructionDocChars?: number;
     memorySummaryChars?: number;
   };
   sessions: FileSessionStore;
+  // Where the run's skills come from. Defaults to the standard roots (project,
+  // `~/.aia/skills`, `~/.agents/skills`, bundled) with default settings.
+  skills?: SkillProvider;
   memoryContextProvider?: MemoryContextProvider;
   memoryLifecycle?: SessionMemoryLifecycle;
   taskStateProvider?: TaskStateProvider;
@@ -161,25 +200,79 @@ const DEFAULT_REASONING_CONTEXT_TURNS = 1;
 const ACTIVATED_TOOLS_METADATA_KEY = "activatedToolNames";
 // Session metadata key holding the id of the last message that has been folded
 // into the compacted summary. Messages up to and including it are no longer
-// replayed to the model (see filterModelVisibleMessages). Exported so a manual
+// replayed to the model, except the operator's own (see
+// filterModelVisibleMessages and retainConversationInput). Exported so a manual
 // compaction (gateway `session.compact`, CLI `/compact`) sets the same key.
 export const COMPACTION_WATERMARK_METADATA_KEY = "compactedThroughMessageId";
+// How much of what the conversation's people said survives a compaction, in
+// characters: Codex's budget for the user messages it keeps
+// (COMPACT_USER_MESSAGE_MAX_TOKENS, 20k tokens) at ~4 characters per token.
+const COMPACTION_RETAINED_USER_MESSAGE_CHARS = 80_000;
+// Session metadata key holding the task state as of the last fold, which the
+// system prompt's Task State section shows (see foldedSessionMetadata).
+export const COMPACTED_TASK_STATE_METADATA_KEY = "compactedTaskState";
+
+/**
+ * Session metadata after a compaction that folds history: the watermark, and
+ * the task state as of the fold.
+ *
+ * The system prompt shows that task state rather than the live one, so the
+ * prompt stays the same between runs until history is folded again. A local
+ * server reuses what it has already read of a prompt only up to its first
+ * change, and the whole conversation follows the system prompt: a plan update
+ * once made the next run re-read 80k tokens, 13 minutes on the operator's
+ * machine (2026-10-02). Until a fold the model sees its plan through its own
+ * plan-tool calls in the transcript.
+ */
+export function foldedSessionMetadata(
+  metadata: SessionRecord["metadata"],
+  watermarkMessageId: string,
+  taskState: TaskStateSnapshot | null | undefined
+): SessionRecord["metadata"] {
+  const shown =
+    taskState &&
+    (taskState.progress.total > 0 ||
+      taskState.summary ||
+      taskState.nextStep ||
+      taskState.blockers.length > 0 ||
+      taskState.recentAttempts.length > 0)
+      ? // The prompt renders progress and notes; the plan record and working
+        // memory are left out to keep the session record small.
+        (JSON.parse(JSON.stringify({ ...taskState, plan: null, workingMemory: [] })) as JsonValue)
+      : null;
+  return {
+    ...metadata,
+    [COMPACTED_TASK_STATE_METADATA_KEY]: shown,
+    [COMPACTION_WATERMARK_METADATA_KEY]: watermarkMessageId
+  };
+}
 // Tool families that record thought or plan state without acting on the task.
 // A turn whose only calls belong to these families makes no real progress, so
 // it counts toward the no-progress guard instead of resetting it. Classifying
 // by the tool's declared family (not the loaded model) keeps this explicit and
 // model-agnostic.
 const NO_PROGRESS_TOOL_FAMILIES = new Set(["planning", "reasoning"]);
+const REPEATED_TOOL_CALL_ERROR_CODE = "repeated_tool_call";
+// Turns of refused repeats allowed in a row before they count as no progress.
+const FREE_REFUSED_TURNS = 2;
+// Sessions whose folded skill loads one loop remembers.
+const MAX_REMEMBERED_SESSIONS = 256;
 
 export class AgentLoop {
-  constructor(private readonly options: AgentLoopOptions) {}
+  private readonly skills: SkillProvider;
+  // Per session (the most recent ones): the skill loads compaction folded
+  // away, as of a watermark and a set of loads.
+  private readonly foldedSkillLoads = new Map<string, { key: string; messageIds: Set<string> }>();
+
+  constructor(private readonly options: AgentLoopOptions) {
+    this.skills =
+      options.skills ??
+      createSkillProvider(options.userHomeDirectory ? { userHomeDirectory: options.userHomeDirectory } : {});
+  }
 
   async run(params: AgentLoopRunParams): Promise<AgentLoopRunResult> {
     await this.options.memoryLifecycle?.initializeSessionMemory(params.session);
     const runStartTime = Date.now();
-    const taskState: TaskStateSnapshot | null = this.options.taskStateProvider
-      ? await this.options.taskStateProvider.getTaskState(params.session.id)
-      : null;
     const maxTurns = params.maxTurns ?? "unlimited";
     const maxConsecutiveNudges = params.maxConsecutiveNudges ?? DEFAULT_MAX_CONSECUTIVE_NUDGES;
     const maxIdenticalToolCalls = params.maxIdenticalToolCalls ?? DEFAULT_MAX_IDENTICAL_TOOL_CALLS;
@@ -188,19 +281,28 @@ export class AgentLoop {
     // one will otherwise reissue the same read indefinitely, and the
     // no-progress guard never fires because each call "succeeds".
     const identicalToolCallCounts = new Map<string, number>();
+    // Found once per run, so the catalog, the `skill` tool's name enum, and
+    // `$name` mentions all see the same skills.
+    const skillDiscovery = await this.skills.discover(params.session.cwd);
+    const skillToolNames = selectModelVisibleSkills(skillDiscovery.skills).map((skill) => skill.name);
     // Rebuilt after threshold compaction so the refreshed session summary
     // reaches the Durable Memory section of the system prompt.
     const buildPack = async (forSession: SessionRecord) =>
       buildPromptPack({
-        availableTools: this.resolveEffectiveTools(params.availableTools, forSession),
+        activeSkills: await this.resolveCompactedSkills(forSession, skillDiscovery.skills),
+        activeSkillsCharBudget: this.options.promptBudgets?.activeSkillsChars,
+        availableTools: this.resolveEffectiveTools(params.availableTools, forSession, skillToolNames),
+        contextWindowTokens: this.resolveContextWindowTokens(),
         cwd: forSession.cwd,
         instructionDocCharBudget: this.options.promptBudgets?.instructionDocChars,
         memoryContext: this.options.memoryContextProvider
           ? await this.options.memoryContextProvider.getPromptContext(forSession.id)
           : null,
         memorySummaryCharBudget: this.options.promptBudgets?.memorySummaryChars,
+        skillSettings: this.skills.settings,
+        skills: skillDiscovery,
         taskSummary: params.taskSummary ?? forSession.goal,
-        taskState,
+        taskState: await this.resolvePromptTaskState(forSession),
         userHomeDirectory: this.options.userHomeDirectory
       });
     let promptPack = await buildPack(params.session);
@@ -261,6 +363,12 @@ export class AgentLoop {
         appendedMessages.push(...steeringMessages);
       }
     }
+    const mentionedSkills = await this.loadMentionedSkills(session, pendingInputMessages, skillDiscovery.skills);
+    if (mentionedSkills) {
+      session = mentionedSkills.session;
+      appendedMessages.push(...mentionedSkills.messages);
+      pendingInputMessages = [...pendingInputMessages, ...mentionedSkills.messages];
+    }
 
     let nextTrigger: TurnRecord["trigger"] =
       appliedSteering.length > 0 ? "steering" : pendingInputMessages.length > 0 ? "user" : "resume";
@@ -269,6 +377,8 @@ export class AgentLoop {
     // Tracked separately from consecutiveNudges so a single "think, then act"
     // turn stays legitimate while a think -> plan -> think chain does not.
     let consecutivePlanningTurns = 0;
+    // Turns whose every tool call was refused as a repeat, in a row.
+    let consecutiveRefusedTurns = 0;
     // Running total of generated tokens across every turn in this run, so the
     // status metric reports cumulative work (like context, which accumulates
     // until compaction) rather than just the latest turn.
@@ -309,6 +419,12 @@ export class AgentLoop {
           appendedMessages.push(...steeringMessages);
           pendingInputMessages = [...pendingInputMessages, ...steeringMessages];
           nextTrigger = "steering";
+          const lateMentionedSkills = await this.loadMentionedSkills(session, steeringMessages, skillDiscovery.skills);
+          if (lateMentionedSkills) {
+            session = lateMentionedSkills.session;
+            appendedMessages.push(...lateMentionedSkills.messages);
+            pendingInputMessages = [...pendingInputMessages, ...lateMentionedSkills.messages];
+          }
         }
       }
 
@@ -338,7 +454,7 @@ export class AgentLoop {
       const visibleMessages = filterModelVisibleMessages(snapshot?.messages ?? [], session, {
         reasoningContextTurns: params.reasoningContextTurns
       });
-      const effectiveTools = this.resolveEffectiveTools(params.availableTools, session);
+      const effectiveTools = this.resolveEffectiveTools(params.availableTools, session, skillToolNames);
 
       const modelRequest = {
         availableTools: effectiveTools,
@@ -386,57 +502,75 @@ export class AgentLoop {
         turnId: turn.id
       };
 
-      let response: LanguageModelResponse;
-      try {
-        const onAssistantDelta = this.options.onAssistantDelta;
-        const onAssistantReasoning = this.options.onAssistantReasoning;
-        const callOptions = params.signal ? { signal: params.signal } : {};
-        if (this.options.model.stream && (onAssistantDelta || onAssistantReasoning)) {
-          response = await this.options.model.stream(
-            modelRequest,
-            (event) => {
-              if (event.kind === "response.delta") {
-                onAssistantDelta?.({
-                  delta: event.delta,
-                  sessionId: session.id,
-                  turnId: turn.id
-                });
-              } else if (event.kind === "response.reasoning") {
-                onAssistantReasoning?.({
-                  delta: event.delta,
-                  sessionId: session.id,
-                  turnId: turn.id
-                });
-              }
-            },
-            callOptions
-          );
-        } else {
-          response = await this.options.model.generate(modelRequest, callOptions);
-        }
-      } catch (error) {
-        if (isCancelled()) {
-          turn.status = "cancelled";
+      let response: LanguageModelResponse | undefined;
+      let request: AgentLoopModelRequest = modelRequest;
+      let overflowCompaction: OverflowCompaction["kind"] | undefined;
+      while (!response) {
+        try {
+          response = await this.requestModel(request, session.id, turn.id, params.signal);
+        } catch (error) {
+          if (isCancelled()) {
+            turn.status = "cancelled";
+            turn.completedAt = new Date().toISOString();
+            turn.summary = "Cancelled by the operator while the model was generating.";
+            await this.options.sessions.appendTurn(turn);
+            appendedTurns.push(turn);
+            return finishCancelled();
+          }
+          // A prompt larger than the context window will not fit on a plain
+          // retry, but it may once the history before this task is folded
+          // into the session summary: the fold threshold compaction does,
+          // triggered by the provider's refusal instead of our own estimate,
+          // which one huge tool result can outrun between two turns. Once per
+          // turn, and never the task's own work (see compactForContextOverflow).
+          const structured = extractStructuredError(error);
+          if (structured?.code === CONTEXT_WINDOW_EXCEEDED_ERROR_CODE) {
+            const { contextWindowTokens, promptTokens } = structured.details;
+            this.options.onContextWindowExceeded?.({
+              ...(typeof contextWindowTokens === "number" ? { contextWindowTokens } : {}),
+              ...(typeof promptTokens === "number" ? { promptTokens } : {})
+            });
+          }
+          if (overflowCompaction === undefined && structured?.code === CONTEXT_WINDOW_EXCEEDED_ERROR_CODE) {
+            const compaction = await this.compactForContextOverflow({
+              error,
+              runFirstMessageId: appendedMessages[0]?.id,
+              session,
+              turn
+            });
+            overflowCompaction = compaction.kind;
+            if (compaction.kind === "compacted") {
+              session = compaction.session;
+              promptPack = await buildPack(session);
+              const retrySnapshot = await this.options.sessions.getSessionSnapshot(session.id);
+              request = {
+                ...request,
+                // A request id is a queue job's id, and the file queue refuses
+                // one it has seen: the retry used to fail on its own id.
+                id: `${modelRequest.id}.overflow-retry`,
+                instructions: promptPack.systemPrompt,
+                messages: filterModelVisibleMessages(retrySnapshot?.messages ?? [], session, {
+                  reasoningContextTurns: params.reasoningContextTurns
+                })
+              };
+              continue;
+            }
+          }
+          turn.status = "failed";
           turn.completedAt = new Date().toISOString();
-          turn.summary = "Cancelled by the operator while the model was generating.";
+          turn.summary = "The language model request failed.";
           await this.options.sessions.appendTurn(turn);
           appendedTurns.push(turn);
-          return finishCancelled();
+          session = await this.persistFailedSession(session, explainContextOverflow(error, overflowCompaction));
+          return {
+            approvalRequests: appendedApprovalRequests,
+            messages: appendedMessages,
+            session,
+            stopReason: "failed",
+            toolCalls: appendedToolCalls,
+            turns: appendedTurns
+          };
         }
-        turn.status = "failed";
-        turn.completedAt = new Date().toISOString();
-        turn.summary = "The language model request failed.";
-        await this.options.sessions.appendTurn(turn);
-        appendedTurns.push(turn);
-        session = await this.persistFailedSession(session, error);
-        return {
-          approvalRequests: appendedApprovalRequests,
-          messages: appendedMessages,
-          session,
-          stopReason: "failed",
-          toolCalls: appendedToolCalls,
-          turns: appendedTurns
-        };
       }
 
       cumulativeOutputTokens += response.usage.outputTokens;
@@ -687,13 +821,10 @@ export class AgentLoop {
             );
           }
         }
-      } else {
-        consecutivePlanningTurns = 0;
-        consecutiveNudges = 0;
       }
       // The first planning turn is allowed silently; nudging it would punish
       // the normal "think, then act" pattern the prompt asks for.
-      const nudgeForNoProgress = noProgressTurn && consecutivePlanningTurns > 1;
+      const nudgeForPlanning = noProgressTurn && consecutivePlanningTurns > 1;
 
       session = await this.persistSession(session, "awaiting_tool_execution", {
         activeTurnId: turn.id,
@@ -718,11 +849,19 @@ export class AgentLoop {
           : priorIdenticalCalls >= maxIdenticalToolCalls
             ? refuseRepeatedToolCall(toolCall, priorIdenticalCalls)
             : await (this.options.toolExecutor ?? defaultToolExecutor()).execute(toolCall, {
+                callableToolNames: new Set(effectiveTools.map((tool) => tool.invocationName)),
                 session,
+                skills: skillDiscovery,
                 turn
               });
         toolOutcomes.push(outcome);
         appendedToolCalls.push(outcome.toolCall);
+        // Recorded as each call finishes, not after the turn: a second load of
+        // the same skill in this response sees the first, and a turn that
+        // pauses for approval keeps it.
+        session = recordSkillLoads(session, [
+          { resultMessageId: outcome.resultMessage?.id, toolCall: outcome.toolCall }
+        ]);
         await this.options.onToolUpdated?.({
           sessionId: session.id,
           toolCall: outcome.toolCall
@@ -772,6 +911,32 @@ export class AgentLoop {
         };
       }
 
+      // A turn whose every call the repeat guard refused did nothing. Two in a
+      // row are free: a refusal is often what makes a model change course.
+      // From the third, each counts toward the no-progress guard and gets its
+      // own nudge. They used to count as progress, so a model calling the same
+      // thing again and again (mcp_status, under the lean profile) never
+      // tripped the guard.
+      const refusedTurn =
+        toolOutcomes.length > 0 &&
+        toolOutcomes.every((outcome) => outcome.toolCall.error?.code === REPEATED_TOOL_CALL_ERROR_CODE);
+      consecutiveRefusedTurns = refusedTurn ? consecutiveRefusedTurns + 1 : 0;
+      const nudgeForRefusals = consecutiveRefusedTurns > FREE_REFUSED_TURNS;
+      if (nudgeForRefusals && !nudgeForPlanning) {
+        consecutiveNudges += 1;
+        if (consecutiveNudges > maxConsecutiveNudges) {
+          return failNoProgressGuard(
+            "The runtime stopped after repeated tool calls it had refused as repeats.",
+            `The model produced ${consecutiveRefusedTurns} consecutive turns of tool calls the runtime refused as repeats.`
+          );
+        }
+      }
+      if (!noProgressTurn && !refusedTurn) {
+        // A turn that acted: both guards start over.
+        consecutivePlanningTurns = 0;
+        consecutiveNudges = 0;
+      }
+
       session = this.mergeActivatedTools(session, toolOutcomes);
 
       const compacted = await this.compactIfOverThreshold({
@@ -792,11 +957,11 @@ export class AgentLoop {
       turn.status = "completed";
       turn.summary = `Executed ${toolOutcomes.length} tool call(s).`;
 
-      if (nudgeForNoProgress) {
+      if (nudgeForPlanning || nudgeForRefusals) {
         const noProgressMessage = createSystemMessage(
           session.id,
           turn.id,
-          promptPack.nudges.noProgress,
+          nudgeForRefusals ? promptPack.nudges.repeatedCalls : promptPack.nudges.noProgress,
           "system",
           "compact"
         );
@@ -828,7 +993,26 @@ export class AgentLoop {
     };
   }
 
-  private resolveEffectiveTools(baseTools: ToolDefinition[], session: SessionRecord): ToolDefinition[] {
+  /**
+   * The tools the model sees this turn: the run's tools, plus any a
+   * `tool_search` activated, with the `skill` tool narrowed to the run's skill
+   * names (and left out when there are none).
+   */
+  private resolveEffectiveTools(
+    baseTools: ToolDefinition[],
+    session: SessionRecord,
+    skillNames: string[]
+  ): ToolDefinition[] {
+    return this.withActivatedTools(baseTools, session).flatMap((tool) =>
+      tool.name !== SKILL_TOOL_NAME
+        ? [tool]
+        : skillNames.length > 0
+          ? [narrowSkillToolDefinition(tool, skillNames)]
+          : []
+    );
+  }
+
+  private withActivatedTools(baseTools: ToolDefinition[], session: SessionRecord): ToolDefinition[] {
     const catalog = this.options.toolCatalog;
     if (!catalog) {
       return baseTools;
@@ -854,38 +1038,127 @@ export class AgentLoop {
     return effective;
   }
 
-  private mergeActivatedTools(session: SessionRecord, outcomes: AgentLoopToolExecutionResult[]): SessionRecord {
-    if (!this.options.toolCatalog) {
-      return session;
-    }
-
-    const discovered: string[] = [];
-    for (const outcome of outcomes) {
-      if (outcome.toolCall.status !== "succeeded") {
+  /**
+   * Adds the skills an operator named (`$name`) in `messages` to the session:
+   * one message per skill, holding its instructions, right after the input,
+   * and an activation record so the skill is not loaded twice. Only the
+   * operator's own messages count: a channel message only when its sender is
+   * one of the channel's operator identities, so a third party in a group chat
+   * cannot start a skill reserved for the operator.
+   */
+  private async loadMentionedSkills(
+    session: SessionRecord,
+    messages: Message[],
+    skills: SkillRecord[]
+  ): Promise<{ messages: Message[]; session: SessionRecord } | null> {
+    const loaded = new Set(readSkillActivations(session.metadata).map((activation) => activation.name));
+    const mentioned: SkillRecord[] = [];
+    for (const message of messages) {
+      if (!isOperatorInput(message)) {
         continue;
       }
-      const definition = this.options.toolCatalog.getDefinition(outcome.toolCall.toolName);
-      if (!definition || definition.name !== "tool_search") {
-        continue;
-      }
-      const result = outcome.toolCall.result;
-      if (typeof result !== "object" || result === null || Array.isArray(result)) {
-        continue;
-      }
-      const matches = (result as { matches?: unknown }).matches;
-      if (!Array.isArray(matches)) {
-        continue;
-      }
-      for (const match of matches) {
-        if (typeof match === "object" && match !== null && !Array.isArray(match)) {
-          const invocationName = (match as { invocationName?: unknown }).invocationName;
-          if (typeof invocationName === "string" && invocationName.length > 0) {
-            discovered.push(invocationName);
+      for (const part of message.parts) {
+        if (part.kind !== "text") {
+          continue;
+        }
+        for (const skill of resolveSkillMentions(part.text, skills, {
+          cwd: session.cwd,
+          ...(this.options.userHomeDirectory ? { userHomeDirectory: this.options.userHomeDirectory } : {})
+        })) {
+          if (!loaded.has(skill.name)) {
+            loaded.add(skill.name);
+            mentioned.push(skill);
           }
         }
       }
     }
+    if (mentioned.length === 0) {
+      return null;
+    }
 
+    const skillMessages = await Promise.all(
+      mentioned.map(
+        async (skill): Promise<Message> => ({
+          createdAt: new Date().toISOString(),
+          id: createMessageId("skill", `${session.id}.${skill.name}.${crypto.randomUUID()}`),
+          metadata: { [SKILL_NAME_METADATA_KEY]: skill.name },
+          // A user message: every chat template accepts one mid-conversation,
+          // which a second system message is not.
+          parts: [{ kind: "text", text: await loadSkillContent(skill) }],
+          role: "user",
+          sessionId: session.id,
+          source: "system",
+          tags: ["skill"],
+          visibility: "compact"
+        })
+      )
+    );
+    await this.options.sessions.appendMessages(skillMessages);
+    return {
+      messages: skillMessages,
+      session: withSkillActivations(
+        session,
+        skillMessages.map((message, index) => ({ messageId: message.id, name: mentioned[index]!.name }))
+      )
+    };
+  }
+
+  /**
+   * The skills loaded earlier whose instructions compaction has folded out of
+   * the replayed transcript. The prompt restates them in full, so compaction
+   * never unloads a skill the model is following.
+   */
+  private async resolveCompactedSkills(session: SessionRecord, skills: SkillRecord[]): Promise<SkillRecord[]> {
+    const activations = readSkillActivations(session.metadata);
+    const watermark = session.metadata[COMPACTION_WATERMARK_METADATA_KEY];
+    if (activations.length === 0 || typeof watermark !== "string") {
+      return [];
+    }
+    // Which loads compaction folded away changes only with the watermark or
+    // the loads: the transcript is read again only then, not for every prompt
+    // (three times in a row on the overflow retry).
+    const key = [watermark, ...activations.map((activation) => activation.messageId)].join("\u0000");
+    let folded = this.foldedSkillLoads.get(session.id);
+    if (folded?.key !== key) {
+      const snapshot = await this.options.sessions.getSessionSnapshot(session.id);
+      const visible = new Set(
+        filterModelVisibleMessages(snapshot?.messages ?? [], session).map((message) => message.id)
+      );
+      folded = {
+        key,
+        messageIds: new Set(
+          activations.flatMap((activation) => (visible.has(activation.messageId) ? [] : [activation.messageId]))
+        )
+      };
+      this.foldedSkillLoads.delete(session.id);
+      this.foldedSkillLoads.set(session.id, folded);
+      for (const oldest of this.foldedSkillLoads.keys()) {
+        if (this.foldedSkillLoads.size <= MAX_REMEMBERED_SESSIONS) {
+          break;
+        }
+        this.foldedSkillLoads.delete(oldest);
+      }
+    }
+    const messageIds = folded.messageIds;
+    return activations.flatMap((activation) =>
+      messageIds.has(activation.messageId)
+        ? skills.filter((skill) => skill.enabled && skill.name === activation.name)
+        : []
+    );
+  }
+
+  // The tools a call made callable for the rest of the session (tool_search
+  // names the ones it found in its call metadata), added to the session.
+  private mergeActivatedTools(session: SessionRecord, outcomes: AgentLoopToolExecutionResult[]): SessionRecord {
+    if (!this.options.toolCatalog) {
+      return session;
+    }
+    const discovered = outcomes.flatMap((outcome) => {
+      const named = outcome.toolCall.metadata[ACTIVATES_TOOLS_METADATA_KEY];
+      return outcome.toolCall.status === "succeeded" && Array.isArray(named)
+        ? named.filter((name): name is string => typeof name === "string" && name.length > 0)
+        : [];
+    });
     if (discovered.length === 0) {
       return session;
     }
@@ -898,6 +1171,102 @@ export class AgentLoop {
         [ACTIVATED_TOOLS_METADATA_KEY]: merged
       }
     };
+  }
+
+  private async requestModel(
+    request: AgentLoopModelRequest,
+    sessionId: string,
+    turnId: string,
+    signal: AbortSignal | undefined
+  ): Promise<LanguageModelResponse> {
+    const onAssistantDelta = this.options.onAssistantDelta;
+    const onAssistantReasoning = this.options.onAssistantReasoning;
+    const callOptions = signal ? { signal } : {};
+    if (this.options.model.stream && (onAssistantDelta || onAssistantReasoning)) {
+      return this.options.model.stream(
+        request,
+        (event) => {
+          if (event.kind === "response.delta") {
+            onAssistantDelta?.({ delta: event.delta, sessionId, turnId });
+          } else if (event.kind === "response.reasoning") {
+            onAssistantReasoning?.({ delta: event.delta, sessionId, turnId });
+          }
+        },
+        callOptions
+      );
+    }
+    return this.options.model.generate(request, callOptions);
+  }
+
+  /**
+   * Folds the history before the current task into the session summary and
+   * moves the compaction watermark past it, so a retried request carries the
+   * summary (through the prompt pack), the operator's earlier messages
+   * (retainConversationInput), and the task itself intact: from the latest
+   * thing a person said at or before this run started (the request this run
+   * works on, or for a run resumed after an approval, the request it paused
+   * on) through this turn. Folding the task's own tool calls and results left
+   * the retry with nothing but the request, and the model started over.
+   *
+   * `nothing_to_fold` when all of that history is folded already (what does
+   * not fit is the task itself); `unavailable` without a memory lifecycle to
+   * write the summary.
+   */
+  private async compactForContextOverflow(params: {
+    error: unknown;
+    /** The first message this run appended (its request, or its first status message). */
+    runFirstMessageId: string | undefined;
+    session: SessionRecord;
+    turn: TurnRecord;
+  }): Promise<OverflowCompaction> {
+    if (!this.options.memoryLifecycle) {
+      return { kind: "unavailable" };
+    }
+    const messages = (await this.options.sessions.getSessionSnapshot(params.session.id))?.messages ?? [];
+    const turnInput = new Set(params.turn.inputMessageIds);
+    const runStart = messages.findIndex((message) =>
+      params.runFirstMessageId ? message.id === params.runFirstMessageId : turnInput.has(message.id)
+    );
+    if (runStart < 0) {
+      return { kind: "nothing_to_fold" };
+    }
+    let keepFrom = runStart;
+    for (let index = runStart; index >= 0; index -= 1) {
+      if (isConversationInput(messages[index]!)) {
+        keepFrom = index;
+        break;
+      }
+    }
+    const watermarkIndex = keepFrom - 1;
+    const current = params.session.metadata[COMPACTION_WATERMARK_METADATA_KEY];
+    const currentIndex = typeof current === "string" ? messages.findIndex((message) => message.id === current) : -1;
+    const watermark = messages[watermarkIndex];
+    if (!watermark || watermarkIndex <= currentIndex) {
+      return { kind: "nothing_to_fold" };
+    }
+
+    const promptTokens = extractStructuredError(params.error)?.details.promptTokens;
+    await this.options.memoryLifecycle.compactSession({
+      sessionId: params.session.id,
+      ...(typeof promptTokens === "number" ? { sourceTokenCount: promptTokens } : {}),
+      trigger: "overflow"
+    });
+    const session = await this.persistSession(
+      {
+        ...params.session,
+        metadata: foldedSessionMetadata(
+          params.session.metadata,
+          watermark.id,
+          await this.readTaskState(params.session.id)
+        )
+      },
+      "running_model",
+      {
+        activeTurnId: params.turn.id,
+        statusSummary: "Compacted the session after the prompt overflowed the model's context window."
+      }
+    );
+    return { kind: "compacted", session };
   }
 
   private async compactIfOverThreshold(params: {
@@ -932,11 +1301,31 @@ export class AgentLoop {
 
     return {
       ...params.session,
-      metadata: {
-        ...params.session.metadata,
-        [COMPACTION_WATERMARK_METADATA_KEY]: params.watermarkMessageId
-      }
+      metadata: foldedSessionMetadata(
+        params.session.metadata,
+        params.watermarkMessageId,
+        await this.readTaskState(params.session.id)
+      )
     };
+  }
+
+  private async readTaskState(sessionId: string): Promise<TaskStateSnapshot | null> {
+    return this.options.taskStateProvider ? this.options.taskStateProvider.getTaskState(sessionId) : null;
+  }
+
+  /**
+   * The task state the system prompt shows: as of the last fold (see
+   * foldedSessionMetadata), or none before the first one.
+   */
+  private async resolvePromptTaskState(session: SessionRecord): Promise<TaskStateSnapshot | null> {
+    if (COMPACTED_TASK_STATE_METADATA_KEY in session.metadata) {
+      const parsed = taskStateSnapshotSchema.safeParse(session.metadata[COMPACTED_TASK_STATE_METADATA_KEY]);
+      return parsed.success ? parsed.data : null;
+    }
+    // Folded before the frozen copy existed: the live state, as before.
+    return typeof session.metadata[COMPACTION_WATERMARK_METADATA_KEY] === "string"
+      ? this.readTaskState(session.id)
+      : null;
   }
 
   private async emitStatus(session: SessionRecord, summary: string, metrics?: AgentLoopStatusMetrics): Promise<void> {
@@ -1065,6 +1454,15 @@ export class AgentLoop {
   }
 }
 
+function isOperatorInput(message: Message): boolean {
+  return (
+    message.role === "user" &&
+    (message.source === "user" ||
+      message.source === "operator" ||
+      (message.source === "channel" && message.metadata[CHANNEL_OPERATOR_METADATA_KEY] === true))
+  );
+}
+
 function readActivatedToolNames(session: SessionRecord): string[] {
   const raw = session.metadata[ACTIVATED_TOOLS_METADATA_KEY];
   if (!Array.isArray(raw)) {
@@ -1083,13 +1481,78 @@ export function filterModelVisibleMessages(
   if (typeof watermarkId === "string" && watermarkId.length > 0) {
     const index = messages.findIndex((message) => message.id === watermarkId);
     if (index >= 0) {
-      scoped = messages.slice(index + 1);
+      scoped = [
+        ...retainConversationInput(messages.slice(0, index + 1), COMPACTION_RETAINED_USER_MESSAGE_CHARS),
+        ...messages.slice(index + 1)
+      ];
     }
   }
   return dropStaleReasoningParts(
     scoped.filter((message) => message.visibility !== "hidden"),
     options.reasoningContextTurns ?? DEFAULT_REASONING_CONTEXT_TURNS
   );
+}
+
+/**
+ * What the conversation's people said before a compaction watermark, kept in
+ * the replayed history while everything else there is folded away.
+ *
+ * The session summary records tool calls and the agent's narration, never the
+ * requests, so folding these too left the model working on a task nobody had
+ * stated. It also opened the history with the assistant's tool call, and chat
+ * templates such as Qwen 3.5's refuse a conversation that does not start with
+ * a user turn ("No user query found in messages."): every later request in
+ * the session failed, even after the operator spoke again.
+ *
+ * Newest first within `budgetChars`, text only, as Codex keeps them: the
+ * message that straddles the budget keeps its start and end, and older ones
+ * are dropped.
+ */
+function retainConversationInput(folded: Message[], budgetChars: number): Message[] {
+  const retained: Message[] = [];
+  let remaining = budgetChars;
+  for (let index = folded.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const message = folded[index];
+    if (!message || !isConversationInput(message)) {
+      continue;
+    }
+    const text = message.parts
+      .flatMap((part) => (part.kind === "text" ? [part.text] : part.kind === "markdown" ? [part.markdown] : []))
+      .join("\n\n");
+    if (text.trim().length === 0) {
+      continue;
+    }
+    if (text.length > remaining) {
+      retained.push({ ...message, parts: [{ kind: "text", text: elideMiddle(text, remaining) }] });
+      break;
+    }
+    const textOnly = message.parts.every((part) => part.kind === "text" || part.kind === "markdown");
+    retained.push(textOnly ? message : { ...message, parts: [{ kind: "text", text }] });
+    remaining -= text.length;
+  }
+  return retained.reverse();
+}
+
+// The operator, steering, and channel messages: what people said. A user-role
+// message the runtime wrote (a loaded skill's instructions) is not; compaction
+// restates active skills in the prompt instead.
+function isConversationInput(message: Message): boolean {
+  return (
+    message.role === "user" &&
+    message.visibility !== "hidden" &&
+    (message.source === "user" || message.source === "operator" || message.source === "channel")
+  );
+}
+
+function elideMiddle(text: string, maxChars: number): string {
+  const head = Math.ceil(maxChars / 2);
+  const tail = maxChars - head;
+  const dropped = (text.length - maxChars).toLocaleString("en-US");
+  return [
+    text.slice(0, head),
+    `[${dropped} characters of this message were dropped when the session was compacted]`,
+    ...(tail > 0 ? [text.slice(text.length - tail)] : [])
+  ].join("\n\n");
 }
 
 /**
@@ -1449,7 +1912,7 @@ function refuseRepeatedToolCall(toolCall: ToolCallRecord, priorIdenticalCalls: n
     ...toolCall,
     completedAt: new Date().toISOString(),
     error: {
-      code: "repeated_tool_call",
+      code: REPEATED_TOOL_CALL_ERROR_CODE,
       details: {
         priorIdenticalCalls,
         toolName: toolCall.toolName
@@ -1546,7 +2009,53 @@ function defaultToolExecutor(): AgentLoopToolExecutor {
   };
 }
 
+/** What an overflow's compaction did: see AgentLoop.compactForContextOverflow. */
+type OverflowCompaction =
+  | { kind: "compacted"; session: SessionRecord }
+  | { kind: "nothing_to_fold" }
+  | { kind: "unavailable" };
+
+/**
+ * A context overflow reworded so the operator can act on it: the numbers, and
+ * the settings that change them. Any other error passes through unchanged.
+ */
+function explainContextOverflow(error: unknown, compaction: OverflowCompaction["kind"] | undefined): unknown {
+  const structured = extractStructuredError(error);
+  if (structured?.code !== CONTEXT_WINDOW_EXCEEDED_ERROR_CODE) {
+    return error;
+  }
+  const { contextWindowTokens, promptTokens } = structured.details;
+  const sizes =
+    typeof promptTokens === "number" && typeof contextWindowTokens === "number"
+      ? ` (${promptTokens} tokens) is larger than the model's context window (${contextWindowTokens} tokens)`
+      : " is larger than the model's context window";
+  // The provider's own way to a larger window, when its adapter gave one.
+  const larger =
+    typeof structured.details.remedy === "string" && structured.details.remedy.length > 0
+      ? structured.details.remedy
+      : "Load the model with a larger context window";
+  const situation =
+    compaction === "compacted"
+      ? `${sizes}, even after compacting the session. ${larger}, or start a new session.`
+      : compaction === "nothing_to_fold"
+        ? // The task's own messages and tool results are kept whole, never
+          // cut down to fit (no tool-output cap), so the operator decides.
+          `${sizes}, and nothing from before this task is left to fold: the task's own messages and tool ` +
+          `results do not fit. ${larger}, or ask for less at a time (a line range, a narrower search).`
+        : `${sizes}. ${larger}, or start a new session.`;
+  return {
+    ...structured,
+    message: `The prompt${situation} The provider said: ${structured.message}`
+  };
+}
+
 function normalizeUnknownError(error: unknown): StructuredError {
+  // A provider's structured error (a context overflow, a rate limit) is worth
+  // more than its message: the session's lastError keeps its code.
+  const structured = extractStructuredError(error);
+  if (structured) {
+    return structured;
+  }
   if (error instanceof Error) {
     return {
       code: "agent_loop_error",

@@ -2,14 +2,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { runCli, type CliLineReader } from "@/cli";
+import { createFakeTerminal } from "../helpers/fake-terminal";
+import { headlessBrowser, startProtectedMcpServer } from "../helpers/oauth-server";
 import { attachEndpointFilePath, attachEndpointsDirectory } from "@/gateway/attach-endpoint";
 import type { AIAgentSdk } from "@/sdk";
 import { COMPLETION_SUMMARY_MESSAGE_TAG } from "@/core/contracts";
 import type { ArtifactReference, GatewaySessionSnapshot, SessionRecord, VoiceService } from "@/core/contracts";
-import type { FileSessionStore } from "@/core";
+import type { FileSessionStore, LoadedAIAgentConfig } from "@/core";
 
 type CaptureStreams = {
   stderr: { write: (value: string) => boolean };
@@ -45,12 +47,31 @@ function createCaptureStreams(): { streams: CaptureStreams; getStderr: () => str
  * test. The listener has its own coverage in `attach-endpoint.test.ts`; here
  * it is stubbed out.
  */
+// Every run gets a home of its own, so no test reads or writes the developer's
+// ~/.aia (the user-global config, the trust store). A run that names no
+// workspace gets an empty one rather than this repository, whose
+// aia.config.jsonc declares an MCP server and so needs trust before it loads.
+const hermeticRoots: string[] = [];
+afterEach(async () => {
+  await Promise.all(hermeticRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
+});
+
 async function runCliWithStubbedEndpoint(
   argv: string[],
   streams: CaptureStreams,
   deps: Parameters<typeof runCli>[2] = {}
 ): Promise<number> {
-  return runCli(argv, streams, { serveAttachEndpoint: async () => null, ...deps });
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-cli-hermetic-")));
+  hermeticRoots.push(root);
+  await fs.mkdir(path.join(root, "workspace", ".git"), { recursive: true });
+  await fs.mkdir(path.join(root, "home"), { recursive: true });
+  // Subcommands take their own flags, so only the REPL and --prompt runs get one.
+  const namesWorkspace = argv.includes("--cwd") || (argv.length > 0 && !argv[0]!.startsWith("-"));
+  return runCli(namesWorkspace ? argv : [...argv, "--cwd", path.join(root, "workspace")], streams, {
+    serveAttachEndpoint: async () => null,
+    userHomeDirectory: path.join(root, "home"),
+    ...deps
+  });
 }
 
 async function* lineSource(items: string[]): AsyncIterable<string> {
@@ -169,6 +190,11 @@ function createFakeSdk(
     modelStatus?: string;
     pendingApprovals?: PendingApprovalSpec[];
     reasoning?: string;
+    // resolveApproval rejects with this, as the gateway does for a request
+    // already resolved elsewhere.
+    resolveError?: string;
+    // resolveApproval publishes approval.resolved, as the gateway does.
+    emitResolutions?: boolean;
     // The run only ends once the CLI cancels it (and, with cancelEndsRun
     // false, not even then), like a model that keeps generating.
     runBlocksUntilCancel?: boolean;
@@ -178,6 +204,8 @@ function createFakeSdk(
   } = {}
 ): {
   sdk: AIAgentSdk;
+  emit: (event: unknown) => void;
+  finishRun: () => void;
   getAttachEndpoint: () => string | undefined;
   getCancelCalls: () => number;
   getCompactCalls: () => number;
@@ -237,12 +265,28 @@ function createFakeSdk(
       }));
     },
     async resolveApproval(input: { comment?: string; decision: string; requestId: string }) {
+      if (options.resolveError) {
+        throw new Error(options.resolveError);
+      }
       resolved.push({
         ...(input.comment !== undefined ? { comment: input.comment } : {}),
         decision: input.decision,
         requestId: input.requestId
       });
       pending = pending.filter((entry) => entry.requestId !== input.requestId);
+      if (options.emitResolutions) {
+        listener?.({
+          payload: {
+            actor: "cli",
+            decidedAt: new Date().toISOString(),
+            decision: input.decision,
+            id: `resolution.${input.requestId}`,
+            metadata: {},
+            requestId: input.requestId
+          },
+          topic: "approval.resolved"
+        });
+      }
       return { approval: { request: { id: input.requestId } } };
     },
     async resume() {
@@ -342,6 +386,8 @@ function createFakeSdk(
   } as unknown as AIAgentSdk;
 
   return {
+    emit: (event: unknown) => listener?.(event),
+    finishRun: () => endRun?.(),
     getAttachEndpoint: () => attachEndpointUrl,
     getCancelCalls: () => cancelCalls,
     getCompactCalls: () => compactCalls,
@@ -387,6 +433,16 @@ function createGate(): { open: () => void; wait: Promise<void> } {
 async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for the CLI.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+async function waitUntilAsync(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
     if (Date.now() > deadline) {
       throw new Error("Timed out waiting for the CLI.");
     }
@@ -807,7 +863,7 @@ describe("interactive CLI loop", () => {
     let closed = false;
     let servedFor: unknown = null;
 
-    const exitCode = await runCli([], capture.streams, {
+    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: lineSource(["/exit"]),
       serveAttachEndpoint: async (sdk) => {
@@ -902,7 +958,7 @@ describe("interactive CLI loop", () => {
       const input = closableReader();
       let listenerClosed = false;
 
-      const exitCode = await runCli([], capture.streams, {
+      const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
         createSdk: async () => fake.sdk,
         interactiveInput: input.reader,
         serveAttachEndpoint: async () => ({
@@ -1214,13 +1270,31 @@ function createPromptSdk(
 // rest of startup (MCP servers, memory, the model check, the session) runs
 // behind it. Scripted input keeps the old order; see the tests above.
 describe("interactive CLI at a terminal", () => {
+  // Hermetic: a terminal REPL reads the workspace config and asks about trust
+  // before anything starts, so these runs get an empty workspace and home of
+  // their own instead of this repository's aia.config.jsonc (which declares an
+  // MCP server) and the developer's ~/.aia (where a "y" would grant trust).
+  let terminalRoot = "";
+  beforeEach(async () => {
+    terminalRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-cli-terminal-")));
+    await fs.mkdir(path.join(terminalRoot, "workspace", ".git"), { recursive: true });
+    await fs.mkdir(path.join(terminalRoot, "home"), { recursive: true });
+  });
+  afterEach(async () => {
+    await fs.rm(terminalRoot, { force: true, recursive: true });
+  });
+  const terminalWorkspace = () => path.join(terminalRoot, "workspace");
+  const terminalHome = () => path.join(terminalRoot, "home");
+  const runTerminalCli = (streams: CaptureStreams, deps: Parameters<typeof runCli>[2] = {}) =>
+    runCliWithStubbedEndpoint(["--cwd", terminalWorkspace()], streams, { userHomeDirectory: terminalHome(), ...deps });
+
   test("shows the prompt before startup finishes and sends a message typed meanwhile once it is ready", async () => {
     const fake = createFakeSdk();
     const startup = createGate();
     const capture = createCaptureStreams();
     const reader = createBufferedTestReader([], { interactive: true });
 
-    const done = runCliWithStubbedEndpoint([], capture.streams, {
+    const done = runTerminalCli(capture.streams, {
       createSdk: async () => {
         await startup.wait;
         return fake.sdk;
@@ -1250,13 +1324,53 @@ describe("interactive CLI at a terminal", () => {
     expect(fake.wasClosed()).toBe(true);
   });
 
+  // The 2026-10-02 report: a message pasted during startup and not yet sent.
+  // When startup finished, the session line printed after the pasted text and
+  // an empty prompt followed, so it looked sent and ignored. At a terminal the
+  // output now goes above the prompt and the text waits there for Enter.
+  test("at a terminal, startup finishing while a message is half typed prints above it and keeps it", async () => {
+    const fake = createFakeSdk();
+    const startup = createGate();
+    const terminal = createFakeTerminal({ columns: 100 });
+    const write = (value: string) => terminal.output.write(value);
+    const screenEndsWith = async (text: string) => (await terminal.screenText()).endsWith(text);
+
+    const done = runTerminalCli(
+      { stderr: { write }, stdout: { write } },
+      {
+        createSdk: async () => {
+          await startup.wait;
+          return fake.sdk;
+        },
+        interactiveInput: terminal.lines
+      }
+    );
+
+    await waitUntilAsync(() => screenEndsWith("› "));
+    await terminal.type("please help me add two MCP servers");
+    startup.open();
+    await waitUntilAsync(async () => (await terminal.screenText()).includes("Session: session.test.cli.1"));
+
+    const screen = (await terminal.screenText()).split("\n");
+    expect(screen.slice(-2)).toEqual(["Session: session.test.cli.1", "› please help me add two MCP servers"]);
+    expect(fake.getSent()).toEqual([]);
+
+    await terminal.type("\r");
+    await waitUntil(() => fake.getSent().length === 1);
+    expect(fake.getSent()).toEqual(["please help me add two MCP servers"]);
+
+    await waitUntilAsync(() => screenEndsWith("› "));
+    await terminal.type("/exit\r");
+    expect(await done).toBe(0);
+  });
+
   test("answers /help while starting up, and holds other commands until the session is ready", async () => {
     const fake = createFakeSdk({ compactResult: { hiddenMessageCount: 0 } });
     const startup = createGate();
     const capture = createCaptureStreams();
     const reader = createBufferedTestReader([], { interactive: true });
 
-    const done = runCliWithStubbedEndpoint([], capture.streams, {
+    const done = runTerminalCli(capture.streams, {
       createSdk: async () => {
         await startup.wait;
         return fake.sdk;
@@ -1283,7 +1397,7 @@ describe("interactive CLI at a terminal", () => {
     const capture = createCaptureStreams();
     const reader = createBufferedTestReader([], { interactive: true });
 
-    const done = runCliWithStubbedEndpoint([], capture.streams, {
+    const done = runTerminalCli(capture.streams, {
       createSdk: async () => {
         await startup.wait;
         return fake.sdk;
@@ -1310,7 +1424,7 @@ describe("interactive CLI at a terminal", () => {
     const capture = createCaptureStreams();
     const reader = createBufferedTestReader([], { interactive: true });
 
-    const done = runCliWithStubbedEndpoint([], capture.streams, {
+    const done = runTerminalCli(capture.streams, {
       createSdk: async () => {
         await startup.wait;
         throw new Error("runtime boot exploded");
@@ -1332,7 +1446,7 @@ describe("interactive CLI at a terminal", () => {
     const capture = createCaptureStreams();
     const reader = createBufferedTestReader([], { interactive: true });
 
-    const exitCode = await runCliWithStubbedEndpoint([], capture.streams, {
+    const exitCode = await runTerminalCli(capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: reader
     });
@@ -1343,12 +1457,33 @@ describe("interactive CLI at a terminal", () => {
     expect(fake.wasClosed()).toBe(true);
   });
 
+  // A llama.cpp server still loading its model answers /health with 503, which
+  // the adapter reports as degraded. The REPL starts and says the first reply
+  // will wait, rather than refusing to start as it does for "unavailable".
+  test("a provider that is up but not ready starts the session with a notice", async () => {
+    const fake = createFakeSdk({ modelStatus: "degraded" });
+    const capture = createCaptureStreams();
+    const reader = createBufferedTestReader([], { interactive: true });
+
+    const done = runTerminalCli(capture.streams, {
+      createSdk: async () => fake.sdk,
+      interactiveInput: reader
+    });
+
+    await waitUntil(() => capture.getStdout().includes("Session: "));
+    expect(capture.getStderr()).toContain("is up but not ready yet");
+    expect(fake.getCreateCalls()).toBe(1);
+
+    await reader.type("/exit");
+    expect(await done).toBe(0);
+  });
+
   test("Ctrl-C at the prompt exits after cleaning up", async () => {
     const fake = createFakeSdk();
     const capture = createCaptureStreams();
     const interrupts = createInterruptSource();
 
-    const done = runCliWithStubbedEndpoint([], capture.streams, {
+    const done = runTerminalCli(capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: createBufferedTestReader([], { interactive: true }),
       interrupts: interrupts.source
@@ -1368,7 +1503,7 @@ describe("interactive CLI at a terminal", () => {
     const interrupts = createInterruptSource();
     const reader = createBufferedTestReader([], { interactive: true });
 
-    const done = runCliWithStubbedEndpoint([], capture.streams, {
+    const done = runTerminalCli(capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: reader,
       interrupts: interrupts.source
@@ -1393,7 +1528,7 @@ describe("interactive CLI at a terminal", () => {
     const interrupts = createInterruptSource();
     const reader = createBufferedTestReader([], { interactive: true });
 
-    const done = runCliWithStubbedEndpoint([], capture.streams, {
+    const done = runTerminalCli(capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: reader,
       interrupts: interrupts.source
@@ -1419,7 +1554,7 @@ describe("interactive CLI at a terminal", () => {
     const interrupts = createInterruptSource();
     const reader = createBufferedTestReader([], { interactive: true });
 
-    const done = runCliWithStubbedEndpoint([], capture.streams, {
+    const done = runTerminalCli(capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: reader,
       interrupts: interrupts.source
@@ -1450,7 +1585,7 @@ describe("interactive CLI at a terminal", () => {
     const capture = createCaptureStreams();
     const reader = createBufferedTestReader([], { interactive: true });
 
-    const done = runCliWithStubbedEndpoint([], capture.streams, {
+    const done = runTerminalCli(capture.streams, {
       createSdk: async () => fake.sdk,
       interactiveInput: reader
     });
@@ -1459,6 +1594,261 @@ describe("interactive CLI at a terminal", () => {
     process.emitWarning("the disk is slow", { code: "AIA_TEST_REPL_WARNING" });
     await waitUntil(() => capture.getStderr().includes("[AIA_TEST_REPL_WARNING] Warning: the disk is slow"));
     expect(capture.getStdout().endsWith("› \n› ")).toBe(true);
+
+    await reader.type("/exit");
+    expect(await done).toBe(0);
+  });
+
+  // An MCP server's question is asked mid-turn, on the same stdin as the chat.
+  describe("MCP questions mid-turn", () => {
+    const question = (id = "approval.elicitation.1") => ({
+      payload: {
+        createdAt: "2026-10-13T12:00:00.000Z",
+        id,
+        justification: 'The MCP server "tools" asks: Who is deploying?',
+        metadata: { interaction: "elicitation", mcpServer: "tools", options: [] },
+        sessionId: "session.test.cli.1",
+        status: "pending",
+        target: { kind: "question", label: "MCP tools", value: "tools" },
+        turnId: "turn.1"
+      },
+      topic: "approval.requested"
+    });
+    const resolution = (decision: string, requestId = "approval.elicitation.1") => ({
+      payload: {
+        actor: decision === "expired" ? "system" : "web",
+        decidedAt: "2026-10-13T12:00:05.000Z",
+        decision,
+        id: `resolution.${requestId}`,
+        metadata: {},
+        requestId
+      },
+      topic: "approval.resolved"
+    });
+    const startTurn = async (fake: ReturnType<typeof createFakeSdk>) => {
+      const capture = createCaptureStreams();
+      const reader = createBufferedTestReader([], { interactive: true });
+      const done = runTerminalCli(capture.streams, { createSdk: async () => fake.sdk, interactiveInput: reader });
+      await waitUntil(() => capture.getStdout().includes("Session: session.test.cli.1"));
+      await reader.type("deploy it");
+      await waitUntil(() => capture.getStdout().includes("Thinking…"));
+      fake.emit(question());
+      await waitUntil(() => capture.getStdout().includes("Your answer (Enter to skip): "));
+      return { capture, done, reader };
+    };
+
+    // Its read used to stay pending: the next line went to the chat and to
+    // the dead question, whose answer the gateway then refused, unhandled.
+    test("a question answered elsewhere stops waiting, and the next line goes only to the chat", async () => {
+      const fake = createFakeSdk({ runBlocksUntilCancel: true });
+      const { capture, done, reader } = await startTurn(fake);
+
+      fake.emit(resolution("approved"));
+      await waitUntil(() => capture.getStderr().includes("The MCP server's question was answered elsewhere."));
+      fake.finishRun();
+      await waitUntil(() => capture.getStdout().endsWith("› "));
+      await reader.type("next request");
+      await waitUntil(() => fake.getSent().length === 2);
+
+      expect(fake.getSent()).toEqual(["deploy it", "next request"]);
+      expect(fake.getResolved()).toEqual([]);
+      fake.finishRun();
+      await waitUntil(() => capture.getStdout().endsWith("› "));
+      await reader.type("/exit");
+      expect(await done).toBe(0);
+    });
+
+    test("an expired question says so, and one its turn outlived stops waiting too", async () => {
+      const fake = createFakeSdk({ runBlocksUntilCancel: true });
+      const { capture, done, reader } = await startTurn(fake);
+      fake.emit(resolution("expired"));
+      await waitUntil(() => capture.getStderr().includes("The MCP server's question expired."));
+
+      // A second question, still open when the run ends.
+      fake.emit(question("approval.elicitation.2"));
+      await waitUntil(() => capture.getStdout().split("Your answer (Enter to skip): ").length === 3);
+      fake.finishRun();
+      await waitUntil(() => capture.getStdout().endsWith("› "));
+      await reader.type("next request");
+      await waitUntil(() => fake.getSent().length === 2);
+      expect(fake.getResolved()).toEqual([]);
+
+      fake.finishRun();
+      await waitUntil(() => capture.getStdout().endsWith("› "));
+      await reader.type("/exit");
+      expect(await done).toBe(0);
+    });
+
+    test("Ctrl-C at a question cancels it, and its own resolution is not taken for one from elsewhere", async () => {
+      const fake = createFakeSdk({ emitResolutions: true, runBlocksUntilCancel: true });
+      const capture = createCaptureStreams();
+      const interrupts = createInterruptSource();
+      const reader = createBufferedTestReader([], { interactive: true });
+      const done = runTerminalCli(capture.streams, {
+        createSdk: async () => fake.sdk,
+        interactiveInput: reader,
+        interrupts: interrupts.source
+      });
+      await waitUntil(() => capture.getStdout().includes("Session: session.test.cli.1"));
+      await reader.type("deploy it");
+      await waitUntil(() => capture.getStdout().includes("Thinking…"));
+      fake.emit(question());
+      await waitUntil(() => capture.getStdout().includes("Your answer (Enter to skip): "));
+
+      interrupts.fire();
+      await waitUntil(() => fake.getResolved().length === 1);
+      expect(fake.getResolved()).toEqual([{ decision: "cancelled", requestId: "approval.elicitation.1" }]);
+      await waitUntil(() => capture.getStdout().endsWith("› "));
+      expect(capture.getStderr()).not.toContain("answered elsewhere");
+
+      await reader.type("/exit");
+      expect(await done).toBe(0);
+    });
+
+    test("an answer too long to send is asked for again", async () => {
+      const fake = createFakeSdk({ runBlocksUntilCancel: true });
+      const { capture, done, reader } = await startTurn(fake);
+
+      await reader.type("x".repeat(2_001));
+      await waitUntil(() =>
+        capture.getStdout().includes("That answer is 2,001 characters; at most 2,000 fit. Try a shorter one.")
+      );
+      await reader.type("Ada");
+      await waitUntil(() => fake.getResolved().length === 1);
+      expect(fake.getResolved()).toEqual([
+        { comment: "Ada", decision: "approved", requestId: "approval.elicitation.1" }
+      ]);
+
+      fake.finishRun();
+      await waitUntil(() => capture.getStdout().endsWith("› "));
+      await reader.type("/exit");
+      expect(await done).toBe(0);
+    });
+
+    test("an answer the gateway refuses is reported, and the REPL carries on", async () => {
+      const fake = createFakeSdk({ resolveError: "not_found: approval.elicitation.1", runBlocksUntilCancel: true });
+      const { capture, done, reader } = await startTurn(fake);
+
+      await reader.type("Ada");
+      await waitUntil(() => capture.getStderr().includes("The answer was not sent: not_found: approval.elicitation.1"));
+      fake.finishRun();
+      await waitUntil(() => capture.getStdout().endsWith("› "));
+      await reader.type("/exit");
+      expect(await done).toBe(0);
+    });
+  });
+
+  // Security review M11: a workspace config's MCP servers start only once the
+  // operator has trusted that exact file. At a terminal the REPL asks first.
+  const writeWorkspaceMcpConfig = async (): Promise<string> => {
+    const configPath = path.join(terminalWorkspace(), "aia.config.jsonc");
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({
+        configVersion: 1,
+        mcp: {
+          servers: {
+            docs: { args: ["server.mjs"], command: "node", enabled: true, required: false, tags: [], type: "stdio" }
+          }
+        }
+      }),
+      "utf8"
+    );
+    return configPath;
+  };
+
+  test("asks whether to trust a workspace config that declares MCP servers, and starts them after a yes", async () => {
+    const configPath = await writeWorkspaceMcpConfig();
+    const fake = createFakeSdk();
+    const capture = createCaptureStreams();
+    const reader = createBufferedTestReader([], { interactive: true });
+    let started: LoadedAIAgentConfig | undefined;
+
+    const done = runTerminalCli(capture.streams, {
+      createSdk: async ({ loaded }) => {
+        started = loaded;
+        return fake.sdk;
+      },
+      interactiveInput: reader
+    });
+
+    await waitUntil(() => capture.getStdout().includes("Trust this exact file? [y/N] "));
+    expect(capture.getStdout()).toContain(`Not trusted: ${configPath}`);
+    expect(capture.getStdout()).toContain("Trusting this exact file would allow:");
+    expect(capture.getStdout()).toContain("  - MCP server docs: runs node server.mjs");
+    // Nothing starts before the answer.
+    expect(started).toBeUndefined();
+
+    await reader.type("y");
+    await waitUntil(() => capture.getStdout().includes("› "));
+    expect(capture.getStdout()).toContain(`Trusted ${configPath}.`);
+    expect(started?.workspaceTrust.trusted).toBe(true);
+    expect(Object.keys(started?.resolvedConfig.mcp.servers ?? {})).toContain("docs");
+    const store = JSON.parse(await fs.readFile(path.join(terminalHome(), ".aia", "trust.json"), "utf8")) as {
+      trustedConfigs: Array<{ path: string }>;
+    };
+    expect(store.trustedConfigs.map((entry) => entry.path)).toEqual([configPath]);
+
+    await reader.type("/exit");
+    expect(await done).toBe(0);
+  });
+
+  test("anything but yes keeps the workspace MCP servers from starting", async () => {
+    await writeWorkspaceMcpConfig();
+    const fake = createFakeSdk();
+    const capture = createCaptureStreams();
+    const reader = createBufferedTestReader([], { interactive: true });
+    let started: LoadedAIAgentConfig | undefined;
+
+    const done = runTerminalCli(capture.streams, {
+      createSdk: async ({ loaded }) => {
+        started = loaded;
+        return fake.sdk;
+      },
+      interactiveInput: reader
+    });
+
+    await waitUntil(() => capture.getStdout().includes("Trust this exact file? [y/N] "));
+    await reader.type("");
+    await waitUntil(() => capture.getStdout().includes("› "));
+    expect(capture.getStdout()).toContain("Not trusted; continuing without MCP server docs.");
+    expect(started?.workspaceTrust.trusted).toBe(false);
+    expect(started?.resolvedConfig.mcp.servers.docs).toBeUndefined();
+    expect(started?.workspaceTrust.untrustedMcpEntries.map((entry) => entry.name)).toEqual(["docs"]);
+    await expect(fs.access(path.join(terminalHome(), ".aia", "trust.json"))).rejects.toThrow();
+
+    await reader.type("/exit");
+    expect(await done).toBe(0);
+  });
+
+  // A yes that cannot be recorded (a trust store aia cannot safely rewrite)
+  // used to end startup with an error; it now starts untrusted, as a no would.
+  test("starts untrusted, saying why, when a yes cannot be recorded", async () => {
+    await writeWorkspaceMcpConfig();
+    const storePath = path.join(terminalHome(), ".aia", "trust.json");
+    const damaged = '{ "trustedConfigs": [], "version": 1, "note": "added by hand" }';
+    await fs.mkdir(path.dirname(storePath), { recursive: true });
+    await fs.writeFile(storePath, damaged, "utf8");
+    const fake = createFakeSdk();
+    const capture = createCaptureStreams();
+    const reader = createBufferedTestReader([], { interactive: true });
+    let started: LoadedAIAgentConfig | undefined;
+
+    const done = runTerminalCli(capture.streams, {
+      createSdk: async ({ loaded }) => {
+        started = loaded;
+        return fake.sdk;
+      },
+      interactiveInput: reader
+    });
+
+    await waitUntil(() => capture.getStdout().includes("Trust this exact file? [y/N] "));
+    await reader.type("y");
+    await waitUntil(() => capture.getStdout().includes("› "));
+    expect(capture.getStderr()).toContain("Could not record trust:");
+    expect(capture.getStdout()).toContain("Not trusted; continuing without MCP server docs.");
+    expect(started?.workspaceTrust.trusted).toBe(false);
+    await expect(fs.readFile(storePath, "utf8")).resolves.toBe(damaged);
 
     await reader.type("/exit");
     expect(await done).toBe(0);
@@ -1836,7 +2226,7 @@ describe("CLI trust subcommand", () => {
     expect(inspecting.capture.getStdout()).toContain("Not trusted:");
     // The operator sees the hash and exactly what would run before consenting.
     expect(inspecting.capture.getStdout()).toMatch(/sha256: [0-9a-f]{64}/u);
-    expect(inspecting.capture.getStdout()).toContain("payload: runs /bin/sh -c 'echo hi'");
+    expect(inspecting.capture.getStdout()).toContain("secret provider payload: runs /bin/sh -c 'echo hi'");
     expect(inspecting.capture.getStdout()).toContain("aia trust --grant");
     await expect(fs.access(storePath)).rejects.toThrow();
 
@@ -1847,7 +2237,7 @@ describe("CLI trust subcommand", () => {
     const accepting = trust([], ["y"]);
     expect(await accepting.exitCode).toBe(0);
     expect(accepting.capture.getStdout()).toContain("Trust this exact file now? [y/N]");
-    expect(accepting.capture.getStdout()).toContain("Now allowed: payload");
+    expect(accepting.capture.getStdout()).toContain("Now allowed: secret provider payload");
     // Recorded in this test's home, never the developer's real ~/.aia.
     const store = JSON.parse(await fs.readFile(storePath, "utf8")) as { trustedConfigs: Array<{ path: string }> };
     expect(store.trustedConfigs.map((entry) => entry.path)).toEqual([
@@ -1867,6 +2257,136 @@ describe("CLI trust subcommand", () => {
     expect(await granting.exitCode).toBe(0);
     expect(granting.capture.getStdout()).toContain("Trusted ");
     expect(granting.capture.getStdout()).not.toContain("[y/N]");
+  });
+
+  test("shows what each MCP server would get, with secret-looking values hidden", async () => {
+    const { home, workspace } = await createTrustWorkspace(
+      JSON.stringify({
+        configVersion: 1,
+        mcp: {
+          servers: {
+            docs: {
+              args: ["server.js"],
+              command: "node",
+              cwd: "/srv/docs",
+              enabled: true,
+              env: { API_TOKEN: "tok-123456", MODE: "fast" },
+              passEnv: ["GITHUB_TOKEN"],
+              required: false,
+              tags: [],
+              trust: "trusted",
+              type: "stdio"
+            },
+            remote: {
+              enabled: true,
+              headers: { "x-api-key": "key-abcdef" },
+              required: false,
+              tags: [],
+              type: "streamable-http",
+              url: "https://mcp.example.com/mcp"
+            }
+          }
+        }
+      })
+    );
+    const capture = createCaptureStreams();
+    expect(
+      await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], capture.streams, {
+        interactiveInput: lineSource([]),
+        userHomeDirectory: home
+      })
+    ).toBe(0);
+
+    const stdout = capture.getStdout();
+    expect(stdout).toContain("  - MCP server docs: runs node server.js");
+    expect(stdout).toContain("      in /srv/docs");
+    expect(stdout).toContain("      with environment API_TOKEN=<hidden>, MODE=fast");
+    expect(stdout).toContain("      given these variables from your environment: GITHUB_TOKEN");
+    expect(stdout).toContain('      with trust: "trusted", so every one of its tools would run without asking you');
+    expect(stdout).toContain("  - MCP server remote: connects to https://mcp.example.com/mcp");
+    expect(stdout).toContain("      sending the headers x-api-key");
+    expect(stdout).not.toContain("tok-123456");
+    expect(stdout).not.toContain("key-abcdef");
+  });
+
+  test("covers the approvals file too: shows its allow rules, then grants and revokes both files", async () => {
+    const { home, workspace } = await createTrustWorkspace(
+      '{ "configVersion": 1, "secrets": { "providers": { "payload": { "source": "exec", "command": "/bin/sh" } } } }'
+    );
+    await fs.writeFile(
+      path.join(workspace, "aia.approvals.jsonc"),
+      JSON.stringify({
+        defaultMode: "allow",
+        rules: [{ id: "workspace.allow.all", mode: "allow", pattern: ".*", targetKind: "command" }]
+      }),
+      "utf8"
+    );
+    const configPath = await fs.realpath(path.join(workspace, "aia.config.jsonc"));
+    const approvalsPath = await fs.realpath(path.join(workspace, "aia.approvals.jsonc"));
+    const storePath = path.join(home, ".aia", "trust.json");
+    const trust = async (argv: string[]) => {
+      const capture = createCaptureStreams();
+      const exitCode = await runCliWithStubbedEndpoint(["trust", "--cwd", workspace, ...argv], capture.streams, {
+        interactiveInput: lineSource([]),
+        userHomeDirectory: home
+      });
+      return { exitCode, stdout: capture.getStdout() };
+    };
+
+    const inspecting = await trust([]);
+    expect(inspecting.stdout).toContain(`Not trusted: ${configPath}`);
+    expect(inspecting.stdout).toContain(`Not trusted: ${approvalsPath}`);
+    expect(inspecting.stdout).toContain(
+      "  - approvals: the allow rule workspace.allow.all, which runs command matching .* without asking"
+    );
+    expect(inspecting.stdout).toContain(
+      '  - approvals: defaultMode "allow" (yours is "ask") for everything no rule covers'
+    );
+    await expect(fs.access(storePath)).rejects.toThrow();
+
+    const granting = await trust(["--grant"]);
+    expect(granting.exitCode).toBe(0);
+    expect(granting.stdout).toContain(`Trusted ${configPath}\nTrusted ${approvalsPath}`);
+    const store = JSON.parse(await fs.readFile(storePath, "utf8")) as { trustedConfigs: Array<{ path: string }> };
+    expect(store.trustedConfigs.map((entry) => entry.path).sort()).toEqual([approvalsPath, configPath].sort());
+
+    expect((await trust([])).stdout).toContain(`Already trusted: ${configPath}`);
+
+    const revoking = await trust(["--revoke"]);
+    expect(revoking.stdout).toContain(`Revoked trust for ${configPath} and ${approvalsPath}.`);
+    const after = JSON.parse(await fs.readFile(storePath, "utf8").catch(() => '{"trustedConfigs":[]}')) as {
+      trustedConfigs: unknown[];
+    };
+    expect(after.trustedConfigs).toEqual([]);
+  });
+
+  test("prints names and paths from the config so they cannot drive the terminal", async () => {
+    const { home, workspace } = await createTrustWorkspace(
+      JSON.stringify({
+        configVersion: 1,
+        mcp: {
+          servers: {
+            "docs\u001b]52;c;ZXZpbA==\u0007": {
+              args: ["--title", "\u001b[2Jcleared"],
+              command: "node",
+              enabled: true,
+              required: false,
+              tags: [],
+              type: "stdio"
+            }
+          }
+        }
+      })
+    );
+    const capture = createCaptureStreams();
+    await runCliWithStubbedEndpoint(["trust", "--cwd", workspace], capture.streams, {
+      interactiveInput: lineSource([]),
+      userHomeDirectory: home
+    });
+
+    expect(capture.getStdout()).not.toContain("\u001b");
+    expect(capture.getStdout()).toContain("MCP server docs\\x1b]52;c;ZXZpbA==\\x07");
+    expect(capture.getStdout()).toContain("\\x1b[2Jcleared");
   });
 
   test("refuses --grant together with --revoke", async () => {
@@ -1915,7 +2435,7 @@ describe("CLI trust subcommand", () => {
 // connected?", and `aia attach` is how they join a live external-agent
 // terminal. All three were previously uncovered.
 describe("CLI inspection commands and attach", () => {
-  function createRequestSdk(handlers: Record<string, () => unknown>): AIAgentSdk {
+  function createRequestSdk(handlers: Record<string, (payload: unknown) => unknown>): AIAgentSdk {
     const handle = {
       async listPendingApprovals() {
         return [];
@@ -1933,7 +2453,7 @@ describe("CLI inspection commands and attach", () => {
 
     return {
       async close() {},
-      async request(topic: string) {
+      async request(topic: string, payload: unknown) {
         if (topic === "model.health") {
           return { checkedAt: "2026-06-10T12:00:00.000Z", details: {}, providerId: "fake", status: "healthy" };
         }
@@ -1941,7 +2461,7 @@ describe("CLI inspection commands and attach", () => {
         if (!handler) {
           throw new Error(`unexpected request topic ${topic}`);
         }
-        return handler();
+        return handler(payload);
       },
       sessions: {
         async create() {
@@ -1989,6 +2509,34 @@ describe("CLI inspection commands and attach", () => {
     expect(stdout).toContain("error: spawn npx ENOENT");
   });
 
+  test("/mcp prints what servers report so it cannot drive the terminal", async () => {
+    const sdk = createRequestSdk({
+      "mcp.list": () => ({
+        servers: [
+          {
+            capabilities: { tools: 1 },
+            error: "crashed\u001b[2J",
+            serverName: "docs",
+            state: "failed",
+            tools: [{ description: "Search \u001b]8;;https://evil.example\u0007here", invocationName: "docs_search" }],
+            transport: "stdio"
+          }
+        ]
+      })
+    });
+    const capture = createCaptureStreams();
+
+    await runCliWithStubbedEndpoint([], capture.streams, {
+      createSdk: async () => sdk,
+      interactiveInput: lineSource(["/mcp", "/exit"])
+    });
+
+    const stdout = capture.getStdout();
+    expect(stdout).not.toContain("\u001b");
+    expect(stdout).toContain("error: crashed\\x1b[2J");
+    expect(stdout).toContain("- docs_search: Search \\x1b]8;;https://evil.example\\x07here");
+  });
+
   test("/mcp and /agents report an empty configuration rather than nothing at all", async () => {
     const sdk = createRequestSdk({
       "external_agent.session.list": () => ({ sessions: [] }),
@@ -2003,6 +2551,166 @@ describe("CLI inspection commands and attach", () => {
 
     expect(capture.getStdout()).toContain("No MCP servers are configured.");
     expect(capture.getStdout()).toContain("No interactive external-agent sessions.");
+  });
+
+  test("/skills lists each skill with where it came from, and the problems found", async () => {
+    const asked: unknown[] = [];
+    const sdk = createRequestSdk({
+      "skills.list": (payload) => (
+        asked.push(payload),
+        {
+          diagnostics: [
+            {
+              kind: "invalid",
+              message: "missing field `description`",
+              path: "/workspace/.agents/skills/broken/SKILL.md",
+              severity: "error"
+            }
+          ],
+          skills: [
+            {
+              allowedTools: [],
+              description: "Draft release notes.",
+              directory: "/workspace/.agents/skills/release-notes",
+              disableModelInvocation: false,
+              enabled: true,
+              filePath: "/workspace/.agents/skills/release-notes/SKILL.md",
+              metadata: {},
+              name: "release-notes",
+              scope: "project"
+            },
+            {
+              allowedTools: [],
+              description: "Deploy to production.",
+              directory: "/home/.agents/skills/deploy",
+              disableModelInvocation: true,
+              enabled: false,
+              filePath: "/home/.agents/skills/deploy/SKILL.md",
+              metadata: {},
+              name: "deploy",
+              scope: "user"
+            }
+          ]
+        }
+      )
+    });
+    const capture = createCaptureStreams();
+
+    await runCliWithStubbedEndpoint([], capture.streams, {
+      createSdk: async () => sdk,
+      interactiveInput: lineSource(["/skills", "/exit"])
+    });
+
+    const stdout = capture.getStdout();
+    expect(stdout).toContain("release-notes  [project]  Draft release notes.");
+    expect(stdout).toContain("  /workspace/.agents/skills/release-notes/SKILL.md");
+    expect(stdout).toContain("deploy  [user, disabled, only as $deploy]  Deploy to production.");
+    expect(stdout).toContain("  error: /workspace/.agents/skills/broken/SKILL.md: missing field `description`");
+    // For the session's own directory: it used to ask for the gateway's.
+    expect(asked).toEqual([{ cwd: (await buildSnapshot("ok")).snapshot.session.cwd }]);
+  });
+
+  test("/mcp reconnect reconnects a server; the REPL notes a server that failed or needs a sign-in", async () => {
+    const reconnected: string[] = [];
+    const sdk = createRequestSdk({
+      "mcp.list": () => ({
+        servers: [
+          {
+            capabilities: { tools: 0 },
+            error: "spawn npx ENOENT",
+            serverName: "context7",
+            state: "failed",
+            tools: [],
+            transport: "stdio"
+          },
+          {
+            capabilities: { tools: 0 },
+            serverName: "jira",
+            state: "needs_login",
+            tools: [],
+            transport: "streamable-http"
+          }
+        ]
+      }),
+      "mcp.reconnect": () => {
+        reconnected.push("context7");
+        return {
+          server: {
+            capabilities: { tools: 1 },
+            serverName: "context7",
+            state: "connected",
+            tools: [],
+            transport: "stdio"
+          }
+        };
+      }
+    });
+    const capture = createCaptureStreams();
+
+    await runCliWithStubbedEndpoint([], capture.streams, {
+      createSdk: async () => sdk,
+      interactiveInput: lineSource(["/mcp reconnect context7", "/mcp reconnect", "/exit"])
+    });
+
+    expect(capture.getStderr()).toContain("· MCP context7 failed: spawn npx ENOENT — /mcp");
+    expect(capture.getStderr()).toContain("· MCP jira needs you to sign in: aia mcp login jira");
+    expect(reconnected).toEqual(["context7"]);
+    expect(capture.getStdout()).toContain("context7  [connected, stdio]");
+    expect(capture.getStderr()).toContain("Usage: /mcp reconnect <server-name>");
+  });
+
+  test("the REPL notes a failing server once per streak, and once more when its reconnects give up", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const base = createRequestSdk({ "mcp.list": () => ({ servers: [] }) });
+    const sdk = {
+      ...base,
+      subscribe(handler: (event: unknown) => void) {
+        listener = handler;
+        return () => undefined;
+      }
+    } as unknown as AIAgentSdk;
+    const update = (state: string, extra: Record<string, unknown> = {}) =>
+      listener?.({
+        createdAt: new Date().toISOString(),
+        id: `mcp-updated.flaky.${Math.random()}`,
+        metadata: {},
+        payload: {
+          server: { capabilities: { tools: 0 }, serverName: "flaky", state, transport: "stdio", ...extra }
+        },
+        topic: "mcp.updated"
+      });
+    const capture = createCaptureStreams();
+    const reader = createBufferedTestReader();
+    const done = runCliWithStubbedEndpoint([], capture.streams, {
+      createSdk: async () => sdk,
+      interactiveInput: reader
+    });
+    await waitUntil(() => listener !== undefined);
+
+    // A crash loop: each try used to print another line.
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      update("failed", { error: `Lost the connection: the process exited with code 4 (try ${attempt})` });
+      update("connecting");
+    }
+    update("failed", {
+      error: "Lost the connection. Gave up after 5 reconnect attempts; reconnect it with /mcp reconnect flaky.",
+      errorCode: "mcp_reconnect_gave_up"
+    });
+    await waitUntil(() => capture.getStderr().includes("Gave up after 5"));
+    const notices = capture
+      .getStderr()
+      .split("\n")
+      .filter((line) => line.includes("· MCP flaky failed"));
+    expect(notices).toHaveLength(2);
+    expect(notices[0]).toContain("(try 1)");
+
+    // Connected again, a new failure starts a new streak.
+    update("connected");
+    update("failed", { error: "Lost the connection: again" });
+    await waitUntil(() => capture.getStderr().includes("again"));
+
+    await reader.type("/exit");
+    expect(await done).toBe(0);
   });
 
   test("/agents lists live interactive sessions", async () => {
@@ -2094,17 +2802,19 @@ describe("CLI inspection commands and attach", () => {
   });
 
   test("aia attach honors an explicit --url", async () => {
+    const { home, workspace } = await attachWorkspace();
     const calls: string[] = [];
     const capture = createCaptureStreams();
 
     const exitCode = await runCliWithStubbedEndpoint(
-      ["attach", "external-agent-session.abc", "--url", "ws://tunnel.example.com/api/gateway/ws"],
+      ["attach", "external-agent-session.abc", "--url", "ws://tunnel.example.com/api/gateway/ws", "--cwd", workspace],
       capture.streams,
       {
         attachToExternalAgentSession: async (options) => {
           calls.push(options.url);
           return 0;
-        }
+        },
+        userHomeDirectory: home
       }
     );
 
@@ -2148,14 +2858,868 @@ describe("CLI inspection commands and attach", () => {
   });
 
   test("aia attach reports a relay failure rather than throwing", async () => {
+    const { home, workspace } = await attachWorkspace();
     const capture = createCaptureStreams();
-    const exitCode = await runCliWithStubbedEndpoint(["attach", "external-agent-session.abc"], capture.streams, {
-      attachToExternalAgentSession: async () => {
-        throw new Error("socket refused");
+    const exitCode = await runCliWithStubbedEndpoint(
+      ["attach", "external-agent-session.abc", "--cwd", workspace],
+      capture.streams,
+      {
+        attachToExternalAgentSession: async () => {
+          throw new Error("socket refused");
+        },
+        userHomeDirectory: home
       }
-    });
+    );
 
     expect(exitCode).toBe(1);
     expect(capture.getStderr()).toContain("socket refused");
   });
 });
+
+describe("aia skills", () => {
+  const skillRoots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(skillRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
+  });
+
+  async function createSkillsWorkspace(): Promise<{ home: string; workspace: string }> {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-cli-skills-")));
+    skillRoots.push(root);
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
+    await fs.mkdir(path.join(workspace, ".agents", "skills", "release-notes"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, ".agents", "skills", "release-notes", "SKILL.md"),
+      "---\nname: release-notes\ndescription: Draft release notes.\n---\nSteps.\n",
+      "utf8"
+    );
+    return { home, workspace };
+  }
+
+  async function listJson(home: string, workspace: string) {
+    const capture = createCaptureStreams();
+    const exitCode = await runCliWithStubbedEndpoint(
+      ["skills", "list", "--json", "--cwd", workspace],
+      capture.streams,
+      {
+        userHomeDirectory: home
+      }
+    );
+    expect(exitCode, capture.getStderr()).toBe(0);
+    return JSON.parse(capture.getStdout()) as {
+      diagnostics: unknown[];
+      skills: Array<{ enabled: boolean; name: string; scope: string }>;
+    };
+  }
+
+  test("lists the project's skills and the bundled ones, as JSON on request", async () => {
+    const { home, workspace } = await createSkillsWorkspace();
+    const listing = await listJson(home, workspace);
+    expect(listing.skills.map((skill) => `${skill.scope}:${skill.name}:${skill.enabled}`)).toEqual([
+      "project:release-notes:true",
+      "bundled:skill-creator:true"
+    ]);
+    expect(listing.diagnostics).toEqual([]);
+  });
+
+  test("disable and enable edit skills.disabled in the user config and keep its comments", async () => {
+    const { home, workspace } = await createSkillsWorkspace();
+    const configPath = path.join(home, ".aia", "aia.config.jsonc");
+    await fs.writeFile(configPath, '{\n  // my settings\n  "configVersion": 1\n}\n', "utf8");
+
+    const disabling = createCaptureStreams();
+    expect(
+      await runCliWithStubbedEndpoint(["skills", "disable", "release-notes", "--cwd", workspace], disabling.streams, {
+        userHomeDirectory: home
+      })
+    ).toBe(0);
+    expect(disabling.getStdout()).toContain(`Disabled "release-notes" in ${configPath}.`);
+    const written = await fs.readFile(configPath, "utf8");
+    expect(written).toContain("// my settings");
+    expect(written).toContain('"disabled": [');
+    expect((await listJson(home, workspace)).skills.find((skill) => skill.name === "release-notes")?.enabled).toBe(
+      false
+    );
+
+    const again = createCaptureStreams();
+    await runCliWithStubbedEndpoint(["skills", "disable", "release-notes", "--cwd", workspace], again.streams, {
+      userHomeDirectory: home
+    });
+    expect(again.getStdout()).toContain(`"release-notes" is already disabled in ${configPath}.`);
+
+    const enabling = createCaptureStreams();
+    await runCliWithStubbedEndpoint(["skills", "enable", "release-notes", "--cwd", workspace], enabling.streams, {
+      userHomeDirectory: home
+    });
+    expect(enabling.getStdout()).toContain(`Enabled "release-notes"`);
+    expect((await listJson(home, workspace)).skills.find((skill) => skill.name === "release-notes")?.enabled).toBe(
+      true
+    );
+    expect(await fs.readFile(configPath, "utf8")).toContain("// my settings");
+  });
+
+  test("says when a name matches no skill, and enable removes a name from every file that lists it", async () => {
+    const { home, workspace } = await createSkillsWorkspace();
+    const workspaceConfig = path.join(workspace, "aia.config.jsonc");
+    const userConfig = path.join(home, ".aia", "config.jsonc");
+    await fs.writeFile(workspaceConfig, '{ "configVersion": 1, "skills": { "disabled": ["release-notes"] } }', "utf8");
+    await fs.writeFile(userConfig, '{ "configVersion": 1, "skills": { "disabled": ["release-notes"] } }', "utf8");
+
+    const typo = createCaptureStreams();
+    await runCliWithStubbedEndpoint(["skills", "disable", "relase-notes", "--cwd", workspace], typo.streams, {
+      userHomeDirectory: home
+    });
+    expect(typo.getStdout()).toContain('No skill named "relase-notes" is found');
+    // A new entry goes to ~/.aia/config.jsonc, which exists here.
+    expect(typo.getStdout()).toContain(`Disabled "relase-notes" in ${userConfig}.`);
+
+    const enabling = createCaptureStreams();
+    await runCliWithStubbedEndpoint(["skills", "enable", "release-notes", "--cwd", workspace], enabling.streams, {
+      userHomeDirectory: home
+    });
+    // skills.disabled adds up across files, so a list left in either one would keep it off.
+    expect(enabling.getStdout()).toContain(
+      `Enabled "release-notes": removed it from skills.disabled in ${userConfig} and ${workspaceConfig}.`
+    );
+    expect((await listJson(home, workspace)).skills.find((skill) => skill.name === "release-notes")?.enabled).toBe(
+      true
+    );
+  });
+
+  test("a skill disabled in any config file stays disabled", async () => {
+    // A workspace config's own list used to replace the user's, quietly
+    // turning back on a skill the operator had disabled.
+    const { home, workspace } = await createSkillsWorkspace();
+    await fs.writeFile(
+      path.join(home, ".aia", "config.jsonc"),
+      '{ "configVersion": 1, "skills": { "disabled": ["release-notes"] } }',
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(workspace, "aia.config.jsonc"),
+      '{ "configVersion": 1, "skills": { "disabled": ["some-other-skill"] } }',
+      "utf8"
+    );
+
+    expect((await listJson(home, workspace)).skills.find((skill) => skill.name === "release-notes")?.enabled).toBe(
+      false
+    );
+  });
+
+  test("rejects an unknown subcommand and a missing name", async () => {
+    const unknown = createCaptureStreams();
+    expect(await runCliWithStubbedEndpoint(["skills", "remove", "x"], unknown.streams, {})).toBe(1);
+    expect(unknown.getStderr()).toContain("Unknown skills subcommand: remove");
+
+    const missing = createCaptureStreams();
+    expect(await runCliWithStubbedEndpoint(["skills", "disable"], missing.streams, {})).toBe(1);
+    expect(missing.getStderr()).toContain("Usage: aia skills disable <name>");
+
+    // A bare `aia skills` is a request for help, not an error.
+    const bare = createCaptureStreams();
+    expect(await runCliWithStubbedEndpoint(["skills"], bare.streams, {})).toBe(0);
+    expect(bare.getStdout()).toContain("aia skills list");
+  });
+});
+
+describe("aia mcp", () => {
+  const mcpRoots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(mcpRoots.splice(0).map((root) => fs.rm(root, { force: true, recursive: true })));
+  });
+
+  async function createMcpWorkspace(
+    userConfig: string
+  ): Promise<{ configPath: string; home: string; workspace: string }> {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-cli-mcp-")));
+    mcpRoots.push(root);
+    const home = path.join(root, "home");
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(home, ".aia"), { recursive: true });
+    await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
+    const configPath = path.join(home, ".aia", "aia.config.jsonc");
+    await fs.writeFile(configPath, userConfig, "utf8");
+    return { configPath, home, workspace };
+  }
+
+  async function run(argv: string[], home: string) {
+    const capture = createCaptureStreams();
+    const exitCode = await runCliWithStubbedEndpoint(argv, capture.streams, { userHomeDirectory: home });
+    return { exitCode, stderr: capture.getStderr(), stdout: capture.getStdout() };
+  }
+
+  test("list and get show each server with its secrets masked, in text and JSON", async () => {
+    const { home, workspace } = await createMcpWorkspace(
+      JSON.stringify({
+        configVersion: 1,
+        mcp: {
+          servers: {
+            docs: {
+              enabled: true,
+              headers: { Authorization: "Bearer super-secret" },
+              required: false,
+              tags: [],
+              type: "streamable-http",
+              url: "https://docs.example.com/mcp"
+            },
+            local: {
+              args: ["server.js"],
+              command: "node",
+              enabled: true,
+              env: { API_KEY: "hunter2", REF: { id: "MY_TOKEN", source: "env" } },
+              required: false,
+              stderr: "pipe",
+              tags: [],
+              type: "stdio"
+            },
+            // A preregistered OAuth client: its secret is as secret as a header.
+            signin: {
+              enabled: true,
+              oauth: { clientId: "aia-client", clientSecret: "oauth-shh" },
+              required: false,
+              tags: [],
+              type: "streamable-http",
+              url: "https://signin.example.com/mcp"
+            }
+          }
+        }
+      })
+    );
+
+    const listed = await run(["mcp", "list", "--cwd", workspace], home);
+    expect(listed.exitCode, listed.stderr).toBe(0);
+    expect(listed.stdout).toContain("docs  [streamable-http, enabled]  https://docs.example.com/mcp");
+    expect(listed.stdout).toContain("auth: Authorization header");
+    expect(listed.stdout).toContain("local  [stdio, enabled]  node server.js");
+
+    type ListedJson = {
+      auth?: string;
+      name: string;
+      server: Record<string, Record<string, string>>;
+    };
+    const json = await run(["mcp", "list", "--json", "--cwd", workspace], home);
+    for (const secret of ["super-secret", "hunter2", "oauth-shh"]) {
+      expect(json.stdout).not.toContain(secret);
+    }
+    const parsed = JSON.parse(json.stdout) as ListedJson[];
+    const local = parsed.find((entry) => entry.name === "local");
+    expect(local?.server.env).toEqual({
+      API_KEY: "*****",
+      REF: "secret env:MY_TOKEN"
+    });
+    // A stdio server has no sign-in, so it has no `auth` (it used to be "-").
+    expect(local).not.toHaveProperty("auth");
+    expect(parsed.find((entry) => entry.name === "docs")?.auth).toBe("Authorization header");
+    expect(parsed.find((entry) => entry.name === "signin")).toMatchObject({
+      auth: "not signed in",
+      server: { oauth: { clientId: "aia-client", clientSecret: "*****" } }
+    });
+
+    const one = await run(["mcp", "get", "docs", "--cwd", workspace], home);
+    expect(one.stdout).toContain('headers: {"Authorization":"*****"}');
+    expect(one.stdout).not.toContain("super-secret");
+
+    // `get --json` prints the one server, masked the same way.
+    const oneJson = await run(["mcp", "get", "signin", "--json", "--cwd", workspace], home);
+    expect(oneJson.exitCode, oneJson.stderr).toBe(0);
+    expect(oneJson.stdout).not.toContain("oauth-shh");
+    expect(JSON.parse(oneJson.stdout)).toMatchObject({
+      name: "signin",
+      server: { oauth: { clientId: "aia-client", clientSecret: "*****" }, url: "https://signin.example.com/mcp" }
+    });
+    const oneText = await run(["mcp", "get", "signin", "--cwd", workspace], home);
+    expect(oneText.stdout).toContain('oauth: {"clientId":"aia-client","clientSecret":"*****"}');
+    expect(oneText.stdout).not.toContain("oauth-shh");
+  });
+
+  test("a bare aia mcp prints its help and exits 0, as aia voice does", async () => {
+    const { home } = await createMcpWorkspace(JSON.stringify({ configVersion: 1 }));
+    const bare = await run(["mcp"], home);
+    expect(bare.exitCode).toBe(0);
+    expect(bare.stdout).toContain("aia mcp list");
+    expect(bare.stderr).toBe("");
+  });
+
+  test("list prints what a config names so it cannot drive the terminal", async () => {
+    const { home, workspace } = await createMcpWorkspace(
+      JSON.stringify({
+        configVersion: 1,
+        mcp: {
+          servers: {
+            "docs\u001b]8;;https://evil.example\u0007": {
+              args: ["\u001b[2J"],
+              command: "node",
+              enabled: true,
+              required: false,
+              tags: [],
+              type: "stdio"
+            }
+          }
+        }
+      })
+    );
+
+    const listed = await run(["mcp", "list", "--cwd", workspace], home);
+    expect(listed.exitCode, listed.stderr).toBe(0);
+    expect(listed.stdout).not.toContain("\u001b");
+    expect(listed.stdout).toContain("docs\\x1b]8;;https://evil.example\\x07  [stdio, enabled]  node \\x1b[2J");
+  });
+
+  test("add writes a server to the user config, keeping its comments, and refuses to replace one without --force", async () => {
+    const { configPath, home, workspace } = await createMcpWorkspace('{\n  // mine\n  "configVersion": 1\n}\n');
+
+    const added = await run(
+      [
+        "mcp",
+        "add",
+        "tools",
+        "--env",
+        "LEVEL=debug",
+        "--pass-env",
+        "GITHUB_TOKEN",
+        "--cwd",
+        workspace,
+        "--",
+        "node",
+        "srv.js",
+        "--port",
+        "1"
+      ],
+      home
+    );
+    expect(added.exitCode, added.stderr).toBe(0);
+    expect(added.stdout).toContain(`Added MCP server "tools" in ${configPath}.`);
+    const written = await fs.readFile(configPath, "utf8");
+    expect(written).toContain("// mine");
+    expect(JSON.parse(written.replace(/\/\/.*\n/gu, "\n")).mcp.servers.tools).toMatchObject({
+      args: ["srv.js", "--port", "1"],
+      command: "node",
+      env: { LEVEL: "debug" },
+      passEnv: ["GITHUB_TOKEN"],
+      type: "stdio"
+    });
+
+    const again = await run(["mcp", "add", "tools", "--url", "https://x.example.com/mcp", "--cwd", workspace], home);
+    expect(again.exitCode).toBe(1);
+    expect(again.stderr).toContain("Use --force to replace it");
+
+    const forced = await run(
+      ["mcp", "add", "tools", "--url", "https://x.example.com/mcp", "--force", "--cwd", workspace],
+      home
+    );
+    expect(forced.stdout).toContain('Replaced MCP server "tools"');
+    expect(forced.stdout).toContain("aia mcp login tools");
+
+    const removed = await run(["mcp", "remove", "tools", "--cwd", workspace], home);
+    expect(removed.stdout).toContain(`Removed MCP server "tools" from ${configPath}.`);
+    expect(await fs.readFile(configPath, "utf8")).toContain("// mine");
+  });
+
+  test("add --workspace keeps the workspace config's trust when it was the operator's, and says when it was not", async () => {
+    const { home, workspace } = await createMcpWorkspace('{ "configVersion": 1 }');
+
+    // No workspace config yet: the operator's own, so the result is trusted.
+    const first = await run(["mcp", "add", "one", "--workspace", "--cwd", workspace, "--", "node", "one.js"], home);
+    expect(first.exitCode, first.stderr).toBe(0);
+    expect(first.stdout).not.toContain("not trusted");
+
+    // A config that arrived with the checkout, untrusted, stays untrusted.
+    await fs.writeFile(
+      path.join(workspace, "aia.config.jsonc"),
+      JSON.stringify({
+        mcp: {
+          servers: {
+            theirs: { args: [], command: "node", enabled: true, required: false, tags: [], type: "stdio" }
+          }
+        }
+      }),
+      "utf8"
+    );
+    const second = await run(["mcp", "add", "two", "--workspace", "--cwd", workspace, "--", "node", "two.js"], home);
+    expect(second.exitCode, second.stderr).toBe(0);
+    expect(second.stdout).toContain(
+      "The workspace config is not trusted, so this server starts only after aia trust --grant."
+    );
+  });
+
+  test("add checks the name and the entry before writing anything", async () => {
+    const { configPath, home, workspace } = await createMcpWorkspace('{ "configVersion": 1 }');
+    const badName = await run(["mcp", "add", "x".repeat(129), "--cwd", workspace, "--", "node"], home);
+    expect(badName.exitCode).toBe(1);
+    expect(badName.stderr).toContain("is not a usable server name");
+    const controlName = await run(["mcp", "add", "bad\u001bname", "--cwd", workspace, "--", "node"], home);
+    expect(controlName.exitCode).toBe(1);
+    expect(controlName.stderr).toContain('"bad\\x1bname" is not a usable server name');
+
+    const both = await run(
+      ["mcp", "add", "x", "--url", "https://x.example.com", "--cwd", workspace, "--", "node"],
+      home
+    );
+    expect(both.stderr).toContain("Give exactly one of");
+
+    const unknownTemplate = await run(["mcp", "add", "x", "--template", "nope", "--cwd", workspace], home);
+    expect(unknownTemplate.stderr).toContain('No MCP server template "nope"');
+    expect(await fs.readFile(configPath, "utf8")).toBe('{ "configVersion": 1 }');
+  });
+
+  test("add and remove edit the user file that defines a server, and a new one goes to config.jsonc", async () => {
+    // Finding: with the server in config.jsonc, `add` wrote a second entry to
+    // aia.config.jsonc, and the merge sent config.jsonc's API key to the new URL.
+    const { home, workspace } = await createMcpWorkspace('{ "configVersion": 1 }');
+    const baseConfig = path.join(home, ".aia", "config.jsonc");
+    await fs.writeFile(
+      baseConfig,
+      JSON.stringify({
+        configVersion: 1,
+        mcp: {
+          servers: {
+            base: {
+              enabled: true,
+              headers: { "x-api-key": "secret-a" },
+              required: false,
+              tags: [],
+              type: "streamable-http",
+              url: "https://a.example.com/mcp"
+            }
+          }
+        }
+      }),
+      "utf8"
+    );
+
+    const refused = await run(["mcp", "add", "base", "--url", "https://b.example.com/mcp", "--cwd", workspace], home);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain(`${baseConfig} already defines the MCP server "base". Use --force to replace it.`);
+
+    const forced = await run(
+      ["mcp", "add", "base", "--url", "https://b.example.com/mcp", "--force", "--cwd", workspace],
+      home
+    );
+    expect(forced.stdout).toContain(`Replaced MCP server "base" in ${baseConfig}.`);
+    const replaced = JSON.parse(await fs.readFile(baseConfig, "utf8")) as {
+      mcp: { servers: Record<string, { headers: Record<string, string>; url: string }> };
+    };
+    // Replaced whole: the old entry's key does not go with the new URL.
+    expect(replaced.mcp.servers.base).toMatchObject({ headers: {}, url: "https://b.example.com/mcp" });
+
+    const added = await run(["mcp", "add", "fresh", "--cwd", workspace, "--", "node", "srv.js"], home);
+    expect(added.stdout).toContain(`Added MCP server "fresh" in ${baseConfig}.`);
+
+    const removed = await run(["mcp", "remove", "base", "--cwd", workspace], home);
+    expect(removed.stdout).toContain(`Removed MCP server "base" from ${baseConfig}.`);
+  });
+
+  test("add refuses a name the other scope defines, since the two entries would be merged", async () => {
+    const { configPath, home, workspace } = await createMcpWorkspace(
+      JSON.stringify({
+        configVersion: 1,
+        mcp: {
+          servers: {
+            docs: { args: [], command: "node", enabled: true, required: false, stderr: "pipe", tags: [], type: "stdio" }
+          }
+        }
+      })
+    );
+    const refused = await run(
+      ["mcp", "add", "docs", "--workspace", "--force", "--cwd", workspace, "--", "node", "other.js"],
+      home
+    );
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain(`The MCP server "docs" is also defined in ${configPath}`);
+    await expect(fs.access(path.join(workspace, "aia.config.jsonc"))).rejects.toThrow();
+  });
+
+  test("writes a new config file readable only by its owner, and a symlinked one through its link", async () => {
+    const { home, workspace } = await createMcpWorkspace('{ "configVersion": 1 }');
+    const added = await run(["mcp", "add", "local", "--workspace", "--cwd", workspace, "--", "node", "srv.js"], home);
+    expect(added.exitCode, added.stderr).toBe(0);
+    expect((await fs.stat(path.join(workspace, "aia.config.jsonc"))).mode & 0o777).toBe(0o600);
+
+    // ~/.aia/aia.config.jsonc kept in a dotfiles folder and linked in.
+    const userConfig = path.join(home, ".aia", "aia.config.jsonc");
+    const dotfile = path.join(home, "dotfiles-aia.jsonc");
+    await fs.rename(userConfig, dotfile);
+    await fs.symlink(dotfile, userConfig);
+    const linked = await run(["mcp", "add", "linked", "--cwd", workspace, "--", "node", "srv.js"], home);
+    expect(linked.exitCode, linked.stderr).toBe(0);
+    expect((await fs.lstat(userConfig)).isSymbolicLink()).toBe(true);
+    expect(await fs.readFile(dotfile, "utf8")).toContain('"linked"');
+  });
+
+  test("logout forgets a saved sign-in; reconnect with no session running says so", async () => {
+    // Nothing listens on the configured gateway either (a free port), so the
+    // test never dials a server the developer happens to be running.
+    const { home, workspace } = await createMcpWorkspace(
+      JSON.stringify({ configVersion: 1, gateway: { port: await findFreePort() } })
+    );
+    const loggedOut = await run(["mcp", "logout", "docs", "--cwd", workspace], home);
+    expect(loggedOut.stdout).toContain('No saved sign-in for "docs".');
+
+    const reconnect = await run(["mcp", "reconnect", "docs", "--cwd", workspace], home);
+    expect(reconnect.exitCode).toBe(0);
+    expect(reconnect.stdout).toContain("No aia session is running in this workspace");
+  });
+
+  test("login signs in through the browser, or through a pasted callback URL, and logout forgets it", async () => {
+    const serverCleanups: Array<() => Promise<void>> = [];
+    try {
+      const server = await startProtectedMcpServer(serverCleanups);
+      const { home, workspace } = await createMcpWorkspace(
+        JSON.stringify({
+          configVersion: 1,
+          mcp: {
+            servers: {
+              protected: {
+                enabled: true,
+                headers: {},
+                required: false,
+                tags: [],
+                type: "streamable-http",
+                url: server.url
+              }
+            }
+          }
+        })
+      );
+
+      const viaBrowser = createCaptureStreams();
+      expect(
+        await runCliWithStubbedEndpoint(["mcp", "login", "protected", "--cwd", workspace], viaBrowser.streams, {
+          mcp: { openBrowser: headlessBrowser },
+          userHomeDirectory: home
+        })
+      ).toBe(0);
+      expect(viaBrowser.getStdout()).toContain('Opening your browser to sign in to "protected"');
+      expect(viaBrowser.getStdout()).toContain('Signed in to "protected".');
+
+      const listed = createCaptureStreams();
+      await runCliWithStubbedEndpoint(["mcp", "list", "--cwd", workspace], listed.streams, { userHomeDirectory: home });
+      expect(listed.getStdout()).toContain("auth: signed in (OAuth)");
+
+      const loggedOut = createCaptureStreams();
+      await runCliWithStubbedEndpoint(["mcp", "logout", "protected", "--cwd", workspace], loggedOut.streams, {
+        userHomeDirectory: home
+      });
+      expect(loggedOut.getStdout()).toContain('Removed the saved sign-in for "protected".');
+
+      // No browser here: the operator pastes where the browser ended up. A
+      // stray Enter, a wrong line and an earlier attempt's address come
+      // first; each used to use up the only paste, leaving the login to wait
+      // out its timeout.
+      let pastedFrom: (value: string) => void = () => undefined;
+      const pasted = new Promise<string>((resolve) => {
+        pastedFrom = resolve;
+      });
+      async function* typed() {
+        yield "";
+        yield "not the address";
+        const address = new URL(await pasted);
+        address.searchParams.set("state", "from-an-earlier-attempt");
+        yield address.toString();
+        yield await pasted;
+      }
+      const viaPaste = createCaptureStreams();
+      const exitCode = runCliWithStubbedEndpoint(
+        ["mcp", "login", "protected", "--no-browser", "--cwd", workspace],
+        {
+          stderr: viaPaste.streams.stderr,
+          stdout: {
+            write: (value: string) => {
+              const match = /(http:\/\/127\.0\.0\.1:\d+\/authorize\S*)/u.exec(value);
+              if (match) {
+                void fetch(match[1]!, { redirect: "manual" }).then((response) =>
+                  pastedFrom(response.headers.get("location")!)
+                );
+              }
+              return viaPaste.streams.stdout.write(value);
+            }
+          }
+        },
+        { mcp: { readLines: typed }, userHomeDirectory: home }
+      );
+      expect(await exitCode).toBe(0);
+      expect(viaPaste.getStdout()).toContain("Then paste the address the browser ends on here");
+      expect(viaPaste.getStdout()).toContain('Signed in to "protected".');
+      const ignored = viaPaste.getStderr().match(/That is not the address this sign-in ends on/gu) ?? [];
+      expect(ignored).toHaveLength(2);
+      expect(viaPaste.getStderr()).toMatch(/it starts with http:\/\/127\.0\.0\.1:\d+\/callback\//u);
+    } finally {
+      for (const cleanup of serverCleanups.reverse()) {
+        await cleanup();
+      }
+    }
+  });
+
+  test("login sends a header given as a secret reference, resolved", async () => {
+    const serverCleanups: Array<() => Promise<void>> = [];
+    const previous = process.env.AIA_TEST_MCP_API_KEY;
+    process.env.AIA_TEST_MCP_API_KEY = "key-from-env";
+    try {
+      const server = await startProtectedMcpServer(serverCleanups);
+      const { home, workspace } = await createMcpWorkspace(
+        JSON.stringify({
+          configVersion: 1,
+          mcp: {
+            servers: {
+              protected: {
+                enabled: true,
+                headers: { "x-api-key": "${AIA_TEST_MCP_API_KEY}" },
+                required: false,
+                tags: [],
+                type: "streamable-http",
+                url: server.url
+              }
+            }
+          }
+        })
+      );
+
+      const capture = createCaptureStreams();
+      expect(
+        await runCliWithStubbedEndpoint(["mcp", "login", "protected", "--cwd", workspace], capture.streams, {
+          mcp: { openBrowser: headlessBrowser },
+          userHomeDirectory: home
+        })
+      ).toBe(0);
+      // It used to be read from the unresolved config, and dropped.
+      expect(server.state.apiKeys.length).toBeGreaterThan(0);
+      expect(new Set(server.state.apiKeys)).toEqual(new Set(["key-from-env"]));
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AIA_TEST_MCP_API_KEY;
+      } else {
+        process.env.AIA_TEST_MCP_API_KEY = previous;
+      }
+      for (const cleanup of serverCleanups.reverse()) {
+        await cleanup();
+      }
+    }
+  });
+
+  test("reconnect asks each running session of the workspace, over its published gateway", async () => {
+    const { home, workspace } = await createMcpWorkspace('{ "configVersion": 1 }');
+    const stateRoot = path.join(workspace, ".aia");
+    await fs.mkdir(attachEndpointsDirectory(stateRoot), { recursive: true });
+    await fs.writeFile(
+      attachEndpointFilePath(stateRoot),
+      JSON.stringify({
+        createdAt: new Date().toISOString(),
+        pid: process.pid,
+        token: "t",
+        url: "ws://127.0.0.1:1/gateway"
+      })
+    );
+    const dialed: string[] = [];
+    const createWebSocket = (url: string) => {
+      dialed.push(url);
+      const listeners = new Map<string, Array<(data?: unknown) => void>>();
+      const emit = (event: string, data?: unknown) => listeners.get(event)?.forEach((listener) => listener(data));
+      setTimeout(() => emit("open"), 0);
+      return {
+        close: () => undefined,
+        on: (event: string, listener: (data?: unknown) => void) => {
+          listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+        },
+        readyState: 1,
+        send: (data: string) => {
+          const request = JSON.parse(data) as { id: string; topic: string };
+          setTimeout(
+            () =>
+              emit(
+                "message",
+                JSON.stringify({
+                  createdAt: new Date().toISOString(),
+                  id: "response.1",
+                  metadata: {},
+                  ok: true,
+                  payload: {
+                    server: {
+                      capabilities: { tools: 1 },
+                      serverName: "docs",
+                      state: "connected",
+                      tools: [],
+                      transport: "stdio"
+                    }
+                  },
+                  requestId: request.id,
+                  topic: request.topic
+                })
+              ),
+            0
+          );
+        }
+      };
+    };
+
+    const capture = createCaptureStreams();
+    const exitCode = await runCliWithStubbedEndpoint(
+      ["mcp", "reconnect", "docs", "--cwd", workspace],
+      capture.streams,
+      {
+        mcp: { createWebSocket: createWebSocket as never },
+        userHomeDirectory: home
+      }
+    );
+
+    expect(exitCode, capture.getStderr()).toBe(0);
+    expect(dialed).toEqual(["ws://127.0.0.1:1/gateway?token=t"]);
+    expect(capture.getStdout()).toContain(`Session ${process.pid}: docs is connected.`);
+  });
+
+  // A fake gateway WebSocket: answers mcp.reconnect, or fails to connect.
+  function fakeGatewaySockets(failing: (url: string) => boolean = () => false) {
+    const dialed: string[] = [];
+    const createWebSocket = (url: string) => {
+      dialed.push(url);
+      const listeners = new Map<string, Array<(data?: unknown) => void>>();
+      const emit = (event: string, data?: unknown) => listeners.get(event)?.forEach((listener) => listener(data));
+      setTimeout(() => (failing(url) ? emit("error", new Error("socket hang up")) : emit("open")), 0);
+      return {
+        close: () => undefined,
+        on: (event: string, listener: (data?: unknown) => void) => {
+          listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+        },
+        readyState: 1,
+        send: (data: string) => {
+          const request = JSON.parse(data) as { id: string; topic: string };
+          setTimeout(
+            () =>
+              emit(
+                "message",
+                JSON.stringify({
+                  createdAt: new Date().toISOString(),
+                  id: `response.${request.id}`,
+                  metadata: {},
+                  ok: true,
+                  payload: {
+                    server: {
+                      capabilities: { tools: 1 },
+                      serverName: "docs",
+                      state: "connected",
+                      tools: [],
+                      transport: "stdio"
+                    }
+                  },
+                  requestId: request.id,
+                  topic: request.topic
+                })
+              ),
+            0
+          );
+        }
+      };
+    };
+    return { createWebSocket, dialed };
+  }
+
+  test("reconnect asks the configured gateway when no session published one, with its token resolved", async () => {
+    const previous = process.env.AIA_TEST_GATEWAY_TOKEN;
+    process.env.AIA_TEST_GATEWAY_TOKEN = "configured-token";
+    try {
+      const { home, workspace } = await createMcpWorkspace(
+        JSON.stringify({
+          configVersion: 1,
+          gateway: { auth: { token: "${AIA_TEST_GATEWAY_TOKEN}" }, hostname: "0.0.0.0", port: 4999 }
+        })
+      );
+      const sockets = fakeGatewaySockets();
+      const capture = createCaptureStreams();
+      const exitCode = await runCliWithStubbedEndpoint(
+        ["mcp", "reconnect", "docs", "--cwd", workspace],
+        capture.streams,
+        {
+          mcp: { createWebSocket: sockets.createWebSocket as never },
+          userHomeDirectory: home
+        }
+      );
+
+      expect(exitCode, capture.getStderr()).toBe(0);
+      // `aia serve` listens where the config says; its token was a secret reference.
+      expect(sockets.dialed).toHaveLength(1);
+      expect(sockets.dialed[0]).toMatch(/^ws:\/\/127\.0\.0\.1:4999\/.*\?token=configured-token$/u);
+      expect(capture.getStdout()).toContain("The gateway: docs is connected.");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AIA_TEST_GATEWAY_TOKEN;
+      } else {
+        process.env.AIA_TEST_GATEWAY_TOKEN = previous;
+      }
+    }
+  });
+
+  test("reconnect asks every session at once, and fails when any one could not be asked", async () => {
+    const { home, workspace } = await createMcpWorkspace('{ "configVersion": 1 }');
+    const stateRoot = path.join(workspace, ".aia");
+    await fs.mkdir(attachEndpointsDirectory(stateRoot), { recursive: true });
+    // Two live processes: this one and its parent.
+    for (const [pid, port] of [
+      [process.pid, 1],
+      [process.ppid, 2]
+    ] as const) {
+      await fs.writeFile(
+        attachEndpointFilePath(stateRoot, pid),
+        JSON.stringify({
+          createdAt: new Date().toISOString(),
+          pid,
+          token: `t${port}`,
+          url: `ws://127.0.0.1:${port}/gateway`
+        })
+      );
+    }
+    const sockets = fakeGatewaySockets((url) => url.startsWith("ws://127.0.0.1:2/"));
+    const capture = createCaptureStreams();
+    const exitCode = await runCliWithStubbedEndpoint(
+      ["mcp", "reconnect", "docs", "--cwd", workspace],
+      capture.streams,
+      {
+        mcp: { createWebSocket: sockets.createWebSocket as never },
+        userHomeDirectory: home
+      }
+    );
+
+    expect(sockets.dialed.sort()).toEqual(["ws://127.0.0.1:1/gateway?token=t1", "ws://127.0.0.1:2/gateway?token=t2"]);
+    expect(capture.getStdout()).toContain(`Session ${process.pid}: docs is connected.`);
+    expect(capture.getStderr()).toContain(`Session ${process.ppid}: socket hang up`);
+    // One session reconnected and one did not: a script must hear about it.
+    expect(exitCode).toBe(1);
+  });
+
+  test("login refuses a stdio server", async () => {
+    const { home, workspace } = await createMcpWorkspace(
+      JSON.stringify({
+        configVersion: 1,
+        mcp: {
+          servers: {
+            local: {
+              args: [],
+              command: "node",
+              enabled: true,
+              env: {},
+              required: false,
+              stderr: "pipe",
+              tags: [],
+              type: "stdio"
+            }
+          }
+        }
+      })
+    );
+    const result = await run(["mcp", "login", "local", "--cwd", workspace], home);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("sign-in applies to HTTP servers only");
+  });
+});
+
+async function findFreePort(): Promise<number> {
+  const net = await import("node:net");
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as { port: number };
+      server.close(() => resolve(port));
+    });
+  });
+}

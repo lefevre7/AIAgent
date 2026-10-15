@@ -14,6 +14,44 @@ export function sanitizeMcpInvocationName(serverName: string, toolName: string):
   return `${base}_${hash}`.slice(0, 64);
 }
 
+/**
+ * An MCP tool's name in approval rules and tool definitions: the configured
+ * server name and the tool's own name as the server lists it (`docs.lookup`
+ * for the `lookup` tool of server `docs`).
+ */
+export function formatMcpToolName(serverName: string, rawToolName: string): string {
+  return `${serverName}.${rawToolName}`;
+}
+
+const ENTITY_ID_SEGMENT = /^[A-Za-z0-9._:-]{1,64}$/u;
+
+/**
+ * A name from config or from a server (a server, tool, prompt, or template
+ * name, a resource URI) as one segment of an entity id, whose characters are
+ * limited to letters, digits, ".", "_", ":", and "-" (`entityIdSchema`). A name
+ * that fits is used as is; any other ("brave search", "@playwright/mcp", a
+ * URI) is slugged, with a short hash of the original so two names that slug
+ * alike stay apart. Config accepts any server name, and an id that failed the
+ * schema crashed the gateway (an `mcp.updated` event) or made a session
+ * unreadable (a tool call's `toolId` is checked when the session is read).
+ */
+export function toMcpIdSegment(name: string): string {
+  if (ENTITY_ID_SEGMENT.test(name)) {
+    return name;
+  }
+  const slug = name
+    .replace(/[^A-Za-z0-9._:-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 48);
+  const hash = crypto.createHash("sha256").update(name).digest("hex").slice(0, 8);
+  return slug.length > 0 ? `${slug}-${hash}` : hash;
+}
+
+/** `mcp.<kind>.<server>.<name>`, each name an id segment (see `toMcpIdSegment`). */
+export function buildMcpCapabilityId(kind: string, serverName: string, name: string): string {
+  return `mcp.${kind}.${toMcpIdSegment(serverName)}.${toMcpIdSegment(name)}`;
+}
+
 export function slugify(value: string): string {
   const normalized = value
     .trim()

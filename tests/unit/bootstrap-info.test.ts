@@ -5,7 +5,8 @@ describe("createBootstrapInfo", () => {
     expect(createBootstrapInfo()).toMatchObject({
       name: "AIAgent",
       phase: "bootstrap",
-      providers: ["LM Studio", "Ollama"],
+      // Every built-in provider; llama.cpp was missing from a hand-kept list.
+      providers: ["llama.cpp", "LM Studio", "Ollama"],
       surfaces: ["CLI", "Library", "Web", "Gateway"]
     });
   });

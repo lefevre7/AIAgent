@@ -96,6 +96,15 @@ describe("gateway runtime request dispatch", () => {
         expect(sessions.sessions.some((entry) => entry.id === sessionId)).toBe(true);
 
         // tool.execute with an approval-gated tool → executeToolRun approval branch
+        const announced: Array<{ metadata: Record<string, unknown>; requestSessionId: string }> = [];
+        const stopListening = sdk.subscribe(
+          (event) => {
+            if (event.topic === "approval.requested") {
+              announced.push({ metadata: event.metadata, requestSessionId: event.payload.sessionId });
+            }
+          },
+          { topics: ["approval.requested"] }
+        );
         const approvalExec = (await sdk.request("tool.execute", {
           arguments: { options: [{ label: "Yes" }, { label: "No" }], question: "Proceed with the gateway tool?" },
           metadata: {},
@@ -112,12 +121,50 @@ describe("gateway runtime request dispatch", () => {
           snapshot: { session: { status: string } };
         };
         expect(pausedSnap.snapshot.session.status).toBe("awaiting_approval");
+        stopListening();
+        // Like an MCP server's question, a tool's approval names its session
+        // in metadata (it used to be left empty).
+        expect(announced).toEqual([{ metadata: { sessionId }, requestSessionId: sessionId }]);
 
         // gateway.subscribe dispatch returns the normalized subscription
         const sub = (await sdk.request("gateway.subscribe", { topics: ["message.delta"] })) as {
           subscription: unknown;
         };
         expect(sub.subscription).toBeTruthy();
+      }
+    });
+  });
+
+  test("a skill loaded through tool.execute is recorded on the session, as a run would record it", async () => {
+    // Only the agent loop recorded loads, so a later skill call loaded the
+    // whole text again, and compaction did not restate it.
+    const adapter = new ScriptedLanguageModelAdapter({
+      modelId: "example-gw-skill",
+      providerId: "example_lm",
+      responses: []
+    });
+    await withExampleSdk({
+      name: "gateway-runtime-skill-execute",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "example-gw-skill", enabled: true }] },
+      run: async ({ sdk, workspaceRoot }) => {
+        await fs.mkdir(path.join(workspaceRoot, ".agents", "skills", "alpha"), { recursive: true });
+        await fs.writeFile(
+          path.join(workspaceRoot, ".agents", "skills", "alpha", "SKILL.md"),
+          "---\nname: alpha\ndescription: The alpha task.\n---\nDo alpha.\n"
+        );
+        const created = await sdk.sessions.create({ cwd: workspaceRoot, goal: "Load", metadata: {}, title: "Skill" });
+        const executed = (await sdk.request("tool.execute", {
+          arguments: { name: "alpha" },
+          metadata: {},
+          sessionId: created.session.id,
+          toolName: "skill"
+        })) as { run: { id: string } };
+        await sdk.waitForRun(executed.run as never);
+
+        const { snapshot } = (await sdk.request("session.snapshot", { sessionId: created.session.id })) as {
+          snapshot: { session: { metadata: Record<string, unknown> } };
+        };
+        expect(snapshot.session.metadata.activatedSkills).toEqual([expect.objectContaining({ name: "alpha" })]);
       }
     });
   });
@@ -148,7 +195,7 @@ describe("gateway runtime request dispatch", () => {
           title: "Run Turn"
         });
         expect(created.run).toBeTruthy();
-        const finished = await created.run!.wait();
+        const finished = await created.run!.wait({ timeoutMs: 10_000 });
         expect(["cancelled", "completed", "failed"]).toContain(finished.status);
       }
     });
@@ -205,6 +252,9 @@ describe("gateway runtime request dispatch", () => {
         expect(result.summary).toContain("Final answer: done");
         expect(result.summaryPath).toBeTruthy();
         expect(result.session.metadata.compactedThroughMessageId).toBe(lastMessageId);
+        // The plan as of this fold is what the system prompt shows until the
+        // next one (none here: the session never made a plan).
+        expect(result.session.metadata).toHaveProperty("compactedTaskState", null);
         expect(events).toEqual(expect.arrayContaining(["session.updated", "memory.updated"]));
 
         // The persisted session carries the watermark, so later model requests
@@ -258,6 +308,102 @@ describe("gateway runtime request dispatch", () => {
         const secondRequest = JSON.stringify(adapter.requests[1]?.messages ?? []);
         expect(secondRequest).toContain("my secret word is PAPAYA");
         expect(secondRequest).toContain("What is my secret word?");
+      }
+    });
+  });
+
+  // The session summary records tool calls and narration, never requests. A
+  // /compact hid every earlier message, so the next request reached the model
+  // with no trace of what the operator had said.
+  test("the operator's earlier messages survive /compact", async () => {
+    const respond = (summary: string) => (request: LanguageModelRequest) =>
+      buildScriptedResponse({
+        request,
+        text: "Finishing.",
+        toolCalls: [buildToolCall("attempt_complete", { summary })]
+      });
+    const adapter = new ScriptedLanguageModelAdapter({
+      modelId: "example-gw-compact-keeps",
+      providerId: "example_lm",
+      responses: [respond("Noted."), respond("Your secret word is PAPAYA.")]
+    });
+
+    await withExampleSdk({
+      name: "gateway-runtime-compact-keeps",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "example-gw-compact-keeps", enabled: true }] },
+      run: async ({ sdk, workspaceRoot }) => {
+        const created = await sdk.sessions.create({
+          cwd: workspaceRoot,
+          goal: "Chat",
+          metadata: { surface: "example" },
+          title: "Compact Keeps Session"
+        });
+
+        const first = await created.handle.sendMessage({ text: "Remember this: my secret word is PAPAYA." });
+        await first.wait({ timeoutMs: 10_000 });
+        const compacted = await created.handle.compact();
+        // Only what left the model's view counts as hidden.
+        expect(compacted.hiddenMessageCount).toBeGreaterThan(0);
+        const second = await created.handle.sendMessage({ text: "What is my secret word?" });
+        await second.wait({ timeoutMs: 10_000 });
+
+        const replayed = adapter.requests[1]?.messages ?? [];
+        expect(replayed.map((message) => message.role)).toEqual(["user", "user"]);
+        expect(JSON.stringify(replayed)).toContain("my secret word is PAPAYA");
+      }
+    });
+  });
+
+  // LM Studio loads a model on its first request, so a gateway that starts
+  // before then cannot know the window. It used to look once, at startup; an
+  // embedding model's 2048 tokens filled the gap and the session compacted
+  // after every turn.
+  test("looks the context window up again before every run", async () => {
+    const respond = (request: LanguageModelRequest) =>
+      buildScriptedResponse({
+        request,
+        text: "Done.",
+        toolCalls: [buildToolCall("attempt_complete", { summary: "ok" })]
+      });
+    let loadedWindow: number | undefined;
+    const adapter = Object.assign(
+      new ScriptedLanguageModelAdapter({
+        modelId: "example-gw-window",
+        providerId: "example_lm",
+        responses: [respond, respond]
+      }),
+      { getModelContextWindow: async () => loadedWindow }
+    );
+
+    await withExampleSdk({
+      name: "gateway-runtime-window",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "example-gw-window", enabled: true }] },
+      run: async ({ sdk, workspaceRoot }) => {
+        const created = await sdk.sessions.create({
+          cwd: workspaceRoot,
+          goal: "Chat",
+          metadata: { surface: "example" },
+          title: "Window Session"
+        });
+        const percentages: number[] = [];
+        const unsubscribe = created.handle.subscribe(
+          (event) => {
+            const metrics = (event.payload as { metrics?: { contextWindowPercentage?: number } }).metrics;
+            if (typeof metrics?.contextWindowPercentage === "number") {
+              percentages.push(metrics.contextWindowPercentage);
+            }
+          },
+          { topics: ["gateway.status"] }
+        );
+
+        await (await created.handle.sendMessage({ text: "first" })).wait({ timeoutMs: 10_000 });
+        loadedWindow = 64_000;
+        await (await created.handle.sendMessage({ text: "second" })).wait({ timeoutMs: 10_000 });
+        unsubscribe();
+
+        // 64 prompt tokens: first against the 32,768-token default while the
+        // window was unknown, then against the window the model reported.
+        expect(percentages).toEqual([0.2, 0.1]);
       }
     });
   });
@@ -334,7 +480,7 @@ describe("gateway runtime request dispatch", () => {
         await created.handle.cancel();
         release();
 
-        const finished = await created.run!.wait();
+        const finished = await created.run!.wait({ timeoutMs: 10_000 });
         expect(finished.status).toBe("cancelled");
         const snapshot = await created.handle.snapshot();
         expect(snapshot.snapshot.session.status).toBe("cancelled");
@@ -381,6 +527,59 @@ describe("gateway runtime request dispatch", () => {
         const snapshot = await created.handle.snapshot();
         expect(snapshot.snapshot.session.status).toBe("cancelled");
         expect(snapshot.snapshot.turns.at(-1)?.status).toBe("cancelled");
+      }
+    });
+  });
+
+  // cancelRun announced "cancel requested" (status still running) after an
+  // await during which the run could end, so the last word on the run could be
+  // a stale "running" after its terminal record.
+  test("after a cancel, the last run update a subscriber sees is the terminal one", async () => {
+    const adapter = new ScriptedLanguageModelAdapter({
+      modelId: "example-gw-cancel-order",
+      providerId: "example_lm",
+      responses: [
+        async (_request, _turnIndex, options) =>
+          await new Promise<never>((_resolve, reject) => {
+            options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          })
+      ]
+    });
+
+    await withExampleSdk({
+      name: "gateway-runtime-cancel-order",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "example-gw-cancel-order", enabled: true }] },
+      run: async ({ sdk, workspaceRoot }) => {
+        const statuses: string[] = [];
+        const stop = sdk.subscribe(
+          (event) => {
+            if (event.topic === "run.updated") {
+              statuses.push(event.payload.status);
+            }
+          },
+          { topics: ["run.updated"] }
+        );
+        // Cancelling pending questions takes a while when there are some (each
+        // is resolved and written); that is when the run could end first.
+        const runtime = sdk.controlPlane as unknown as { cancelPendingElicitations: (id: string) => Promise<void> };
+        runtime.cancelPendingElicitations = async () => {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        };
+        const created = await sdk.sessions.create({
+          cwd: workspaceRoot,
+          goal: "Cancel and watch",
+          initialMessage: { text: "start" },
+          metadata: { surface: "example" },
+          title: "Cancel Order"
+        });
+        await waitUntil(() => statuses.includes("running"));
+        await created.handle.cancel();
+        await created.run!.wait({ timeoutMs: 5_000 });
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        stop();
+
+        expect(statuses.at(-1)).toBe("cancelled");
+        expect(statuses.slice(statuses.indexOf("cancelled") + 1)).toEqual([]);
       }
     });
   });
@@ -586,9 +785,9 @@ describe("gateway runtime request dispatch", () => {
           metadata: { surface: "example" },
           title: "Model Mismatch"
         });
-        await created.run!.wait();
+        await created.run!.wait({ timeoutMs: 10_000 });
         const second = await created.handle.sendMessage({ text: "second" });
-        await second.wait();
+        await second.wait({ timeoutMs: 10_000 });
 
         expect(warnings).toHaveLength(expectedWarnings);
         if (expectedWarnings > 0) {
@@ -710,5 +909,33 @@ describe("gateway runtime request dispatch", () => {
         expect(runtime.activeRunsById.get(fresh.run.id as string)).toBe(fresh);
       }
     });
+  });
+});
+
+describe("gateway runtime context window", () => {
+  // The window comes from the model a turn will ask for. The lookup used to
+  // pass LM Studio's configured model for every provider but Ollama, so a
+  // llama.cpp or custom provider was asked about a model it never runs.
+  test("asks the default provider about its own model", async () => {
+    const asked: string[] = [];
+    class WindowedAdapter extends ScriptedLanguageModelAdapter {
+      async getModelContextWindow(modelId: string): Promise<number> {
+        asked.push(modelId);
+        return 12_000;
+      }
+    }
+    const adapter = new WindowedAdapter({ modelId: "custom-model", providerId: "example_lm", responses: [] });
+
+    await withExampleSdk({
+      configureConfig: (config) => {
+        config.providers.lmStudio.model = "lm-studio-model";
+      },
+      name: "gateway-context-window",
+      providers: { languageModelAdapters: [{ adapter, defaultModel: "custom-model", enabled: true }] },
+      run: async () => undefined
+    });
+
+    expect(asked.length).toBeGreaterThan(0);
+    expect([...new Set(asked)]).toEqual(["custom-model"]);
   });
 });

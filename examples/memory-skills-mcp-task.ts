@@ -106,7 +106,7 @@ export async function runMemorySkillsMcpTaskExample(): Promise<MemorySkillsMcpTa
       ]
     },
     setupWorkspace: async ({ workspaceRoot }) => {
-      await fs.mkdir(path.join(workspaceRoot, "skills", "release-readiness"), { recursive: true });
+      await fs.mkdir(path.join(workspaceRoot, ".agents", "skills", "release-readiness"), { recursive: true });
       await Promise.all([
         fs.writeFile(
           path.join(workspaceRoot, "AGENTS.md"),
@@ -119,7 +119,7 @@ export async function runMemorySkillsMcpTaskExample(): Promise<MemorySkillsMcpTa
           "utf8"
         ),
         fs.writeFile(
-          path.join(workspaceRoot, "skills", "release-readiness", "SKILL.md"),
+          path.join(workspaceRoot, ".agents", "skills", "release-readiness", "SKILL.md"),
           "---\nname: release-readiness\ndescription: Verify shared runtime paths before release.\n---\nCheck the prompt pack, task state, and runtime surfaces before closing the task.\n",
           "utf8"
         )
@@ -164,7 +164,8 @@ function summarizeMemoryExample(params: {
   return {
     assistantSummaries: extractAssistantTexts(params.snapshot),
     memoryHitPath: typeof memoryResult?.hits?.[0]?.path === "string" ? memoryResult.hits[0].path : null,
-    promptPreview: previewPromptSection(params.adapter.requests[0]?.instructions ?? "", "Available Skills"),
+    // The heading, the how-to lines, then the catalog itself.
+    promptPreview: previewPromptSection(params.adapter.requests[0]?.instructions ?? "", "Available Skills", 16),
     runStatus: params.runStatus,
     sessionId: params.snapshot.snapshot.session.id,
     sessionStatus: params.snapshot.snapshot.session.status,

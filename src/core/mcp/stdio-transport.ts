@@ -1,10 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
-import {
-  getDefaultEnvironment,
-  StdioClientTransport,
-  type StdioServerParameters
-} from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport, type StdioServerParameters } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
@@ -41,6 +37,7 @@ export class ProcessGroupStdioClientTransport implements Transport {
   private child: ChildProcess | undefined;
   private readonly readBuffer = new ReadBuffer();
   private stderrTail = "";
+  private exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
 
   constructor(private readonly params: StdioServerParameters) {}
 
@@ -54,6 +51,11 @@ export class ProcessGroupStdioClientTransport implements Transport {
     return this.stderrTail;
   }
 
+  /** How the server process ended, once it has. */
+  get exitStatus(): { code: number | null; signal: NodeJS.Signals | null } | undefined {
+    return this.exit;
+  }
+
   async start(): Promise<void> {
     if (this.child) {
       throw new Error("The stdio transport was already started.");
@@ -64,8 +66,9 @@ export class ProcessGroupStdioClientTransport implements Transport {
       const options: SpawnOptions = {
         cwd: this.params.cwd,
         detached: true,
-        // As the SDK does: only the safe default variables, plus the server's own.
-        env: { ...getDefaultEnvironment(), ...this.params.env } as NodeJS.ProcessEnv,
+        // Exactly what the caller built (src/core/process/environment.ts):
+        // the base allowlist, the server's passEnv, and its env.
+        env: (this.params.env ?? {}) as NodeJS.ProcessEnv,
         shell: false,
         stdio: ["pipe", "pipe", stderrMode === "overlapped" ? "pipe" : stderrMode]
       };
@@ -79,7 +82,11 @@ export class ProcessGroupStdioClientTransport implements Transport {
       child.on("spawn", () => {
         resolve();
       });
-      child.on("close", () => {
+      child.on("exit", (code, signal) => {
+        this.exit = { code, signal };
+      });
+      child.on("close", (code, signal) => {
+        this.exit ??= { code, signal };
         if (this.child === child) {
           this.child = undefined;
         }

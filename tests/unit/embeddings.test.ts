@@ -4,6 +4,9 @@ import {
   EmbeddingRuntime,
   LMStudioEmbeddingAdapter,
   OllamaEmbeddingAdapter,
+  OpenAICompatibleEmbeddingAdapter,
+  createDefaultAppConfig,
+  createEmbeddingRuntimeFromConfig,
   type EmbeddingAdapter,
   type EmbeddingRequest,
   type EmbeddingResponse
@@ -137,10 +140,11 @@ describe("LMStudioEmbeddingAdapter", () => {
     const failing = new LMStudioEmbeddingAdapter({
       baseUrl: "http://localhost:1234/v1",
       fetchImpl: fakeFetch(() => jsonResponse({}, 500)),
+      maxRetries: 0,
       providerId: "lm_studio",
       timeoutMs: 1000
     });
-    await expect(failing.createEmbeddings(buildRequest())).rejects.toThrow(/failed with 500/u);
+    await expect(failing.createEmbeddings(buildRequest())).rejects.toThrow(/failed with HTTP 500/u);
 
     const empty = new LMStudioEmbeddingAdapter({
       baseUrl: "http://localhost:1234/v1",
@@ -170,7 +174,7 @@ describe("LMStudioEmbeddingAdapter", () => {
       timeoutMs: 1000
     });
     await expect(degraded.health()).resolves.toMatchObject({ status: "degraded" });
-    await expect(degraded.listModels()).rejects.toThrow(/model listing failed with 503/u);
+    await expect(degraded.listModels()).rejects.toThrow(/failed with HTTP 503/u);
 
     const unavailable = new LMStudioEmbeddingAdapter({
       baseUrl: "http://localhost:1234/v1",
@@ -181,6 +185,78 @@ describe("LMStudioEmbeddingAdapter", () => {
       timeoutMs: 1000
     });
     await expect(unavailable.health()).resolves.toMatchObject({ status: "unavailable" });
+  });
+});
+
+describe("llama.cpp embeddings", () => {
+  test("wait out a server still loading its model, as chat requests do", async () => {
+    // llama-server answers 503 "Loading model" until its model is in memory.
+    // Embeddings used to fail at once there while chat requests waited.
+    let calls = 0;
+    const adapter = new OpenAICompatibleEmbeddingAdapter({
+      baseUrl: "http://127.0.0.1:8081/v1",
+      displayName: "llama.cpp",
+      fetchImpl: fakeFetch(() => {
+        calls += 1;
+        return calls < 3
+          ? jsonResponse({ error: { code: 503, message: "Loading model", type: "unavailable_error" } }, 503)
+          : jsonResponse({ data: [{ embedding: [0.5, 0.5] }] });
+      }),
+      providerId: "llama_cpp",
+      timeoutMs: 10_000
+    });
+
+    await expect(adapter.createEmbeddings(buildRequest({ providerId: "llama_cpp" }))).resolves.toMatchObject({
+      dimensions: 2
+    });
+    expect(calls).toBe(3);
+  });
+
+  test("follow a redirect only within the server's own origin, so a key header stays there", async () => {
+    const seen: string[] = [];
+    const adapter = new OpenAICompatibleEmbeddingAdapter({
+      baseUrl: "http://127.0.0.1:8081/v1",
+      displayName: "llama.cpp",
+      fetchImpl: fakeFetch((url) => {
+        seen.push(url);
+        return new Response(null, { headers: { location: "https://elsewhere.example/v1/embeddings" }, status: 307 });
+      }),
+      headers: { "x-api-key": "secret" },
+      providerId: "llama_cpp",
+      timeoutMs: 1000
+    });
+
+    await expect(adapter.createEmbeddings(buildRequest({ providerId: "llama_cpp" }))).rejects.toThrow(
+      /only redirects within the same origin are followed/u
+    );
+    expect(seen).toEqual(["http://127.0.0.1:8081/v1/embeddings"]);
+  });
+
+  // `/v1/embeddings` needs a server started with --embeddings and an embedding
+  // model, usually not the chat server, hence embeddingsBaseUrl.
+  test("go to embeddingsBaseUrl with the configured key, under the llama_cpp provider id", async () => {
+    const config = createDefaultAppConfig({ userStateDirectory: "/tmp/aia-embeddings-test" });
+    config.memory.embeddingProvider = "llama_cpp";
+    config.providers.llamaCpp.apiKey = "local-key";
+    config.providers.llamaCpp.embeddingsBaseUrl = "http://127.0.0.1:8081/v1";
+    const calls: Array<{ authorization: string | null; url: string }> = [];
+    const runtime = createEmbeddingRuntimeFromConfig({
+      config,
+      fetchImpl: fakeFetch((url, init) => {
+        calls.push({ authorization: new Headers(init?.headers).get("authorization"), url });
+        return jsonResponse({ data: [{ embedding: [0.1, 0.2, 0.3] }] });
+      })
+    });
+
+    const response = await runtime!.createEmbeddings({
+      id: "embed.llama.1",
+      inputs: ["hello"],
+      metadata: {},
+      modelId: "nomic-embed-text"
+    });
+
+    expect(response).toMatchObject({ dimensions: 3, providerId: "llama_cpp" });
+    expect(calls).toEqual([{ authorization: "Bearer local-key", url: "http://127.0.0.1:8081/v1/embeddings" }]);
   });
 });
 
@@ -205,10 +281,13 @@ describe("OllamaEmbeddingAdapter", () => {
     const failing = new OllamaEmbeddingAdapter({
       baseUrl: "http://localhost:11434",
       fetchImpl: fakeFetch(() => jsonResponse({}, 500)),
+      maxRetries: 0,
       providerId: "ollama",
       timeoutMs: 1000
     });
-    await expect(failing.createEmbeddings(buildRequest({ providerId: "ollama" }))).rejects.toThrow(/failed with 500/u);
+    await expect(failing.createEmbeddings(buildRequest({ providerId: "ollama" }))).rejects.toThrow(
+      /failed with HTTP 500/u
+    );
 
     const empty = new OllamaEmbeddingAdapter({
       baseUrl: "http://localhost:11434",
@@ -239,7 +318,7 @@ describe("OllamaEmbeddingAdapter", () => {
       timeoutMs: 1000
     });
     await expect(degraded.health()).resolves.toMatchObject({ status: "degraded" });
-    await expect(degraded.listModels()).rejects.toThrow(/model listing failed with 503/u);
+    await expect(degraded.listModels()).rejects.toThrow(/failed with HTTP 503/u);
 
     const unavailable = new OllamaEmbeddingAdapter({
       baseUrl: "http://localhost:11434",

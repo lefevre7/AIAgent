@@ -66,6 +66,46 @@ describe("identical tool call guard", () => {
     });
   });
 
+  test("turns of refused repeats count as no progress from the third in a row, with a nudge, until the guard stops the run", async () => {
+    // Refused calls used to count as progress, so a model calling the same
+    // thing over and over never tripped the no-progress guard. Three reads
+    // run; then two refused turns are free, the next three are nudged, and
+    // the one after that exceeds runtime.maxConsecutiveNudges (3).
+    const adapter = scriptedAdapter([
+      ...Array.from({ length: 9 }, () => ({ args: { path: "." }, name: "list_files" })),
+      { args: { summary: "Unreachable." }, name: "attempt_complete" }
+    ]);
+
+    await withExampleSdk({
+      name: "repeated-tool-calls-guard",
+      providers: {
+        languageModelAdapters: [{ adapter, defaultModel: "repeat-model", enabled: true }]
+      },
+      run: async ({ sdk, workspaceRoot }) => {
+        const created = await sdk.sessions.create({
+          cwd: workspaceRoot,
+          goal: "Repeat one read forever",
+          metadata: { surface: "example" },
+          title: "Stuck"
+        });
+
+        const run = await created.handle.sendMessage({ text: "look around" });
+        await run.wait({ timeoutMs: 20_000 });
+
+        const { snapshot } = await created.handle.snapshot();
+        expect(snapshot.session.status).toBe("completion_blocked");
+        expect(snapshot.toolCalls.map((call) => call.status)).toEqual([
+          ...Array.from({ length: 3 }, () => "succeeded"),
+          ...Array.from({ length: 6 }, () => "failed")
+        ]);
+        const nudges = snapshot.messages.filter((message) =>
+          message.parts.some((part) => part.kind === "text" && part.text.includes("the runtime refused them"))
+        );
+        expect(nudges).toHaveLength(3);
+      }
+    });
+  });
+
   test("different arguments to the same tool are not treated as repeats", async () => {
     const adapter = scriptedAdapter([
       { args: { path: "." }, name: "list_files" },

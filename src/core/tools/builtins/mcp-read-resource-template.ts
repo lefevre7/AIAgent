@@ -1,8 +1,10 @@
+import { UriTemplate } from "@modelcontextprotocol/sdk/shared/uriTemplate.js";
 import { z } from "zod";
 
-import type { ToolDefinition } from "@/core/contracts";
+import type { ToolCallRecord, ToolDefinition } from "@/core/contracts";
 import type { MCPManager } from "@/core/mcp/manager";
-import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
+import { resolveMcpResourceApprovalScope } from "@/core/tools/builtins/mcp-read-resource";
+import type { RuntimeTool, RuntimeToolResult, ToolApprovalScope } from "@/core/tools/runtime";
 
 const inputSchema = z
   .object({
@@ -15,6 +17,7 @@ const inputSchema = z
 export function createMcpReadResourceTemplateTool(params: { mcpManager: MCPManager }): RuntimeTool {
   return {
     definition: mcpReadResourceTemplateToolDefinition,
+    resolveApprovalScope: resolveMcpResourceTemplateApprovalScope,
     async execute(call): Promise<RuntimeToolResult> {
       const input = inputSchema.parse(call.arguments as unknown);
       const result = await params.mcpManager.readResourceTemplate(input.serverName, input.uriTemplate, input.variables);
@@ -32,6 +35,28 @@ export function createMcpReadResourceTemplateTool(params: { mcpManager: MCPManag
   };
 }
 
+/**
+ * As for mcp_read_resource, plus the URI the template expands to, as a path
+ * target: mcp_read_resource's `uri` is one, so a path deny rule (`~/.ssh`)
+ * must not be avoidable by building the same URI from a template. Like an
+ * argument's, it counts only when it is local (a plain path or file://).
+ */
+async function resolveMcpResourceTemplateApprovalScope(call: ToolCallRecord): Promise<ToolApprovalScope> {
+  const scope = await resolveMcpResourceApprovalScope(call);
+  const parsed = inputSchema.safeParse(call.arguments as unknown);
+  if (!parsed.success) {
+    return scope;
+  }
+  let uri: string;
+  try {
+    uri = new UriTemplate(parsed.data.uriTemplate).expand(parsed.data.variables);
+  } catch {
+    // A template that does not expand cannot be read either.
+    return scope;
+  }
+  return { ...scope, targets: [...scope.targets, { kind: "path", label: "resource", value: uri }] };
+}
+
 export const mcpReadResourceTemplateToolDefinition: ToolDefinition = {
   aliases: ["mcp_instantiate_resource"],
   annotations: {
@@ -45,7 +70,8 @@ export const mcpReadResourceTemplateToolDefinition: ToolDefinition = {
   },
   approvalMode: "never",
   descriptor: {
-    approvalNotes: "No operator approval is required because this tool only expands and reads a resource template.",
+    approvalNotes:
+      "No operator approval is required because this tool only expands and reads a resource template; an operator deny rule on the server still applies.",
     examples: [
       "Instantiate a resource template from mcp_search results by filling in its variables.",
       "Read a dynamic MCP resource when you know the URI template and variable values."

@@ -10,11 +10,10 @@ import type {
   LanguageModelQueueJob,
   LanguageModelRequest,
   LanguageModelResponse,
-  LanguageModelStreamEvent,
-  StructuredError
+  LanguageModelStreamEvent
 } from "@/core/contracts";
 import { entityIdSchema, isoTimestampSchema, languageModelQueueJobSchema } from "@/core/contracts";
-import { normalizeUnknownProviderError } from "@/core/lm/http";
+import { normalizeUnknownProviderError, ProviderRequestError } from "@/core/lm/http";
 import { writeJsonAtomic, sleep } from "@/core/io/files";
 
 const queueStateSchema = z
@@ -349,7 +348,9 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
       if (event.kind === "response.completed") {
         completed = event.response;
       } else if (event.kind === "response.error") {
-        throw new Error(event.error.message);
+        // Keep the provider's structured error: the agent loop acts on its
+        // code (a context overflow is compacted and retried), not its message.
+        throw new ProviderRequestError(event.error);
       }
     }
 
@@ -417,7 +418,14 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
       }
 
       if (job.status === "failed" || job.status === "cancelled") {
-        throw new Error(formatQueueJobError(job.error));
+        throw new ProviderRequestError(
+          job.error ?? {
+            code: "lm_queue_job_failed",
+            details: { jobId },
+            message: "Language model queue job failed without a structured error.",
+            retriable: false
+          }
+        );
       }
 
       await sleep(50);
@@ -561,14 +569,6 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
   private responseLogFile(jobId: string): string {
     return path.join(this.logsRoot(), "responses", `${jobId}.json`);
   }
-}
-
-function formatQueueJobError(error: StructuredError | undefined): string {
-  if (!error) {
-    return "Language model queue job failed without a structured error.";
-  }
-
-  return error.message;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

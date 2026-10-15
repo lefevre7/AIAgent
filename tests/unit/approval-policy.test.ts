@@ -568,6 +568,47 @@ describe("approval policy", () => {
     expect(readApprovalTargets({ metadata: {}, target: decision.request.target })).toEqual([decision.request.target]);
   });
 
+  test("a host's resolveAdditionalTargets is weighed like a tool's scope: also for a tool that never asks, and once", async () => {
+    // The (deprecated) decider hook used to be skipped for a never-mode tool,
+    // so a deny rule on what it named did not hold there, and a target it
+    // repeated from the tool's scope was listed twice.
+    const docs = { kind: "mcp_server" as const, label: "docs", value: "docs" };
+    const decider = createToolApprovalDecider({
+      resolveAdditionalTargets: async () => [docs],
+      settings: {
+        configVersion: 1,
+        defaultMode: "ask",
+        rules: [{ id: "rule.docs.deny", mode: "deny", pattern: "^docs$", targetKind: "mcp_server" }]
+      }
+    });
+    const registry = createDefaultToolRegistry({ stateRoot: "/workspace/.aia", workspaceRoot: "/workspace" });
+
+    const never = await decider({
+      call: createCall({ arguments: { thought: "x" }, toolName: "think" }),
+      definition: requireDefinition(registry, "think"),
+      session: buildSession(),
+      turn: buildTurn()
+    });
+    expect(never.mode).toBe("deny");
+
+    const asks = createToolApprovalDecider({
+      resolveAdditionalTargets: async () => [docs],
+      settings: { configVersion: 1, defaultMode: "ask", rules: [] }
+    });
+    const decision = await asks({
+      call: createCall({ arguments: { content: "hi\n", path: "notes.md" }, toolName: "write_file" }),
+      definition: requireDefinition(registry, "write_file"),
+      scope: { approvalMode: "always", targets: [docs] },
+      session: buildSession(),
+      turn: buildTurn()
+    });
+    expect(decision.mode).toBe("request");
+    if (decision.mode !== "request") {
+      throw new Error(`Expected an approval request, received ${decision.mode}.`);
+    }
+    expect(readApprovalTargets(decision.request).filter((target) => target.kind === "mcp_server")).toEqual([docs]);
+  });
+
   test("bypasses read-only external-agent actions and resolves agent targets for run actions", async () => {
     const decider = createToolApprovalDecider({
       resolveAdditionalTargets: createExternalAgentApprovalTargetResolver({
@@ -699,6 +740,128 @@ describe("approval policy", () => {
       turn
     });
     expect(runDecision.mode).toBe("request");
+  });
+
+  // A tool acting through an MCP server (web_search, mcp_read_resource) is
+  // approved as that server's capability rather than as itself.
+  describe("approval scopes", () => {
+    const serverDeny: ApprovalSettings = {
+      configVersion: 1,
+      defaultMode: "ask",
+      rules: [{ id: "rule.deny.docs", mode: "deny", pattern: "^docs$", targetKind: "mcp_server" }]
+    };
+    const mcpTargets = [
+      { kind: "mcp_tool" as const, label: "Lookup", value: "docs.lookup" },
+      { kind: "mcp_server" as const, label: "docs", value: "docs" }
+    ];
+
+    test("a never-mode tool with scope targets still executes, unless a deny rule matches one", async () => {
+      const definition = createDefinition({ approvalMode: "never" });
+      const params = { call: createCall(), definition, session: buildSession(), turn: buildTurn() };
+
+      const allowed = await createToolApprovalDecider({ settings: DEFAULT_APPROVAL_SETTINGS })({
+        ...params,
+        scope: { approvalMode: "never", targets: mcpTargets }
+      });
+      expect(allowed.mode).toBe("execute");
+
+      const denied = await createToolApprovalDecider({ settings: serverDeny })({
+        ...params,
+        scope: { approvalMode: "never", targets: mcpTargets }
+      });
+      expect(denied.mode).toBe("deny");
+      expect(denied.mode === "deny" ? denied.error.details : null).toMatchObject({
+        matchedRuleId: "rule.deny.docs",
+        targetKind: "mcp_server"
+      });
+
+      // Without scope targets there is nothing to weigh: never means never.
+      const unscoped = await createToolApprovalDecider({ settings: serverDeny })({
+        ...params,
+        scope: { approvalMode: "never", targets: [] }
+      });
+      expect(unscoped.mode).toBe("execute");
+    });
+
+    test("a defaultMode of deny does not refuse a never-mode tool: only a deny rule does", async () => {
+      // defaultMode covers what would otherwise ask, and a never-mode tool
+      // never asks; mcp_read_resource stopped working under a strict default.
+      const strictDefault: ApprovalSettings = { configVersion: 1, defaultMode: "deny", rules: [] };
+      const decision = await createToolApprovalDecider({ settings: strictDefault })({
+        call: createCall(),
+        definition: createDefinition({ approvalMode: "never" }),
+        scope: { approvalMode: "never", targets: mcpTargets },
+        session: buildSession(),
+        turn: buildTurn()
+      });
+      expect(decision.mode).toBe("execute");
+    });
+
+    test("a scope's path target is resolved against the session like an argument's", async () => {
+      const secretDeny: ApprovalSettings = {
+        configVersion: 1,
+        defaultMode: "ask",
+        rules: [{ id: "rule.deny.secret", mode: "deny", pattern: "^/workspace/secret\\.txt$", targetKind: "path" }]
+      };
+      const decide = (value: string) =>
+        createToolApprovalDecider({ settings: secretDeny })({
+          call: createCall(),
+          definition: createDefinition({ approvalMode: "never" }),
+          scope: { approvalMode: "never", targets: [...mcpTargets, { kind: "path", label: "resource", value }] },
+          session: buildSession(),
+          turn: buildTurn()
+        });
+
+      // Relative, dotted and file:// spellings of the same file all reach the rule.
+      expect((await decide("notes/../secret.txt")).mode).toBe("deny");
+      expect((await decide("file:///workspace/secret.txt")).mode).toBe("deny");
+      // Another scheme names no local file, so it is not a path target at all.
+      expect((await decide("docs://workspace/secret.txt")).mode).toBe("execute");
+    });
+
+    test("settings given as a function are read on every decision", async () => {
+      // A trusted server's synthesized allow rules come and go with reloads;
+      // a decider built once must follow them.
+      let current: ApprovalSettings = serverDeny;
+      const decider = createToolApprovalDecider({ settings: () => current });
+      const params = {
+        call: createCall(),
+        definition: createDefinition({ approvalMode: "never" }),
+        scope: { approvalMode: "never" as const, targets: mcpTargets },
+        session: buildSession(),
+        turn: buildTurn()
+      };
+
+      expect((await decider(params)).mode).toBe("deny");
+      current = DEFAULT_APPROVAL_SETTINGS;
+      expect((await decider(params)).mode).toBe("execute");
+      current = serverDeny;
+      expect((await decider(params)).mode).toBe("deny");
+    });
+
+    test("the scope's mode replaces the definition's, and its targets are weighed first", async () => {
+      const definition = createDefinition({ approvalMode: "never" });
+      const params = { call: createCall(), definition, session: buildSession(), turn: buildTurn() };
+      const trusted: ApprovalSettings = {
+        configVersion: 1,
+        defaultMode: "ask",
+        rules: [{ id: "rule.mcp.trust.docs", mode: "allow", pattern: "^docs$", targetKind: "mcp_server" }]
+      };
+
+      const asked = await createToolApprovalDecider({ settings: DEFAULT_APPROVAL_SETTINGS })({
+        ...params,
+        scope: { approvalMode: "ask", targets: mcpTargets }
+      });
+      expect(asked.mode).toBe("request");
+      expect(asked.mode === "request" ? readApprovalTargets(asked.request).slice(0, 2) : []).toEqual(mcpTargets);
+      expect(asked.mode === "request" ? asked.request.metadata.approvalMode : null).toBe("ask");
+
+      const auto = await createToolApprovalDecider({ settings: trusted })({
+        ...params,
+        scope: { approvalMode: "ask", targets: mcpTargets }
+      });
+      expect(auto.mode).toBe("execute");
+    });
   });
 });
 

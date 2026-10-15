@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { loadImportedMcpServers, sanitizeMcpInvocationName, slugify } from "@/core";
 
@@ -27,6 +27,22 @@ function entry(overrides: Partial<ImportEntry> & Pick<ImportEntry, "format" | "p
 }
 
 describe("loadImportedMcpServers", () => {
+  test("skips a server whose name is empty or too long to report, and says how many", async () => {
+    const filePath = await writeImport("names.json", {
+      mcpServers: { "": { command: "node" }, [`${"x".repeat(129)}`]: { command: "node" }, ok: { command: "node" } }
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const result = await loadImportedMcpServers({ primary: entry({ format: "claude_desktop", path: filePath }) });
+      expect(Object.keys(result.servers)).toEqual(["ok"]);
+      expect(warn).toHaveBeenCalledWith(
+        `[AIA_MCP_IMPORT_SKIPPED] ${filePath}: skipped 2 server(s) whose name is empty or longer than 128 characters.`
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test("skips disabled imports and missing files", async () => {
     const present = await writeImport("servers.json", { mcpServers: { a: { command: "node" } } });
     const result = await loadImportedMcpServers({

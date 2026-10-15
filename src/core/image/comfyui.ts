@@ -23,6 +23,7 @@ import {
   imageGenerationResultSchema,
   imageModelDescriptorSchema
 } from "@/core/contracts";
+import { fetchFollowingSameOriginRedirects } from "@/core/io/http";
 import { fetchJson, normalizeUnknownProviderError } from "@/core/lm/http";
 import { sleep } from "@/core/io/files";
 import {
@@ -214,9 +215,11 @@ export class ComfyUIImageGenerationAdapter implements ImageGenerationAdapter {
         });
 
         await fs.mkdir(path.dirname(targetPath), { recursive: true });
-        const response = await this.fetchImpl(this.buildViewUrl(image), {
-          headers: this.headers,
-          signal: AbortSignal.timeout(this.options.timeoutMs)
+        const response = await fetchFollowingSameOriginRedirects({
+          fetchImpl: this.fetchImpl,
+          init: { headers: this.headers, signal: AbortSignal.timeout(this.options.timeoutMs) },
+          label: "The ComfyUI server",
+          url: this.buildViewUrl(image)
         });
         if (!response.ok) {
           throw createImageError(
@@ -448,11 +451,14 @@ export class ComfyUIImageGenerationAdapter implements ImageGenerationAdapter {
     const content = await fs.readFile(filePath);
     body.append("image", new Blob([content], { type: probe.mediaType }), path.basename(filePath));
 
-    const response = await this.fetchImpl(`${this.baseUrl}/upload/image`, {
-      body,
-      headers: this.headers,
-      method: "POST",
-      signal: AbortSignal.timeout(this.options.timeoutMs)
+    // Redirects stay on the server's origin, as for every other request:
+    // fetch's own would carry the headers (an API key) and, on a 307, the
+    // image to wherever the server pointed.
+    const response = await fetchFollowingSameOriginRedirects({
+      fetchImpl: this.fetchImpl,
+      init: { body, headers: this.headers, method: "POST", signal: AbortSignal.timeout(this.options.timeoutMs) },
+      label: "The ComfyUI server",
+      url: `${this.baseUrl}/upload/image`
     });
 
     if (!response.ok) {
@@ -483,7 +489,7 @@ export class ComfyUIImageGenerationAdapter implements ImageGenerationAdapter {
         fetchImpl: this.fetchImpl,
         headers: this.headers,
         timeoutMs: this.options.timeoutMs,
-        url: `${this.baseUrl}/history/${promptId}`
+        url: `${this.baseUrl}/history/${encodeURIComponent(promptId)}`
       });
       const entry = normalizeHistoryEntry(response.data, promptId);
       if (entry) {

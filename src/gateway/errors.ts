@@ -1,6 +1,6 @@
 import { ZodError } from "zod";
 
-import type { JsonValue, StructuredError } from "@/core/contracts";
+import { extractStructuredError, structuredErrorSchema, type JsonValue, type StructuredError } from "@/core/contracts";
 
 export function createGatewayError(
   code: string,
@@ -17,8 +17,9 @@ export function createGatewayError(
 }
 
 export function normalizeGatewayError(error: unknown): StructuredError {
-  if (isStructuredError(error)) {
-    return error;
+  const structured = extractStructuredError(error);
+  if (structured) {
+    return structured;
   }
 
   if (error instanceof ZodError) {
@@ -59,5 +60,5 @@ export function mapGatewayErrorToHttpStatusCode(error: StructuredError): number 
 }
 
 export function isStructuredError(error: unknown): error is StructuredError {
-  return typeof error === "object" && error !== null && "code" in error && "message" in error && "retriable" in error;
+  return structuredErrorSchema.safeParse(error).success;
 }

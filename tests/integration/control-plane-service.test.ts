@@ -76,6 +76,14 @@ describe("control-plane service over a real runtime context", () => {
     expect(dashboard.bootstrap.name).toBeTruthy();
   });
 
+  test("names the model a turn will ask for, which the provider's own setting decides", async () => {
+    // The page showed runtime.defaultModel, while turns asked for
+    // providers.lmStudio.model.
+    const { service } = await createService({ AIA_LM_STUDIO_MODEL: "the-model-turns-use" });
+    const dashboard = await service.getDashboard();
+    expect(dashboard.settings.runtime.defaultModel).toBe("the-model-turns-use");
+  });
+
   test("streams gateway events to subscribers (for SSE)", async () => {
     const { service, context } = await createService();
     const events: string[] = [];
@@ -182,14 +190,20 @@ async function waitForValue<T>(read: () => Promise<T | undefined>, timeoutMs = 5
   throw new Error("Timed out waiting for the expected state.");
 }
 
-async function createService(): Promise<{ context: ServerRuntimeContext; service: ControlPlaneService }> {
+async function createService(
+  env: Record<string, string> = {}
+): Promise<{ context: ServerRuntimeContext; service: ControlPlaneService }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-control-plane-"));
   tempRoots.push(root);
   const workspace = path.join(root, "workspace");
+  const home = path.join(root, "home");
   await fs.mkdir(workspace, { recursive: true });
+  await fs.mkdir(home, { recursive: true });
 
   const context = await createServerRuntimeContext({
     cwd: workspace,
+    // The operator's own ~/.aia (config, trust, skills) is not part of the test.
+    userHomeDirectory: home,
     env: {
       AIA_DEFAULT_MODEL: "fake-model",
       AIA_DEFAULT_PROVIDER: "lm_studio",
@@ -201,7 +215,8 @@ async function createService(): Promise<{ context: ServerRuntimeContext; service
       AIA_MEMORY_STATE_ROOT: path.join(root, "state"),
       AIA_MEMORY_USER_GLOBAL_ROOT: path.join(root, "user-memory"),
       AIA_MEMORY_WORKSPACE_ROOT: path.join(root, "workspace-memory"),
-      AIA_OLLAMA_BASE_URL: "http://127.0.0.1:9"
+      AIA_OLLAMA_BASE_URL: "http://127.0.0.1:9",
+      ...env
     }
   });
   contexts.push(context);

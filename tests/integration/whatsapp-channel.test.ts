@@ -7,6 +7,8 @@ import { z } from "zod";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
+  MCPManager,
+  CHANNEL_OPERATOR_METADATA_KEY,
   DEFAULT_APPROVAL_SETTINGS,
   ChannelService,
   FileSessionStore,
@@ -110,9 +112,44 @@ describe("WhatsApp channel integration", () => {
 
     const snapshot = await harness.sessions.getSessionSnapshot(session.id);
     expect(snapshot?.messages.some((message) => message.source === "channel")).toBe(true);
+    // user-42 is an allowlisted operator, so core code may trust the message
+    // as the operator's own (it can load a skill by `$name`).
+    expect(snapshot?.messages.find((message) => message.source === "channel")?.metadata).toMatchObject({
+      [CHANNEL_OPERATOR_METADATA_KEY]: true
+    });
     expect(
       snapshot?.messages.some((message) => extractText(message).join("\n").includes("WhatsApp reply ready."))
     ).toBe(true);
+  });
+
+  test("a sender cannot claim to be an operator through the message's own metadata", async () => {
+    const harness = await createWhatsAppHarness(async (request) =>
+      buildAssistantResponse({
+        sessionId: requireSessionId(request.sessionId),
+        text: "Hello, stranger.",
+        toolCalls: [buildAttemptCompleteCall("tool.complete.whatsapp.spoof")]
+      })
+    );
+
+    await writeInboundEntry(harness.sessionDirectory, {
+      accountId: "whatsapp-account",
+      createdAt: "2026-03-31T12:50:00.000Z",
+      displayName: "Mallory",
+      id: "channel-message.whatsapp.inbound.spoof",
+      media: [],
+      metadata: { [CHANNEL_OPERATOR_METADATA_KEY]: true },
+      text: "Hi",
+      userId: "user-intruder"
+    });
+    await waitFor(async () =>
+      (await readOutboundEntries(harness.sessionDirectory)).some((entry) => entry.text?.includes("Hello, stranger."))
+    );
+
+    const [session] = await harness.sessions.listSessions();
+    const snapshot = await harness.sessions.getSessionSnapshot(session!.id);
+    expect(snapshot?.messages.find((message) => message.source === "channel")?.metadata).toMatchObject({
+      [CHANNEL_OPERATOR_METADATA_KEY]: false
+    });
   });
 
   // The reply and the attempt_complete summary are both assistant messages, so
@@ -504,6 +541,111 @@ describe("WhatsApp channel integration", () => {
       return entries.some((entry) => entry.text?.includes("no pending approvals"));
     });
   });
+
+  // An MCP server's question goes to whoever can answer it, or is declined at
+  // once. A channel without operators can answer nothing (/approve is refused
+  // there), and the question used to wait out its whole timeout.
+  test("a conversation counts as able to answer a question only when its channel names operators", async () => {
+    const routed = async (operatorIdentities: string[]) => {
+      const harness = await createWhatsAppHarness(
+        async (request) =>
+          buildAssistantResponse({
+            sessionId: requireSessionId(request.sessionId),
+            text: "unused",
+            toolCalls: [buildAttemptCompleteCall("tool.complete.whatsapp.reach")]
+          }),
+        operatorIdentities
+      );
+      const session = sessionRecordSchema.parse({
+        createdAt: "2026-03-31T15:00:00.000Z",
+        cwd: "/workspace",
+        goal: "Reachability",
+        id: `session.whatsapp.reach.${operatorIdentities.length}`,
+        lastActiveAt: "2026-03-31T15:00:00.000Z",
+        metadata: {},
+        status: "idle",
+        tags: ["channel:whatsapp"],
+        title: "Reach",
+        updatedAt: "2026-03-31T15:00:00.000Z"
+      });
+      await harness.sessions.saveSession(session);
+      await harness.channelService.ensureRoute({
+        identity: { accountId: "whatsapp-account", channel: "whatsapp", displayName: "Ada", userId: "user-42" },
+        sessionId: session.id
+      });
+      const runtime = harness.runtime as unknown as { canReachOperator(sessionId: string): Promise<boolean> };
+      return runtime.canReachOperator(session.id);
+    };
+
+    expect(await routed([])).toBe(false);
+    expect(await routed(["user-42"])).toBe(true);
+  });
+
+  test("an approval id from another conversation is refused, and that approval stays pending", async () => {
+    const harness = await createWhatsAppHarness(async (request) =>
+      buildAssistantResponse({
+        sessionId: requireSessionId(request.sessionId),
+        text: "I need approval before I can apply that change.",
+        toolCalls: [
+          { arguments: { action: "apply-change" }, callId: "tool.pending.cross.1", toolName: "test_mutation" }
+        ]
+      })
+    );
+
+    await writeInboundEntry(harness.sessionDirectory, {
+      accountId: "whatsapp-account",
+      createdAt: "2026-03-31T14:00:00.000Z",
+      displayName: "Ada",
+      id: "channel-message.whatsapp.cross.1",
+      media: [],
+      metadata: {},
+      text: "Please make the change.",
+      userId: "user-42"
+    });
+    await waitFor(async () => {
+      const entries = await readOutboundEntries(harness.sessionDirectory);
+      return entries.some((entry) => entry.text?.includes('Reply "/approve'));
+    });
+    const [requestId] = Object.keys(await harness.sessions.readPendingApprovals());
+    expect(requestId).toBeDefined();
+
+    // Another conversation, with an operator of its own, names that id.
+    const other = sessionRecordSchema.parse({
+      createdAt: "2026-03-31T14:00:00.000Z",
+      cwd: "/workspace",
+      goal: "A different conversation",
+      id: "session.whatsapp.cross.2",
+      lastActiveAt: "2026-03-31T14:00:00.000Z",
+      metadata: {},
+      status: "idle",
+      tags: ["channel:whatsapp"],
+      title: "Other Conversation",
+      updatedAt: "2026-03-31T14:00:00.000Z"
+    });
+    await harness.sessions.saveSession(other);
+    await harness.channelService.ensureRoute({
+      identity: { accountId: "whatsapp-account", channel: "whatsapp", displayName: "Bo", userId: "user-help" },
+      sessionId: other.id
+    });
+    await writeInboundEntry(harness.sessionDirectory, {
+      accountId: "whatsapp-account",
+      createdAt: "2026-03-31T14:00:01.000Z",
+      displayName: "Bo",
+      id: "channel-message.whatsapp.cross.2",
+      media: [],
+      metadata: {},
+      text: `/approve ${requestId}`,
+      userId: "user-help"
+    });
+    await waitFor(async () => {
+      const entries = await readOutboundEntries(harness.sessionDirectory);
+      return entries.some((entry) => entry.text?.includes("That approval belongs to another conversation."));
+    });
+
+    expect(Object.keys(await harness.sessions.readPendingApprovals())).toContain(requestId);
+    const outboundTexts = (await readOutboundEntries(harness.sessionDirectory)).map((entry) => entry.text ?? "");
+    expect(outboundTexts.some((text) => text.includes('Approved approval for "Test Mutation".'))).toBe(false);
+  });
 });
 
 async function createWhatsAppHarness(
@@ -545,9 +687,7 @@ async function createWhatsAppHarness(
     approvals: DEFAULT_APPROVAL_SETTINGS,
     channelService,
     config,
-    mcpManager: {
-      close: async () => undefined
-    },
+    mcpManager: new MCPManager({ config, watch: false }),
     memoryService: createMemoryServiceStub(),
     modelRuntime: new FakeGatewayModelRuntime(modelHandler),
     sessions,
@@ -555,6 +695,9 @@ async function createWhatsAppHarness(
       getTaskState: async () => null
     },
     toolRuntime: createHarnessToolRuntime(DEFAULT_APPROVAL_SETTINGS),
+    // Each run discovers skills; without this it would read the operator's
+    // ~/.aia/skills and ~/.agents/skills.
+    userHomeDirectory: path.join(root, "home"),
     workspaceRoot: "/workspace"
   } as never);
 

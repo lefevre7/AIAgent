@@ -2,22 +2,21 @@ import type {
   ApprovalPolicyMode,
   ApprovalPolicyRule,
   ApprovalRequest,
+  ApprovalTarget,
   ApprovalTargetKind,
-  JsonValue,
   ToolCallRecord,
   ToolDefinition
 } from "@/core/contracts";
 import { APPROVAL_TARGETS_METADATA_KEY, validateApprovalPattern } from "@/core/contracts";
 import type { ApprovalSettings } from "@/core/config";
+import { buildQuestionApproval, readQuestionOptions } from "@/core/approvals/questions";
 import { analyzeShellCommand, type ShellCommandAnalysis } from "@/core/approvals/shell-command";
+import { toMcpIdSegment } from "@/core/mcp/names";
 import { resolveLocalPath } from "@/core/tools/builtins/local-paths";
-import type { ToolApprovalDecider, ToolApprovalDeciderParams } from "@/core/tools/runtime";
+import type { ToolApprovalDecider, ToolApprovalDeciderParams, ToolApprovalDecision } from "@/core/tools/runtime";
 
-export type ApprovalEvaluationTarget = {
-  kind: ApprovalTargetKind;
-  label: string;
-  value: string;
-};
+/** The approval policy's name for `ApprovalTarget`, kept for code written against it. */
+export type ApprovalEvaluationTarget = ApprovalTarget;
 
 export type ApprovalPolicyMatch = {
   mode: ApprovalPolicyMode;
@@ -181,21 +180,84 @@ function compileApprovalPattern(rule: ApprovalPolicyRule): RegExp {
   return new RegExp(rule.pattern, flags);
 }
 
+function uniqueTargets(targets: ApprovalEvaluationTarget[]): ApprovalEvaluationTarget[] {
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    const key = `${target.kind}\u0000${target.value}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 function hasCaseInsensitiveFileSystem(): boolean {
   return process.platform === "darwin" || process.platform === "win32";
 }
 
 export function createToolApprovalDecider(params: {
+  /**
+   * @deprecated A tool adds the targets it reaches through its own
+   * `resolveApprovalScope` (as `external_agent` does). Still honoured, and
+   * weighed like a scope's targets, for hosts that pass it.
+   */
   resolveAdditionalTargets?: (input: ToolApprovalDeciderParams) => Promise<ApprovalEvaluationTarget[]>;
-  settings: ApprovalSettings;
+  /**
+   * The settings, or a function returning the current ones: the rules a
+   * trusted MCP server adds come and go with config reloads (a workspace
+   * whose trust was revoked must stop auto-approving its server at once).
+   * Compiled again only when the returned object changes.
+   */
+  settings: ApprovalSettings | (() => ApprovalSettings);
 }): ToolApprovalDecider {
-  const policy = new RegexApprovalPolicy(params.settings);
+  let compiledFor: ApprovalSettings | undefined;
+  let compiled: RegexApprovalPolicy | undefined;
+  const currentPolicy = (): RegexApprovalPolicy => {
+    const settings = typeof params.settings === "function" ? params.settings() : params.settings;
+    if (!compiled || settings !== compiledFor) {
+      compiled = new RegexApprovalPolicy(settings);
+      compiledFor = settings;
+    }
+    return compiled;
+  };
 
   return async (input) => {
-    if (input.definition.approvalMode === "never") {
-      return {
-        mode: "execute"
-      };
+    const policy = currentPolicy();
+    // A tool acting through another capability (web_search running an MCP
+    // search tool) is approved as that capability: its scope's mode wins.
+    const approvalMode = input.scope?.approvalMode ?? input.definition.approvalMode;
+    // A scope's path targets (a resource URI a template expands to) are
+    // treated like the paths in a call's own arguments: a local one (a plain
+    // path or a file:// URI) is resolved against the session's directory, and
+    // any other URL scheme is not a local path at all.
+    const additionalTargets = (await params.resolveAdditionalTargets?.(input)) ?? [];
+    const scopeTargets = [...(input.scope?.targets ?? []), ...additionalTargets].flatMap((target) => {
+      if (target.kind !== "path") {
+        return [target];
+      }
+      return isLikelyLocalPath(target.value)
+        ? [{ ...target, value: canonicalizePathTarget(target.value, input.session.cwd) }]
+        : [];
+    });
+
+    if (approvalMode === "never") {
+      if (scopeTargets.length === 0) {
+        return {
+          mode: "execute"
+        };
+      }
+      // It still never asks, but it reaches an MCP server, and an operator's
+      // deny rule on that server has to hold here too. Built-ins like
+      // mcp_read_resource used to skip the policy entirely, so a server the
+      // operator had denied stayed readable through them. Only a deny *rule*
+      // refuses it: a `defaultMode` of deny covers what would otherwise ask,
+      // and a never-mode tool never asks.
+      const match = policy.evaluateTargets([
+        ...scopeTargets,
+        ...extractApprovalTargets(input.call, input.definition, { cwd: input.session.cwd })
+      ]);
+      return match.mode === "deny" && match.rule ? buildDenialDecision(match) : { mode: "execute" };
     }
 
     if (isReadOnlyExternalAgentAction(input)) {
@@ -204,13 +266,14 @@ export function createToolApprovalDecider(params: {
       };
     }
 
-    const additionalTargets = (await params.resolveAdditionalTargets?.(input)) ?? [];
-    const targets = [
-      ...additionalTargets,
+    // A target named twice (a host's resolveAdditionalTargets repeating what
+    // the tool's scope adds) is weighed and shown once.
+    const targets = uniqueTargets([
+      ...scopeTargets,
       ...extractApprovalTargets(input.call, input.definition, { cwd: input.session.cwd })
-    ];
+    ]);
     const match = policy.evaluateTargets(targets);
-    const resolvedMode = resolveApprovalMode(input.definition.approvalMode, match.mode);
+    const resolvedMode = resolveApprovalMode(approvalMode, match.mode);
 
     if (resolvedMode === "allow") {
       return {
@@ -219,33 +282,37 @@ export function createToolApprovalDecider(params: {
     }
 
     if (resolvedMode === "deny") {
-      return {
-        error: {
-          code: "tool_execution_denied_by_policy",
-          details: {
-            matchedRuleId: match.rule?.id ?? null,
-            targetKind: match.target.kind,
-            targetValue: match.target.value
-          },
-          message: buildDeniedMessage(match),
-          retriable: false
-        },
-        metadata: {
-          approvalPolicyMode: "deny",
-          matchedApprovalRuleId: match.rule?.id ?? null,
-          matchedApprovalTargetKind: match.target.kind,
-          matchedApprovalTargetValue: match.target.value
-        },
-        mode: "deny"
-      };
+      return buildDenialDecision(match);
     }
 
     return {
       mode: "request",
       request: isQuestionInteraction(input.definition)
         ? buildQuestionApprovalRequest(input)
-        : buildApprovalRequest(input, match, targets)
+        : buildApprovalRequest(input, match, targets, approvalMode)
     };
+  };
+}
+
+function buildDenialDecision(match: ApprovalPolicyMatch): Extract<ToolApprovalDecision, { mode: "deny" }> {
+  return {
+    error: {
+      code: "tool_execution_denied_by_policy",
+      details: {
+        matchedRuleId: match.rule?.id ?? null,
+        targetKind: match.target.kind,
+        targetValue: match.target.value
+      },
+      message: buildDeniedMessage(match),
+      retriable: false
+    },
+    metadata: {
+      approvalPolicyMode: "deny",
+      matchedApprovalRuleId: match.rule?.id ?? null,
+      matchedApprovalTargetKind: match.target.kind,
+      matchedApprovalTargetValue: match.target.value
+    },
+    mode: "deny"
   };
 }
 
@@ -262,7 +329,7 @@ export function withMcpTrustRules(
   const trustRules: ApprovalPolicyRule[] = Object.entries(servers)
     .filter(([, config]) => config.trust === "trusted")
     .map(([serverName]) => ({
-      id: `rule.mcp.trust.${serverName.replace(/[^A-Za-z0-9._:-]+/g, "-")}`,
+      id: `rule.mcp.trust.${toMcpIdSegment(serverName)}`,
       mode: "allow",
       notes: `Auto-approved: MCP server "${serverName}" is configured as trusted.`,
       pattern: `^${escapeRegExpLiteral(serverName)}$`,
@@ -276,6 +343,29 @@ export function withMcpTrustRules(
   return { ...settings, rules: [...settings.rules, ...trustRules] };
 }
 
+/**
+ * `withMcpTrustRules` that follows config reloads: a function returning the
+ * operator's settings plus the trust rules of the servers `readServers`
+ * returns now, rebuilt only when it returns a different object. A reload that
+ * drops a server's `trust: "trusted"` (a workspace whose trust was revoked)
+ * stops its auto-approval at the next tool call, not the next restart.
+ */
+export function followMcpTrustRules(
+  settings: ApprovalSettings,
+  readServers: () => Record<string, { trust?: "prompt" | "trusted" }>
+): () => ApprovalSettings {
+  let servers = readServers();
+  let current = withMcpTrustRules(settings, servers);
+  return () => {
+    const next = readServers();
+    if (next !== servers) {
+      servers = next;
+      current = withMcpTrustRules(settings, next);
+    }
+    return current;
+  };
+}
+
 function escapeRegExpLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -285,31 +375,41 @@ function isQuestionInteraction(definition: ToolDefinition): boolean {
 }
 
 function buildQuestionApprovalRequest(params: ToolApprovalDeciderParams): ApprovalRequest {
-  const question =
-    typeof params.call.arguments.question === "string" ? params.call.arguments.question : params.definition.displayName;
-  const options = Array.isArray(params.call.arguments.options) ? (params.call.arguments.options as JsonValue) : [];
-
-  return {
-    createdAt: new Date().toISOString(),
+  return buildQuestionApproval({
     id: `approval.${params.call.id}.${params.turn.id}.question`,
-    justification: question,
-    metadata: {
-      approvalMode: params.definition.approvalMode,
-      interaction: "question",
-      options,
-      toolKind: params.definition.kind
-    },
+    interaction: "question",
+    metadata: { approvalMode: params.definition.approvalMode, toolKind: params.definition.kind },
+    options: readQuestionOptions(params.call.arguments.options),
+    question:
+      typeof params.call.arguments.question === "string"
+        ? params.call.arguments.question
+        : params.definition.displayName,
     riskSummary: "The agent is asking you a question before it continues. Resolve it with your answer as the comment.",
     sessionId: params.session.id,
-    status: "pending",
-    target: {
-      kind: "question",
-      label: params.definition.displayName,
-      value: params.definition.invocationName
-    },
+    target: { label: params.definition.displayName, value: params.definition.invocationName },
     toolCallId: params.call.id,
     turnId: params.turn.id
-  };
+  });
+}
+
+/**
+ * The approval targets of a call that reaches an MCP server. The specific
+ * mcp_tool target comes BEFORE the coarse mcp_server one, so a tool-level rule
+ * (denying one tool of an otherwise trusted server, say) is honoured ahead of
+ * a server-level allow. Direct MCP tool calls and the built-ins that act
+ * through a server (web_search, mcp_read_resource) share this, so a rule
+ * written for one matches all of them.
+ *
+ * `tool.name` is `formatMcpToolName(server, rawToolName)`.
+ */
+export function buildMcpApprovalTargets(params: {
+  serverName: string;
+  tool?: { label: string; name: string };
+}): ApprovalEvaluationTarget[] {
+  return [
+    ...(params.tool ? [{ kind: "mcp_tool" as const, label: params.tool.label, value: params.tool.name }] : []),
+    { kind: "mcp_server" as const, label: params.serverName, value: params.serverName }
+  ];
 }
 
 export function extractApprovalTargets(
@@ -354,19 +454,12 @@ export function extractApprovalTargets(
   }
 
   if (definition.kind === "mcp" && definition.source.serverName) {
-    // Evaluate the more specific mcp_tool target BEFORE the coarse mcp_server
-    // target so a tool-granularity operator rule (e.g. denying a single tool on
-    // an otherwise-trusted server) is honored ahead of a server-level allow.
-    pushUnique({
-      kind: "mcp_tool",
-      label: definition.displayName,
-      value: definition.name
-    });
-    pushUnique({
-      kind: "mcp_server",
-      label: definition.source.serverName,
-      value: definition.source.serverName
-    });
+    for (const target of buildMcpApprovalTargets({
+      serverName: definition.source.serverName,
+      tool: { label: definition.displayName, name: definition.name }
+    })) {
+      pushUnique(target);
+    }
   }
 
   if (definition.kind === "browser") {
@@ -405,7 +498,8 @@ export function extractApprovalTargets(
 function buildApprovalRequest(
   params: ToolApprovalDeciderParams,
   match: ApprovalPolicyMatch,
-  targets: ApprovalEvaluationTarget[]
+  targets: ApprovalEvaluationTarget[],
+  approvalMode: ToolDefinition["approvalMode"]
 ): ApprovalRequest {
   return {
     createdAt: new Date().toISOString(),
@@ -414,7 +508,7 @@ function buildApprovalRequest(
       match.rule?.notes ??
       `The tool "${params.definition.name}" requires approval before it can run because it matched the configured policy.`,
     metadata: {
-      approvalMode: params.definition.approvalMode,
+      approvalMode,
       // Everything the policy weighed, not only the target that decided: a
       // prompt for "write_file" alone never said which file it would write.
       [APPROVAL_TARGETS_METADATA_KEY]: targets.map((target) => ({
