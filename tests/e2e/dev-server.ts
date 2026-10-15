@@ -12,8 +12,13 @@ async function main(): Promise<void> {
   const e2eRoot = path.join(projectRoot, ".aia", "e2e");
   const stateRoot = path.join(e2eRoot, "state");
 
+  // The server reads its user config, trust grants, MCP credentials and skills
+  // from HOME: an empty one keeps the developer's own ~/.aia (and the MCP
+  // servers it names) out of the run.
+  const home = path.join(e2eRoot, "home");
+
   await fs.rm(e2eRoot, { force: true, recursive: true });
-  await fs.mkdir(e2eRoot, { recursive: true });
+  await fs.mkdir(home, { recursive: true });
 
   const fakeServer = await startFakeLanguageModelServer();
   await fs.writeFile(
@@ -41,8 +46,10 @@ async function main(): Promise<void> {
       AIA_MEMORY_WORKSPACE_ROOT: path.join(e2eRoot, "workspace-memory"),
       AIA_OLLAMA_BASE_URL: "http://127.0.0.1:9",
       AIA_WHATSAPP_SESSION_DIRECTORY: path.join(e2eRoot, "channels", "whatsapp"),
+      HOME: home,
       HOSTNAME: "127.0.0.1",
-      PORT: String(port)
+      PORT: String(port),
+      USERPROFILE: home
     },
     stdio: "inherit"
   });

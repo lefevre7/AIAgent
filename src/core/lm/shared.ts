@@ -2,17 +2,21 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type {
-  JsonValue,
-  LanguageModelRequest,
-  LanguageModelResponseFormat,
-  LanguageModelStopReason,
-  Message,
-  MessagePart,
-  ModelToolCallProposal,
-  StructuredError,
-  ToolDefinition
+import {
+  languageModelResponseSchema,
+  type JsonValue,
+  type LanguageModelRequest,
+  type LanguageModelResponse,
+  type LanguageModelResponseFormat,
+  type LanguageModelStopReason,
+  type Message,
+  type MessagePart,
+  type ModelToolCallProposal,
+  type ProviderHealth,
+  type StructuredError,
+  type ToolDefinition
 } from "@/core/contracts";
+import { normalizeUnknownProviderError } from "@/core/lm/http";
 
 type OpenAIContentPart =
   | {
@@ -409,7 +413,9 @@ export function normalizeToolCallProposals(
   };
 }
 
-export type StreamGuardAbortReason = "idle" | "repetition";
+// `first_token`: nothing arrived within the first-token budget (the model may
+// still be reading the prompt). `idle`: the stream stopped after it started.
+export type StreamGuardAbortReason = "first_token" | "idle" | "repetition";
 
 export type StreamGuard = {
   readonly signal: AbortSignal;
@@ -458,9 +464,12 @@ export function createStreamGuard(options: StreamGuardOptions = {}): StreamGuard
       clearTimeout(timer);
     }
     timer = setTimeout(() => {
-      reason ??= "idle";
+      reason ??= started ? "idle" : "first_token";
       controller.abort();
     }, ms);
+    // A watchdog, not work: the request it guards keeps the process alive
+    // while it runs, and a guard someone forgot to dispose must not.
+    timer.unref?.();
   };
 
   const considerLine = (line: string): void => {
@@ -513,16 +522,84 @@ export function createStreamGuard(options: StreamGuardOptions = {}): StreamGuard
   };
 }
 
-export function buildStreamAbortError(providerId: string, reason: StreamGuardAbortReason): StructuredError {
+/**
+ * The lines of a streamed response body, decoded as UTF-8 across chunk
+ * boundaries, for both the SSE and the NDJSON adapters (they had one copy
+ * each). Every chunk counts as activity for `guard`; a read that fails
+ * because the guard gave up ends the lines, and the caller reports the
+ * guard's reason. A last line without a newline is kept: it was dropped,
+ * and with it an NDJSON stream's final record.
+ */
+export async function* readBodyLines(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  guard: Pick<StreamGuard, "abortReason" | "touch">
+): AsyncGenerator<string> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      if (guard.abortReason()) {
+        return;
+      }
+      throw error;
+    }
+    if (chunk.done) {
+      break;
+    }
+    guard.touch();
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    yield* lines;
+  }
+  buffer += decoder.decode();
+  if (buffer.length > 0) {
+    yield buffer;
+  }
+}
+
+/**
+ * Says which budget ran out and where to change it. A single "stalled"
+ * message for both cost an operator the diagnosis: the first-token budget ran
+ * out while a local model was still reading a long prompt (it sends nothing
+ * meanwhile), and the message blamed a stalled stream.
+ */
+export function buildStreamAbortError(
+  providerId: string,
+  reason: StreamGuardAbortReason,
+  budget: {
+    firstTokenTimeoutMs?: number;
+    idleTimeoutMs?: number;
+    /** The provider's config section, e.g. `providers.lmStudio`. */
+    settingsPath?: string;
+  } = {}
+): StructuredError {
+  const setting = (name: string) => (budget.settingsPath ? `${budget.settingsPath}.${name}` : `the provider's ${name}`);
+  const within = (ms: number | undefined) => (ms && ms > 0 ? ` within ${formatDuration(ms)}` : "");
+  const message =
+    reason === "first_token"
+      ? `The ${providerId} model did not start answering${within(budget.firstTokenTimeoutMs)}. A local model may still ` +
+        `be reading a long prompt; to wait longer, raise ${setting("streamFirstTokenTimeoutMs")}.`
+      : reason === "idle"
+        ? `The ${providerId} stream stalled: no new tokens arrived${within(budget.idleTimeoutMs)} after it started. ` +
+          `To wait longer, raise ${setting("streamIdleTimeoutMs")}.`
+        : `The ${providerId} stream was aborted after repeated identical output (likely a model loop).`;
   return {
     code: `provider_stream_${reason}`,
     details: { provider: providerId, reason },
-    message:
-      reason === "idle"
-        ? `The ${providerId} stream stalled: no new tokens arrived within the idle timeout.`
-        : `The ${providerId} stream was aborted after repeated identical output (likely a model loop).`,
+    message,
     retriable: false
   };
+}
+
+function formatDuration(ms: number): string {
+  if (ms >= 60_000 && ms % 60_000 === 0) {
+    return `${ms / 60_000} min`;
+  }
+  return `${Math.round(ms / 1000)} s`;
 }
 
 export function buildRejectedToolCallMetadata(rejected: RejectedToolCallProposal[]): Record<string, JsonValue> {
@@ -533,6 +610,91 @@ export function buildRejectedToolCallMetadata(rejected: RejectedToolCallProposal
   return {
     rejectedToolCalls: rejected.map((entry) => ({ reason: entry.reason }))
   };
+}
+
+/**
+ * A finished generation as the response the loop gets. The tool calls are
+ * the provider's own or, failing that, ones read from the text (see
+ * `resolveToolCallProposals`), and the stop reason says `tool_calls` when
+ * there are any. Both adapter families, streamed or not, finish here.
+ */
+export function finishLanguageModelResponse(params: {
+  content: string;
+  /** Ids for tool calls that came without one. */
+  fallbackPrefix: string;
+  id: string;
+  modelId: string;
+  nativeToolCalls: unknown[];
+  provider: string;
+  request: LanguageModelRequest;
+  stopReason: unknown;
+  usage: LanguageModelResponse["usage"];
+}): LanguageModelResponse {
+  const resolved = resolveToolCallProposals({
+    content: params.content,
+    definitions: params.request.availableTools,
+    fallbackPrefix: params.fallbackPrefix,
+    nativeToolCalls: params.nativeToolCalls
+  });
+  return languageModelResponseSchema.parse({
+    id: params.id,
+    message:
+      resolved.content.trim().length === 0
+        ? undefined
+        : {
+            createdAt: new Date().toISOString(),
+            id: `message.${params.id}`,
+            metadata: {},
+            parts: [{ kind: "text", text: resolved.content }],
+            role: "assistant",
+            sessionId: params.request.sessionId ?? params.request.id,
+            source: "assistant",
+            tags: [],
+            turnId: params.request.turnId,
+            visibility: "default"
+          },
+    metadata: {
+      ...buildRejectedToolCallMetadata(resolved.rejected),
+      ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
+    },
+    modelId: params.modelId,
+    provider: params.provider,
+    stopReason: mapStopReason(resolved.proposals.length > 0 ? "tool_calls" : params.stopReason),
+    toolCalls: resolved.proposals,
+    usage: params.usage
+  });
+}
+
+/** A provider's health, judged by whether it lists its models. */
+export async function healthFromModelListing(
+  providerId: string,
+  listModels: () => Promise<unknown[]>
+): Promise<ProviderHealth> {
+  try {
+    const models = await listModels();
+    return {
+      checkedAt: new Date().toISOString(),
+      details: {
+        modelCount: models.length
+      },
+      providerId,
+      status: "healthy"
+    };
+  } catch (error) {
+    return {
+      checkedAt: new Date().toISOString(),
+      details: {
+        error: normalizeUnknownProviderError(error).message
+      },
+      providerId,
+      status: "unavailable"
+    };
+  }
+}
+
+/** `pathname` under `baseUrl`, with one slash between them. */
+export function joinUrl(baseUrl: string, pathname: string): string {
+  return `${baseUrl.replace(/\/+$/u, "")}/${pathname.replace(/^\/+/u, "")}`;
 }
 
 export type ResolvedToolCallProposals = NormalizedToolCallProposals & {
@@ -968,9 +1130,13 @@ function buildProviderToolParameters(definition: ToolDefinition): Record<string,
 
 function ensureObjectSchema(schema: Record<string, unknown>): Record<string, unknown> {
   if (schema.type === "object") {
+    // A schema that says what extra keys may do (an MCP server's own
+    // `additionalProperties: true`, or a schema for them) keeps its say; one
+    // that says nothing gets `false`, which keeps a grammar-constrained model
+    // to the declared arguments.
     return {
       ...schema,
-      additionalProperties: false
+      additionalProperties: schema.additionalProperties ?? false
     };
   }
 

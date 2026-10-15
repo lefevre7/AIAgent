@@ -6,6 +6,7 @@ import path from "node:path";
 import type { MemoryEntry, MemoryHit, MemoryQuery } from "@/core/contracts";
 import type { ProviderHealthStatus } from "@/core/contracts";
 import type { EmbeddingRuntime } from "@/core/memory/embeddings";
+import { splitSearchWords, tokenizeForSearch } from "@/core/text/search";
 
 // Minimal structural surface of the synchronous SQLite driver we use. Node's
 // built-in `node:sqlite` DatabaseSync satisfies this, and so does the
@@ -552,19 +553,13 @@ export class MemoryRetrievalEngine {
     }
   }
 
+  // A query is matched word by word, like tool_search. It used to be matched
+  // as one string, so "release checklist for the gateway" found nothing
+  // unless those exact words appeared in that order, and FTS5 read the raw
+  // text as query syntax, where a stray quote or hyphen is an error.
   private lexicalSearch(queryText: string, scopes: MemoryQuery["scopes"], limit: number): LexicalCandidate[] {
     if (!this.ftsAvailable) {
-      const normalized = queryText.toLowerCase();
-      return this.getAllChunks(scopes)
-        .filter(
-          (chunk) =>
-            chunk.content.toLowerCase().includes(normalized) || chunk.filePath.toLowerCase().includes(normalized)
-        )
-        .slice(0, limit)
-        .map((chunk) => ({
-          chunk,
-          lexicalScore: 0.5
-        }));
+      return this.substringSearch(queryText, scopes, limit);
     }
 
     try {
@@ -572,7 +567,7 @@ export class MemoryRetrievalEngine {
         .prepare(
           "SELECT c.*, bm25(chunk_fts) AS lexical_score FROM chunk_fts JOIN chunks c ON c.rowid = chunk_fts.rowid WHERE chunk_fts MATCH ? LIMIT ?"
         )
-        .all(queryText, limit * 3) as Array<Record<string, unknown>>;
+        .all(buildFtsMatchExpression(queryText), limit * 3) as Array<Record<string, unknown>>;
 
       const scopeSet = new Set(scopes);
       return rows
@@ -583,18 +578,33 @@ export class MemoryRetrievalEngine {
         .filter((row) => scopeSet.has(row.chunk.scope))
         .slice(0, limit);
     } catch {
-      const normalized = queryText.toLowerCase();
-      return this.getAllChunks(scopes)
-        .filter(
-          (chunk) =>
-            chunk.content.toLowerCase().includes(normalized) || chunk.filePath.toLowerCase().includes(normalized)
-        )
-        .slice(0, limit)
-        .map((chunk) => ({
-          chunk,
-          lexicalScore: 0.5
-        }));
+      return this.substringSearch(queryText, scopes, limit);
     }
+  }
+
+  // Without FTS5 (Node's built-in SQLite ships without it): the whole query
+  // contained verbatim ranks first, then chunks by the share of query words
+  // that start one of their words ("gateway" finds "gateways", but "the" no
+  // longer finds "other.md").
+  private substringSearch(queryText: string, scopes: MemoryQuery["scopes"], limit: number): LexicalCandidate[] {
+    const normalized = queryText.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return [];
+    }
+    const tokens = tokenizeLexicalQuery(normalized);
+    return this.getAllChunks(scopes)
+      .map((chunk) => {
+        const text = `${chunk.content}\n${chunk.filePath}`.toLowerCase();
+        if (text.includes(normalized)) {
+          return { chunk, lexicalScore: 0.5 };
+        }
+        const words = splitSearchWords(text);
+        const matched = tokens.filter((token) => words.some((word) => word.startsWith(token))).length;
+        return { chunk, lexicalScore: matched === 0 ? 0 : (0.4 * matched) / tokens.length };
+      })
+      .filter((candidate) => candidate.lexicalScore > 0)
+      .sort((left, right) => right.lexicalScore - left.lexicalScore)
+      .slice(0, limit);
   }
 
   private needsRebuild(): boolean {
@@ -880,6 +890,29 @@ function cosineSimilarity(left: number[], right: number[]): number {
 
 function formatCitation(filePath: string, startLine: number, endLine: number): string {
   return startLine === endLine ? `${filePath}#L${startLine}` : `${filePath}#L${startLine}-L${endLine}`;
+}
+
+/**
+ * Query words worth matching on their own, read as tool_search reads them
+ * (tokenizeForSearch) but taken as written: each is matched as the start of a
+ * word in the chunk, so two characters (which begin nearly every chunk) are
+ * too few, and a stem or a camelCase split would only loosen that further.
+ */
+function tokenizeLexicalQuery(normalizedQuery: string): string[] {
+  return [...new Set(tokenizeForSearch(normalizedQuery, { camelCase: false, minLength: 3, stem: false }))];
+}
+
+/**
+ * An FTS5 MATCH expression that ranks chunks by how many query words they
+ * contain (bm25 adds up each word's score), each as a prefix, like the scan
+ * without FTS5. Every word is quoted, so nothing in the query is read as FTS5
+ * syntax (quotes, `-`, `*`, AND/OR/NOT); a query with no such words is
+ * matched as a phrase.
+ */
+export function buildFtsMatchExpression(queryText: string): string {
+  const quote = (value: string) => `"${value.replaceAll('"', '""')}"`;
+  const tokens = tokenizeLexicalQuery(queryText.trim().toLowerCase());
+  return tokens.length > 0 ? tokens.map((token) => `${quote(token)}*`).join(" OR ") : quote(queryText.trim());
 }
 
 /**

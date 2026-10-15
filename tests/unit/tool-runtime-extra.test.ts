@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  ProviderRequestError,
   ToolRuntime,
   createDefaultToolRegistry,
+  createExecutableToolRegistry,
   sessionRecordSchema,
   toolCallRecordSchema,
   turnRecordSchema
@@ -75,5 +77,44 @@ describe("ToolRuntime definition lookups and unknown tools", () => {
     );
     expect(result.toolCall.status).toBe("failed");
     expect(result.toolCall.result ?? result.toolCall.error).toBeTruthy();
+  });
+});
+
+describe("ToolRuntime errors", () => {
+  test("a provider's error thrown by a tool keeps its code", async () => {
+    // It used to be reported as a plain tool_runtime_error, losing the code
+    // (a context overflow, a rate limit) that callers act on.
+    const think = createDefaultToolRegistry({}).getTool("think")!;
+    const runtime = new ToolRuntime({
+      approvalDecider: async () => ({ mode: "execute" }),
+      registry: createExecutableToolRegistry([
+        {
+          definition: think.definition,
+          execute: async () => {
+            throw new ProviderRequestError({
+              code: "provider_http_error",
+              details: { status: 429 },
+              message: "Too many requests",
+              retriable: true
+            });
+          }
+        }
+      ])
+    });
+    const result = await runtime.execute(
+      toolCallRecordSchema.parse({
+        arguments: { thought: "x" },
+        id: "tool-call.provider-error.1",
+        metadata: {},
+        sessionId: "session.runtime.extra",
+        startedAt: "2026-06-11T00:00:00.000Z",
+        status: "pending",
+        toolName: "think",
+        turnId: "turn.runtime.extra"
+      }),
+      { session: buildSession(), turn: buildTurn() }
+    );
+    expect(result.toolCall.status).toBe("failed");
+    expect(result.toolCall.error).toMatchObject({ code: "provider_http_error", retriable: true });
   });
 });

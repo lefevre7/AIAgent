@@ -1,7 +1,7 @@
 import { lookup } from "node:dns/promises";
 import net from "node:net";
 
-import { StructuredError } from "@/core/contracts";
+import { extractStructuredError, type StructuredError } from "@/core/contracts";
 import { extractHtmlTitle, htmlToMarkdown } from "@/core/research/html";
 
 const DEFAULT_FETCH_TIMEOUT_MS = 20_000;
@@ -97,8 +97,9 @@ export class WebPageFetcher {
         url: target.toString()
       };
     } catch (error) {
-      if (isStructuredError(error)) {
-        throw error;
+      const structured = extractStructuredError(error);
+      if (structured) {
+        throw structured;
       }
       if (error instanceof Error && error.name === "AbortError") {
         throw toStructuredFetchError(
@@ -381,8 +382,4 @@ function toStructuredFetchError(message: string, code: StructuredError["code"]):
     message,
     retriable: false
   };
-}
-
-function isStructuredError(value: unknown): value is StructuredError {
-  return typeof value === "object" && value !== null && "code" in value && "message" in value && "retriable" in value;
 }

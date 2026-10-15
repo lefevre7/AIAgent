@@ -95,6 +95,46 @@ describe("lm http fetchJson", () => {
     );
     expect(calls).toBe(2);
   });
+
+  test("a cancelled request fails as cancelled and is never retried", async () => {
+    let calls = 0;
+    const controller = new AbortController();
+    const fetchImpl = (async (_url: string, init: { signal: AbortSignal }) => {
+      calls += 1;
+      return await new Promise<Response>((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const abort = new Error("This operation was aborted");
+          abort.name = "AbortError";
+          reject(abort);
+        });
+        controller.abort();
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      fetchJson({ cancelSignal: controller.signal, fetchImpl, maxAttempts: 3, timeoutMs: 5_000, url: "u" })
+    ).rejects.toMatchObject({
+      structuredError: { code: "provider_request_cancelled", message: "The request was cancelled.", retriable: false }
+    });
+    expect(calls).toBe(1);
+  });
+
+  // Node's fetch reports every connection failure as a bare "fetch failed".
+  test("names the address and the cause when the provider cannot be reached", async () => {
+    const fetchImpl = (async () => {
+      throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      fetchJson({ fetchImpl, maxAttempts: 1, timeoutMs: 1000, url: "http://127.0.0.1:1234/v1/chat/completions" })
+    ).rejects.toMatchObject({
+      structuredError: {
+        code: "provider_request_error",
+        message:
+          "Could not reach http://127.0.0.1:1234/v1/chat/completions (ECONNREFUSED). Check that the provider is running and that its base URL is right."
+      }
+    });
+  });
 });
 
 describe("normalizeUnknownProviderError", () => {

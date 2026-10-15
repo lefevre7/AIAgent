@@ -255,8 +255,8 @@ private final class CaptureController: NSObject, AVCaptureAudioDataOutputSampleB
             try ensureMicrophoneAuthorization()
             try ensureSpeechAuthorization()
 
-            let availableFileTypes = Set(fileOutput.availableOutputFileTypes)
-            guard availableFileTypes.contains(.wav) else {
+            let availableFileTypes = Set(AVCaptureAudioFileOutput.availableOutputFileTypes())
+            guard availableFileTypes.contains(AVFileType.wav) else {
                 throw HelperFailure(
                     code: "voice_capture_wave_unsupported",
                     details: [:],
@@ -468,7 +468,7 @@ private final class CaptureController: NSObject, AVCaptureAudioDataOutputSampleB
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
 
-        return try [SIGINT, SIGTERM].map { signalNumber in
+        return [SIGINT, SIGTERM].map { signalNumber in
             let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: signalQueue)
             source.setEventHandler { [weak self] in
                 self?.requestStop(reason: "manual")
@@ -742,12 +742,14 @@ private func ensureSpeechAuthorization() throws {
 }
 
 private func durationMs(for url: URL) -> Int? {
-    let asset = AVURLAsset(url: url)
-    let seconds = CMTimeGetSeconds(asset.duration)
-    guard seconds.isFinite, seconds > 0 else {
+    guard let file = try? AVAudioFile(forReading: url) else {
         return nil
     }
-    return Int((seconds * 1_000).rounded())
+    let sampleRate = file.processingFormat.sampleRate
+    guard sampleRate > 0, file.length > 0 else {
+        return nil
+    }
+    return Int((Double(file.length) / sampleRate * 1_000).rounded())
 }
 
 private func emitJSON<T: Encodable>(_ value: T) {

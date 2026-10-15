@@ -58,6 +58,27 @@ describe("gateway auth", () => {
     expect(result.error.code).toBe("authentication_required");
   });
 
+  test("refuses an untokened HTTP request from another site or a rebound name, but not from this server's page", () => {
+    const loopback = (headers: Record<string, string>) => {
+      const request = httpMocks.createRequest({ headers, method: "POST", url: "/request" });
+      Object.defineProperty(request.socket, "remoteAddress", { value: "127.0.0.1" });
+      return request;
+    };
+
+    const crossSite = authorizeGatewayHttpRequest(
+      loopback({ host: "127.0.0.1:3000", origin: "https://attacker.example" })
+    );
+    expect(crossSite.ok === false && crossSite.statusCode).toBe(403);
+    const rebound = authorizeGatewayHttpRequest(loopback({ host: "attacker.example:3000" }));
+    expect(rebound.ok === false && rebound.statusCode).toBe(403);
+    expect(authorizeGatewayHttpRequest(loopback({ host: "127.0.0.1:3000", origin: "http://localhost:3000" }))).toEqual({
+      ok: true
+    });
+    // With a token, the token is the check: a tunnel's Host is fine.
+    const tokened = loopback({ authorization: "Bearer secret", host: "agent.example.net" });
+    expect(authorizeGatewayHttpRequest(tokened, { token: "secret" })).toEqual({ ok: true });
+  });
+
   test("requires the configured token even on loopback", () => {
     const request = httpMocks.createRequest({
       headers: {

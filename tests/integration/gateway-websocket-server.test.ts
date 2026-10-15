@@ -7,7 +7,7 @@ import type { Duplex } from "node:stream";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { gatewayResponseSchema, type GatewayRequest } from "@/core/contracts";
-import { attachGatewayWebSocketServer, type GatewayRuntimeLike } from "@/gateway";
+import { attachGatewayWebSocketServer, authorizeGatewayUpgradeRequest, type GatewayRuntimeLike } from "@/gateway";
 
 type WsClientLike = {
   close(): void;
@@ -111,9 +111,72 @@ describe("attachGatewayWebSocketServer", () => {
     expect(socket.destroy).toHaveBeenCalled();
   });
 
-  test("destroys upgrades on a non-matching path when there is no fallback", () => {
+  // Next's custom server adds its own upgrade listener to the HTTP server on
+  // its first request, and that listener answers the dev hot-reload socket.
+  // Handing the upgrade to `nextApp.getUpgradeHandler()` as well did nothing:
+  // that is Next's production handler, and it is empty.
+  describe("Next's hot-reload upgrades", () => {
+    const attachWithNext = (authorize: () => ReturnType<typeof authorizeGatewayUpgradeRequest>) => {
+      const server = new EventEmitter();
+      const attached = attachGatewayWebSocketServer({
+        nextUpgrades: { authorize },
+        runtime: runtimeStub(),
+        server: server as unknown as http.Server,
+        websocketPath: "/api/gateway/ws"
+      });
+      cleanups.push(async () => attached.close());
+      // What Next's custom server adds, after the gateway's own listener.
+      const seenByNext: Array<{ destroyed: boolean }> = [];
+      server.on("upgrade", (_request, socket: Duplex) => {
+        seenByNext.push({
+          destroyed: (socket.destroy as unknown as { mock: { calls: unknown[] } }).mock.calls.length > 0
+        });
+      });
+      return { seenByNext, server };
+    };
+
+    test("leaves an allowed one to Next's own listener", () => {
+      const { seenByNext, server } = attachWithNext(() => ({ ok: true }));
+      const socket = fakeDuplex();
+      server.emit(
+        "upgrade",
+        { headers: { host: "127.0.0.1:3000" }, socket: { remoteAddress: "127.0.0.1" }, url: "/_next/webpack-hmr" },
+        socket,
+        Buffer.alloc(0)
+      );
+      expect(socket.write).not.toHaveBeenCalled();
+      expect(socket.destroy).not.toHaveBeenCalled();
+      expect(seenByNext).toEqual([{ destroyed: false }]);
+    });
+
+    test("closes a refused one before Next's listener sees it", () => {
+      const { seenByNext, server } = attachWithNext(() => ({
+        error: { code: "forbidden", details: {}, message: "no", retriable: false },
+        ok: false,
+        statusCode: 403
+      }));
+      const socket = fakeDuplex();
+      server.emit(
+        "upgrade",
+        { headers: {}, socket: { remoteAddress: "127.0.0.1" }, url: "/_next/webpack-hmr" },
+        socket,
+        Buffer.alloc(0)
+      );
+      expect(socket.write).toHaveBeenCalledWith(expect.stringContaining("HTTP/1.1 403 Forbidden"));
+      expect(seenByNext).toEqual([{ destroyed: true }]);
+    });
+  });
+
+  // Every non-gateway upgrade used to be handed on and never answered, so an
+  // unknown path hung until the client gave up.
+  test.each([
+    ["any other path", "/other", true],
+    ["any other path when Next is not being served", "/other", false],
+    ["a /_next/ path when Next is not being served", "/_next/webpack-hmr", false]
+  ])("answers %s 404", (_label, url, withNext) => {
     const server = new EventEmitter();
     const attached = attachGatewayWebSocketServer({
+      ...(withNext ? { nextUpgrades: { authorize: () => ({ ok: true as const }) } } : {}),
       runtime: runtimeStub(),
       server: server as unknown as http.Server,
       websocketPath: "/api/gateway/ws"
@@ -121,34 +184,58 @@ describe("attachGatewayWebSocketServer", () => {
     cleanups.push(async () => attached.close());
 
     const socket = fakeDuplex();
-    server.emit(
-      "upgrade",
-      { headers: {}, socket: { remoteAddress: "127.0.0.1" }, url: "/other" },
-      socket,
-      Buffer.alloc(0)
-    );
+    server.emit("upgrade", { headers: {}, socket: { remoteAddress: "127.0.0.1" }, url }, socket, Buffer.alloc(0));
+    expect(socket.write).toHaveBeenCalledWith(expect.stringContaining("HTTP/1.1 404 Not Found"));
     expect(socket.destroy).toHaveBeenCalled();
   });
 
-  test("delegates non-matching upgrades to a fallback handler when provided", () => {
-    const server = new EventEmitter();
-    const fallback = vi.fn();
-    const attached = attachGatewayWebSocketServer({
-      fallbackUpgradeHandler: fallback,
-      runtime: runtimeStub(),
-      server: server as unknown as http.Server,
-      websocketPath: "/api/gateway/ws"
-    });
-    cleanups.push(async () => attached.close());
+  // Without a token any loopback connection used to be accepted, and a web
+  // page on another site opens its WebSocket from loopback: it could drive
+  // the gateway (read files, run tools) from the operator's own browser.
+  describe("without a gateway token", () => {
+    const upgradeWith = (headers: Record<string, string>) => {
+      const server = new EventEmitter();
+      const attached = attachGatewayWebSocketServer({
+        runtime: runtimeStub(),
+        server: server as unknown as http.Server,
+        websocketPath: "/api/gateway/ws"
+      });
+      cleanups.push(async () => attached.close());
+      const socket = fakeDuplex();
+      server.emit(
+        "upgrade",
+        { headers, socket: { remoteAddress: "127.0.0.1" }, url: "/api/gateway/ws" },
+        socket,
+        Buffer.alloc(0)
+      );
+      return socket;
+    };
 
-    const socket = fakeDuplex();
-    server.emit(
-      "upgrade",
-      { headers: {}, socket: { remoteAddress: "127.0.0.1" }, url: "/other" },
-      socket,
-      Buffer.alloc(0)
-    );
-    expect(fallback).toHaveBeenCalledOnce();
+    test.each([
+      ["a page on another site", { host: "127.0.0.1:3000", origin: "https://attacker.example" }],
+      ["a sandboxed or file:// page", { host: "127.0.0.1:3000", origin: "null" }],
+      ["another local port", { host: "127.0.0.1:3000", origin: "http://localhost:5173" }],
+      ["a DNS-rebound name", { host: "attacker.example:3000", origin: "http://attacker.example:3000" }],
+      ["a rebound name with no Origin", { host: "attacker.example:3000" }]
+    ])("refuses %s", (_label, headers) => {
+      const socket = upgradeWith(headers);
+      expect(socket.write).toHaveBeenCalledWith(expect.stringContaining("HTTP/1.1 403 Forbidden"));
+      expect(socket.destroy).toHaveBeenCalled();
+    });
+
+    test.each([
+      ["a client that is not a browser", { host: "127.0.0.1:3000" }],
+      ["this server's own page", { host: "127.0.0.1:3000", origin: "http://127.0.0.1:3000" }],
+      ["its own page under another loopback name", { host: "127.0.0.1:3000", origin: "http://localhost:3000" }]
+    ])("accepts %s", (_label, headers) => {
+      expect(
+        authorizeGatewayUpgradeRequest({
+          headers,
+          socket: { remoteAddress: "127.0.0.1" },
+          url: "/api/gateway/ws"
+        } as unknown as http.IncomingMessage)
+      ).toEqual({ ok: true });
+    });
   });
 
   // The listener resolved the request target against the client's Host header,

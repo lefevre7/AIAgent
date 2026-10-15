@@ -25,7 +25,8 @@ function fakeManager(options: { capabilities?: unknown[]; callResult?: unknown }
         content: [{ text: "Result body", type: "text" }],
         structuredContent: { results: [{ snippet: "snippet", title: "Example", url: "https://example.com" }] }
       },
-    getToolCapabilities: () => options.capabilities ?? [searchCapability()]
+    getToolCapabilities: () => options.capabilities ?? [searchCapability()],
+    waitForStartup: async () => undefined
   } as unknown as MCPManager;
 }
 
@@ -46,6 +47,23 @@ describe("MCPWebSearchService", () => {
   test("reports when no search-capable MCP tool is connected", async () => {
     const service = new MCPWebSearchService({ mcpManager: fakeManager({ capabilities: [] }) });
     await expect(service.search("anything")).rejects.toMatchObject({ code: "web_search_no_backend" });
+  });
+
+  test("waits for a search server still connecting at startup, instead of finding none", async () => {
+    // An optional server joins within the startup grace; a search made in
+    // the first second used to fail with web_search_no_backend.
+    let connected = false;
+    const manager = {
+      callTool: async () => ({ content: [{ text: "Result body", type: "text" }] }),
+      getToolCapabilities: () => (connected ? [searchCapability()] : []),
+      waitForStartup: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        connected = true;
+      }
+    } as unknown as MCPManager;
+
+    const result = await new MCPWebSearchService({ mcpManager: manager }).search("typescript esm");
+    expect(result.provider.serverName).toBe("brave");
   });
 
   test("ignores tools that do not expose a query field", async () => {

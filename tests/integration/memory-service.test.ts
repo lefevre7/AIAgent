@@ -185,7 +185,9 @@ describe("file-backed memory service", () => {
     expect(compactionHistory).toContain('"phase":"startup_phase_1"');
     expect(compactionHistory).toContain('"phase":"startup_phase_2"');
     expect(compactionHistory).toContain('"phase":"session_completion"');
-    expect(promptContext?.sessionSummary).toContain("Session Summary");
+    // A completion folds nothing (the whole transcript is still replayed), so
+    // the prompt does not carry the summary it just rewrote.
+    expect(promptContext?.sessionSummary).toBeUndefined();
 
     const status = await memory.getMemoryStatus();
     expect(status.lastCompaction?.sessionId).toBe(session.id);
@@ -204,10 +206,76 @@ describe("file-backed memory service", () => {
     );
     expect(historyAfterManual).toContain('"phase":"manual"');
     expect((await memory.getMemoryStatus()).lastCompaction?.trigger).toBe("manual");
+    // A manual compaction folds history: from now on the prompt carries the
+    // summary as of this fold.
+    expect((await memory.getPromptContext(session.id))?.sessionSummary).toBe(manual.summary);
+
+    // A later completion rewrites the live summary for people to read, but
+    // the prompt keeps the folded one, so the prompt prefix does not change
+    // between runs and a local server need not re-read the conversation.
+    await sessions.appendMessages([
+      {
+        createdAt: "2026-03-27T17:20:00.000Z",
+        id: "message.assistant.after-fold",
+        metadata: {},
+        parts: [{ kind: "text", text: "Answered the follow-up question." }],
+        role: "assistant",
+        sessionId: session.id,
+        source: "assistant",
+        tags: [],
+        turnId: "turn.memory.2",
+        visibility: "default"
+      }
+    ]);
+    await memory.compactSession({ sessionId: session.id, trigger: "completion" });
+    expect(await fs.readFile(path.join(chatSessionRoot, `${session.id}.md`), "utf8")).toContain(
+      "Answered the follow-up question."
+    );
+    expect((await memory.getPromptContext(session.id))?.sessionSummary).toBe(manual.summary);
 
     await expect(memory.compactSessionDetailed({ sessionId: "session.missing", trigger: "manual" })).rejects.toThrow(
       /unknown session/u
     );
+  });
+
+  // Sessions folded before the frozen copy existed keep the live summary in
+  // the prompt: it is the only record of their folded history.
+  test("a session folded before the frozen summary existed still gets its summary in the prompt", async () => {
+    const root = await createTempRoot();
+    const stateRoot = path.join(root, ".aia");
+    const chatSessionRoot = path.join(root, "workspace", "chat-session-memory");
+    const sessions = new FileSessionStore(stateRoot);
+    const session = buildSession();
+    await sessions.saveSession(session);
+    await fs.mkdir(path.join(stateRoot, "memory", "compactions"), { recursive: true });
+    await fs.writeFile(
+      path.join(stateRoot, "memory", "compactions", `${session.id}.jsonl`),
+      `${JSON.stringify({
+        createdAt: "2026-09-01T00:00:00.000Z",
+        id: `memory-compaction.${session.id}.old`,
+        outputTokenCount: 10,
+        phase: "threshold",
+        placeholderMode: true,
+        sessionId: session.id,
+        sourceTokenCount: 100,
+        summary: "Compacted before the frozen copy existed.",
+        trigger: "threshold",
+        updatedAt: "2026-09-01T00:00:00.000Z"
+      })}\n`,
+      "utf8"
+    );
+    await fs.mkdir(chatSessionRoot, { recursive: true });
+    await fs.writeFile(path.join(chatSessionRoot, `${session.id}.md`), "# Session Summary\n\nOld fold.", "utf8");
+
+    const memory = new FileBackedMemoryService({
+      chatSessionRoot,
+      sessions,
+      stateRoot,
+      userGlobalRoot: path.join(root, "home", ".aia", "memory"),
+      workspaceRoot: path.join(root, "workspace", "memory")
+    });
+
+    expect((await memory.getPromptContext(session.id))?.sessionSummary).toBe("# Session Summary\n\nOld fold.");
   });
 
   // Unlike the threshold path (which reports the model's own usage.inputTokens),
@@ -277,11 +345,11 @@ describe("file-backed memory service", () => {
 
     const result = await memory.compactSessionDetailed({ sessionId: session.id, trigger: "manual" });
 
-    // The two long pre-watermark messages are ~7,000 characters combined
-    // (~1,750 estimated tokens); the one short post-watermark message is
-    // ~19 characters (a handful of tokens). Before the fix this counted the
-    // whole transcript and would have been in the thousands.
-    expect(result.sourceTokenCount).toBeLessThan(20);
+    // Still in context: the operator's request (5,400 characters; compaction
+    // keeps what people said) and the short post-watermark reply (18), so
+    // 5,418 / 4. Not the already-folded long reply (13,200 more): counting the
+    // whole raw transcript, as before the fix, would give 4,655.
+    expect(result.sourceTokenCount).toBe(1_355);
   });
 
   // The estimate used its own copy of the watermark slice, which skipped the

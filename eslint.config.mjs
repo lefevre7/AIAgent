@@ -43,5 +43,19 @@ export default tseslint.config(
         }
       ]
     }
+  },
+  {
+    files: ["tests/**/*.{ts,tsx}"],
+    rules: {
+      // AGENTS.md: a run that never ends fails its test instead of hanging the suite.
+      "no-restricted-syntax": [
+        "error",
+        {
+          message:
+            "Pass { timeoutMs } to wait(), so a run that never ends fails the test instead of hanging the suite.",
+          selector: "CallExpression[callee.property.name='wait'][arguments.length=0]"
+        }
+      ]
+    }
   }
 );

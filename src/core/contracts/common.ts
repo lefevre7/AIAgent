@@ -146,6 +146,21 @@ export const structuredErrorSchema = z
   })
   .strict();
 
+/**
+ * The structured error an exception carries, when it carries one: a
+ * `ProviderRequestError`'s `structuredError`, or a thrown structured-error
+ * object (tools throw those). Lets a caller several layers up act on a
+ * provider's code (a context overflow, say) instead of only its message.
+ */
+export function extractStructuredError(error: unknown): StructuredError | null {
+  const candidate =
+    typeof error === "object" && error !== null && "structuredError" in error
+      ? (error as { structuredError: unknown }).structuredError
+      : error;
+  const parsed = structuredErrorSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : null;
+}
+
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export type ArtifactReference = z.infer<typeof artifactReferenceSchema>;
 export type EntityId = z.infer<typeof entityIdSchema>;

@@ -1,16 +1,18 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  MCPManager,
   RegexApprovalPolicy,
+  createDefaultAppConfig,
   createMcpRuntimeTool,
   createToolApprovalDecider,
   extractApprovalTargets,
+  followMcpTrustRules,
   sessionRecordSchema,
   toolCallRecordSchema,
   turnRecordSchema,
   withMcpTrustRules,
   type ApprovalSettings,
-  type MCPManager,
   type MCPToolCapability
 } from "@/core";
 
@@ -210,5 +212,49 @@ describe("MCP tool approval end to end", () => {
     // The tool-granularity deny is evaluated before the coarse server-level
     // trust allow, so the specific tool is still blocked on a trusted server.
     expect(decision.mode).toBe("deny");
+  });
+});
+
+describe("followMcpTrustRules", () => {
+  // The rules used to be built once at startup, so a workspace whose trust
+  // was revoked (or whose config dropped `trust: "trusted"`) kept
+  // auto-approving its server until the next restart.
+  test("follows the MCP manager's reloads: withdrawn trust stops auto-approval at the next call", async () => {
+    const definition = mcpToolDefinition("trusted-srv");
+    const params = {
+      call: buildCall(definition.invocationName),
+      definition,
+      session: buildSession(),
+      turn: buildTurn()
+    };
+    const configWith = (trust: "prompt" | "trusted") => {
+      const config = createDefaultAppConfig({ userStateDirectory: "/tmp/aia-trust-rules-home/.aia" });
+      config.mcp.servers["trusted-srv"] = {
+        args: [],
+        command: "node",
+        enabled: false,
+        env: {},
+        required: false,
+        stderr: "pipe",
+        tags: [],
+        trust,
+        type: "stdio"
+      };
+      return config;
+    };
+    const manager = new MCPManager({ config: configWith("trusted"), watch: false });
+    try {
+      const settings = followMcpTrustRules(BASE, () => manager.getConfiguredServers());
+      const decider = createToolApprovalDecider({ settings });
+
+      expect(await decider(params)).toEqual({ mode: "execute" });
+      // Rebuilt only when the servers change, not on every call.
+      expect(settings()).toBe(settings());
+
+      await manager.refresh(configWith("prompt"));
+      expect((await decider(params)).mode).toBe("request");
+    } finally {
+      await manager.close();
+    }
   });
 });

@@ -5,17 +5,31 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
+  extractStructuredError,
   FileLanguageModelQueue,
   languageModelQueueJobSchema,
+  ProviderRequestError,
   type LanguageModelAdapter,
   type LanguageModelRequest,
-  type LanguageModelResponse
+  type LanguageModelResponse,
+  type StructuredError
 } from "@/core";
 import { writeJsonAtomic } from "@/core/io/files";
 
 const tempRoots: string[] = [];
+const queues: FileLanguageModelQueue[] = [];
+
+async function createQueueFor(adapter: LanguageModelAdapter): Promise<FileLanguageModelQueue> {
+  const queue = new FileLanguageModelQueue({
+    resolveAdapter: () => adapter,
+    stateRoot: path.join(await createTempRoot(), ".aia")
+  });
+  queues.push(queue);
+  return queue;
+}
 
 afterEach(async () => {
+  await Promise.all(queues.splice(0).map((queue) => queue.close()));
   await Promise.all(
     tempRoots.splice(0).map(async (root) => {
       await fs.rm(root, { force: true, recursive: true });
@@ -253,6 +267,58 @@ describe("file language-model queue streaming and failures", () => {
     await expect(queue.execute(buildRequest("queue.fail.1"))).rejects.toThrow(/provider exploded/u);
   });
 
+  // The agent loop acts on a provider error's code (a context overflow is
+  // folded and retried), not its message, so the queue hands back the whole
+  // structured error. It used to rethrow a plain Error with the message only.
+  test("keeps the provider's structured error, from a stream or a failed generate", async () => {
+    const overflow: StructuredError = {
+      code: "context_window_exceeded",
+      details: { contextWindowTokens: 16_384, remedy: "Load the model with a larger context.", requestTokens: 20_000 },
+      message: "The request needs 20000 tokens, but the model's context window is 16384.",
+      retriable: false
+    };
+    const adapter = (failure: Pick<LanguageModelAdapter, "generate" | "stream">): LanguageModelAdapter => ({
+      ...failure,
+      health: async () => ({
+        checkedAt: new Date().toISOString(),
+        details: {},
+        providerId: "lm_studio",
+        status: "healthy"
+      }),
+      listModels: async () => [],
+      provider: "lm_studio",
+      providerId: "lm_studio"
+    });
+    const streaming = adapter({
+      generate: async (request) => buildResponse(request, "unused"),
+      async *stream() {
+        yield { delta: "partial", kind: "response.delta" };
+        yield { error: overflow, kind: "response.error" };
+      }
+    });
+    const generating = adapter({
+      generate: async () => {
+        throw new ProviderRequestError(overflow);
+      }
+    });
+
+    // Each rejection is caught as it is made, so neither goes unhandled.
+    const rejectionOf = (attempt: Promise<unknown>) =>
+      attempt.then(
+        () => null,
+        (rejection: unknown) => rejection
+      );
+    const errors = [
+      await rejectionOf(
+        (await createQueueFor(streaming)).stream(buildRequest("queue.overflow.stream"), () => undefined)
+      ),
+      await rejectionOf((await createQueueFor(generating)).execute(buildRequest("queue.overflow.generate")))
+    ];
+    for (const error of errors) {
+      expect(extractStructuredError(error)).toEqual(overflow);
+    }
+  });
+
   test("breaks through a stale queue lock left behind by a crashed process", async () => {
     const root = await createTempRoot();
     const stateRoot = path.join(root, ".aia");
@@ -374,3 +440,112 @@ describe("file language-model queue streaming and failures", () => {
     expect(fallback.message?.parts[0]).toMatchObject({ text: "fallback" });
   });
 });
+
+// A cancelled run used to leave its model request generating to the end: the
+// queue had no way to stop a job, running or still waiting its turn.
+describe("file language-model queue cancellation", () => {
+  test("aborting the caller's signal aborts a running job and ends it as cancelled", async () => {
+    const root = await createTempRoot();
+    let adapterSignal: AbortSignal | undefined;
+    const queue = new FileLanguageModelQueue({
+      resolveAdapter: () =>
+        buildAdapter(async (_request, options) => {
+          adapterSignal = options?.signal;
+          // Only an abort ends this generation.
+          return await new Promise<LanguageModelResponse>((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => reject(new Error("aborted by the caller")));
+          });
+        }),
+      stateRoot: path.join(root, ".aia")
+    });
+    const controller = new AbortController();
+
+    const pending = queue.execute(buildRequest("queue.cancel.running"), { signal: controller.signal });
+    await waitFor(
+      async () => adapterSignal,
+      (signal) => signal !== undefined
+    );
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/cancelled/u);
+    expect(adapterSignal?.aborted).toBe(true);
+    const job = await queue.getJob("queue.cancel.running");
+    expect(job?.status).toBe("cancelled");
+    expect(job?.error?.code).toBe("lm_request_cancelled");
+    await queue.close();
+  });
+
+  test("a job cancelled while it waits its turn never reaches the adapter", async () => {
+    const root = await createTempRoot();
+    const started: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const queue = new FileLanguageModelQueue({
+      resolveAdapter: () =>
+        buildAdapter(async (request) => {
+          started.push(request.id);
+          if (request.id === "queue.cancel.first") {
+            await firstGate;
+          }
+          return buildResponse(request, `Completed ${request.id}`);
+        }),
+      stateRoot: path.join(root, ".aia")
+    });
+    const controller = new AbortController();
+
+    const first = queue.execute(buildRequest("queue.cancel.first"));
+    await waitFor(
+      async () => started.length,
+      (count) => count === 1
+    );
+    const second = queue.execute(buildRequest("queue.cancel.second"), { signal: controller.signal });
+    await waitFor(
+      async () => (await queue.getJob("queue.cancel.second"))?.status,
+      (status) => status === "queued"
+    );
+    controller.abort();
+
+    await expect(second).rejects.toThrow(/cancelled/u);
+    releaseFirst();
+    await expect(first).resolves.toMatchObject({ id: "response.queue.cancel.first" });
+    expect(started).toEqual(["queue.cancel.first"]);
+    expect((await queue.getJob("queue.cancel.second"))?.status).toBe("cancelled");
+    await queue.close();
+  });
+
+  test("a signal that is already aborted cancels the job before it starts", async () => {
+    const root = await createTempRoot();
+    let calls = 0;
+    const queue = new FileLanguageModelQueue({
+      resolveAdapter: () =>
+        buildAdapter(async (request) => {
+          calls += 1;
+          return buildResponse(request, "unexpected");
+        }),
+      stateRoot: path.join(root, ".aia")
+    });
+
+    await expect(queue.execute(buildRequest("queue.cancel.early"), { signal: AbortSignal.abort() })).rejects.toThrow(
+      /cancelled/u
+    );
+    expect(calls).toBe(0);
+    await queue.close();
+  });
+});
+
+function buildAdapter(generate: LanguageModelAdapter["generate"]): LanguageModelAdapter {
+  return {
+    generate,
+    health: async () => ({
+      checkedAt: new Date().toISOString(),
+      details: {},
+      providerId: "lm_studio",
+      status: "healthy"
+    }),
+    listModels: async () => [],
+    provider: "lm_studio",
+    providerId: "lm_studio"
+  };
+}

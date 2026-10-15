@@ -8,8 +8,9 @@ import { z } from "zod";
 import {
   AgentLoop,
   ApprovalCoordinator,
-  COMPACTION_WATERMARK_METADATA_KEY,
+  repeatsShownText,
   ChannelService,
+  foldedSessionMetadata,
   FileSessionStore,
   filterModelVisibleMessages,
   LanguageModelRuntime,
@@ -19,17 +20,21 @@ import {
   createToolResultMessage,
   createDefaultToolRegistry,
   resolveVisibleToolDefinitions,
-  createExternalAgentApprovalTargetResolver,
   createExternalAgentServiceFromConfig,
   createExternalAgentSessionServiceFromConfig,
   createExternalAgentTurnSummarizer,
   createImageServiceFromConfig,
+  createVoiceServiceFromConfig,
   createMcpManagerFromLoadedConfig,
   createMemoryServiceFromConfig,
   createPlaywrightBrowserAutomationService,
+  createSkillProvider,
   createToolApprovalDecider,
+  followSkillsSettings,
+  ensureStateRootWritable,
   openTerminalWindow,
-  withMcpTrustRules,
+  ContextWindowTracker,
+  followMcpTrustRules,
   CommandRuntime,
   loadAIAgentConfig,
   type ApprovalSettings,
@@ -41,14 +46,25 @@ import {
   type ExternalAgentSessionHost,
   type ExternalAgentTurnSummarizer,
   type ImageService,
+  type VoiceService,
   type LanguageModelAdapterRegistration,
   type LoadedAIAgentConfig,
   type MCPManager,
   type PlaywrightBrowserAutomationService,
-  type StructuredError
+  type SkillProvider,
+  type StructuredError,
+  summarizeServerUpdate,
+  summarizeStatus,
+  describeCatalogFit,
+  recordSkillLoads,
+  resolveSkillCatalogBudgetChars,
+  toSkillSummary,
+  toMcpIdSegment
 } from "@/core";
 import { WorkspaceMutationEngine } from "@/core";
 import {
+  CHANNEL_OPERATOR_METADATA_KEY,
+  COMPLETION_SUMMARY_MESSAGE_TAG,
   approvalResolutionSchema,
   channelMessageSchema,
   gatewayApprovalListQuerySchema,
@@ -86,13 +102,16 @@ import {
   type GatewaySessionSnapshot,
   type GatewaySubscription,
   type JsonValue,
+  type LanguageModelResponse,
+  type MCPServerStatus,
   type Message,
   type SessionRecord,
   type SessionSnapshot,
   type SteeringInjection,
   type TaskStateSnapshot,
   type ToolCallRecord,
-  type ToolDefinition
+  type ToolDefinition,
+  type TurnRecord
 } from "@/core/contracts";
 import {
   buildChannelHelpText,
@@ -102,6 +121,7 @@ import {
   resolveChannelOperatorIdentities,
   type ChannelCommand
 } from "@/gateway/channel-commands";
+import { createMcpElicitationBroker, DEFAULT_ELICITATION_TIMEOUT_MS, isLiveApproval } from "@/gateway/elicitation";
 import { createGatewayError as gatewayError, normalizeGatewayError } from "@/gateway/errors";
 
 // How many terminal run records stay readable through `run.get`. Large enough
@@ -110,12 +130,19 @@ import { createGatewayError as gatewayError, normalizeGatewayError } from "@/gat
 const FINISHED_RUN_HISTORY_LIMIT = 100;
 
 type ActiveGatewayRun = {
+  // Aborted by a cancel: the agent loop stops before its next turn or tool
+  // call, and the in-flight model request is aborted with it.
+  abortController: AbortController;
   cancelRequested: boolean;
   run: GatewayRunRecord;
 };
 
 type MaterializedApprovalResume = {
   messageIds: string[];
+  // For each executed or declined call: the trigger of the turn it came from
+  // (a direct `tool.execute` is `gateway_request`) and how it ended.
+  origins: Array<{ status: ToolCallRecord["status"]; trigger: TurnRecord["trigger"] | undefined }>;
+  remainingPendingApprovalCount: number;
   session: SessionRecord;
   toolCallIds: string[];
   turnIds: string[];
@@ -146,9 +173,13 @@ type GatewayRuntimeOptions = {
   memoryService: Awaited<ReturnType<typeof createMemoryServiceFromConfig>>;
   modelRuntime: LanguageModelRuntime;
   sessions: FileSessionStore;
+  // The skills the loop, the `skill` tool, and `skills.list` share. Defaults
+  // to one built from `config.skills`.
+  skills?: SkillProvider;
   taskStateService: TaskStateService;
   toolRuntime: ToolRuntime;
   userHomeDirectory?: string;
+  voiceService?: VoiceService;
   workspaceRoot: string;
   browserService?: PlaywrightBrowserAutomationService;
 };
@@ -169,8 +200,19 @@ export interface GatewayRuntimeLike {
    * process, once a surface serves one. Until then no window is opened.
    */
   setAttachEndpoint?(url: string | undefined): void;
-  subscribe(listener: (event: GatewayEvent) => void): () => void;
+  subscribe(listener: (event: GatewayEvent) => void, options?: GatewaySubscribeOptions): () => void;
 }
+
+export type GatewaySubscribeOptions = {
+  /**
+   * Whether this subscriber puts session `sessionId`'s approvals in front of
+   * someone right now (the CLI during a turn, an open web page), as opposed
+   * to one only waiting for a run to end, or logging. The runtime asks before
+   * it puts an MCP server's question to an operator. A subscriber that does
+   * not say shows none.
+   */
+  showsApprovals?: (sessionId: string) => boolean;
+};
 
 export class GatewayRuntime
   extends EventEmitter<GatewayRuntimeEvents>
@@ -189,21 +231,73 @@ export class GatewayRuntime
   private readonly eventLog: GatewayEventLog;
   private readonly approvalCoordinator: ApprovalCoordinator;
   private readonly agentLoop: AgentLoop;
+  private readonly skills: SkillProvider;
   // Resolved once in initialize() from the provider when not set in config; the
   // AgentLoop reads it through a getter so it picks up the late-resolved value.
-  private resolvedContextWindowTokens: number | undefined;
+  private readonly contextWindow: ContextWindowTracker;
+  // Sessions already warned that the provider answered with another model.
+  private readonly modelMismatchNotedSessions = new Set<string>();
+  // Waiters for the answer to an MCP server's question, by approval id.
+  private readonly elicitationWaiters = new Map<string, (resolution: ApprovalResolution) => void>();
+  // Each subscriber's answer to "would you show this session's approvals?"
+  private readonly eventInterests = new Map<(event: GatewayEvent) => void, (sessionId: string) => boolean>();
+  private readonly onMcpServerUpdated = ({
+    previousState,
+    status
+  }: {
+    previousState?: MCPServerStatus["state"];
+    status: MCPServerStatus;
+  }) => {
+    // Live only: a server's state is the process's, and replaying yesterday's
+    // "connecting" into a new session would be noise.
+    void this.emitEvent(
+      {
+        createdAt: new Date().toISOString(),
+        // Any server name is allowed ("brave search"); an id must fit entityIdSchema.
+        id: `mcp-updated.${toMcpIdSegment(status.serverName)}.${crypto.randomUUID()}`,
+        metadata: {},
+        payload: {
+          ...(previousState ? { previousState } : {}),
+          server: summarizeServerUpdate(status)
+        },
+        topic: "mcp.updated"
+      },
+      false
+    );
+  };
 
   constructor(private readonly options: GatewayRuntimeOptions) {
     super();
     this.eventLog = new GatewayEventLog(path.join(options.config.memory.stateRoot, "gateway", "events.jsonl"));
+    this.contextWindow = new ContextWindowTracker(options.config.runtime.modelSettings.contextWindowTokens);
     this.approvalCoordinator = new ApprovalCoordinator(options.sessions);
+    this.skills =
+      options.skills ??
+      createSkillProvider({
+        settings: options.config.skills,
+        ...(options.userHomeDirectory ? { userHomeDirectory: options.userHomeDirectory } : {})
+      });
     this.agentLoop = new AgentLoop({
       autoCompactThresholdTokens: options.config.memory.autoCompactThresholdTokens,
-      contextWindowTokens: () =>
-        options.config.runtime.modelSettings.contextWindowTokens ?? this.resolvedContextWindowTokens,
+      contextWindowTokens: () => this.contextWindow.current,
+      onContextWindowExceeded: ({ contextWindowTokens }) => {
+        if (contextWindowTokens !== undefined) {
+          this.contextWindow.learn(contextWindowTokens);
+        }
+      },
       memoryContextProvider: options.memoryService,
       memoryLifecycle: options.memoryService,
-      model: options.modelRuntime,
+      model: {
+        generate: async (request, callOptions) =>
+          this.noteAnsweringModel(request, await options.modelRuntime.generate(request, callOptions)),
+        // Only when the runtime streams: the loop streams whenever the model can.
+        ...(typeof options.modelRuntime.stream === "function"
+          ? {
+              stream: async (request, onEvent, callOptions) =>
+                this.noteAnsweringModel(request, await options.modelRuntime.stream(request, onEvent, callOptions))
+            }
+          : {})
+      },
       modelSettings: {
         frequencyPenalty: options.config.runtime.modelSettings.frequencyPenalty,
         maxOutputTokens: options.config.runtime.modelSettings.maxOutputTokens,
@@ -216,6 +310,7 @@ export class GatewayRuntime
         topP: options.config.runtime.modelSettings.topP
       },
       promptBudgets: {
+        activeSkillsChars: options.config.runtime.promptBudgets.activeSkillsChars,
         instructionDocChars: options.config.runtime.promptBudgets.instructionDocChars,
         memorySummaryChars: options.config.runtime.promptBudgets.memorySummaryChars
       },
@@ -293,17 +388,57 @@ export class GatewayRuntime
         );
       },
       sessions: options.sessions,
+      skills: this.skills,
       surface: "gateway",
       taskStateProvider: options.taskStateService,
       toolCatalog: options.toolRuntime,
       toolExecutor: options.toolRuntime,
       userHomeDirectory: options.userHomeDirectory
     });
+    options.mcpManager.on("server_updated", this.onMcpServerUpdated);
+    options.mcpManager.setElicitationHandler(
+      createMcpElicitationBroker({
+        ask: async (request) => {
+          await options.sessions.appendApprovalRequest(request);
+          await this.emitApprovalRequested(request);
+          await this.relayApprovalToChannel(request).catch(() => undefined);
+        },
+        canReachOperator: (sessionId) => this.canReachOperator(sessionId),
+        expire: async (requestId) => {
+          await this.resolveApproval({
+            actor: "system",
+            comment: "Nobody answered the MCP server's question in time.",
+            decision: "expired",
+            requestId
+          });
+        },
+        timeoutMs: options.config.mcp.elicitationTimeoutMs ?? DEFAULT_ELICITATION_TIMEOUT_MS,
+        waitForAnswer: (requestId, signal) =>
+          new Promise((resolve) => {
+            const finish = (resolution: ApprovalResolution | null) => {
+              this.elicitationWaiters.delete(requestId);
+              signal.removeEventListener("abort", onAbort);
+              resolve(resolution);
+            };
+            const onAbort = () => finish(null);
+            this.elicitationWaiters.set(requestId, finish);
+            signal.addEventListener("abort", onAbort, { once: true });
+          })
+      })
+    );
   }
 
   async initialize(): Promise<void> {
     await this.eventLog.initialize();
-    this.resolvedContextWindowTokens = await this.resolveProviderContextWindow();
+    await this.refreshContextWindow();
+  }
+
+  // Looked up at startup and again before every run: a model the provider had
+  // not loaded yet at startup (LM Studio loads one on its first request)
+  // reports its real window only once it is loaded. An unknown answer keeps
+  // the last known window rather than discarding it.
+  private async refreshContextWindow(): Promise<void> {
+    this.contextWindow.report(await this.resolveProviderContextWindow());
   }
 
   /**
@@ -346,27 +481,32 @@ export class GatewayRuntime
       if (!adapter.getModelContextWindow) {
         return undefined;
       }
-      const modelId =
-        provider === "ollama"
-          ? this.options.config.providers.ollama.model
-          : this.options.config.providers.lmStudio.model;
-      const resolvedModelId = modelId ?? this.options.config.runtime.defaultModel;
-      return await adapter.getModelContextWindow(resolvedModelId);
+      // The model a turn will actually ask for. This used to pass LM Studio's
+      // configured model for every provider but Ollama.
+      const modelId = this.options.modelRuntime.resolveModelId(provider);
+      return modelId ? await adapter.getModelContextWindow(modelId) : undefined;
     } catch {
       return undefined;
     }
   }
 
   async close(): Promise<void> {
+    // Cancel what is still running, then drain. Draining alone waited for a run
+    // that was still generating to finish on its own, so `/exit`, an SDK close,
+    // or a server stop could block for as long as the model kept going.
+    await Promise.allSettled([...this.activeRunsById.keys()].map(async (runId) => this.cancelRun(runId)));
     // Drain fire-and-forget runs (and any follow-up runs they queue) before
     // tearing down dependencies, so no event write lands after shutdown.
     while (this.inFlightRuns.size > 0) {
       await Promise.allSettled([...this.inFlightRuns]);
     }
     this.removeAllListeners();
+    this.options.mcpManager.off("server_updated", this.onMcpServerUpdated);
+    this.options.mcpManager.setElicitationHandler(undefined);
     await this.options.modelRuntime.close().catch(() => undefined);
     await this.options.browserService?.dispose().catch(() => undefined);
     await this.options.imageService?.dispose().catch(() => undefined);
+    await this.options.voiceService?.dispose().catch(() => undefined);
     await this.options.mcpManager.close().catch(() => undefined);
     await this.options.externalAgentSessionService?.shutdown().catch(() => undefined);
   }
@@ -472,8 +612,9 @@ export class GatewayRuntime
   }
 
   searchTools(query: z.input<(typeof gatewayRequestPayloadSchemas)["tool.search"]>): ToolDefinition[] {
+    const { all, ...search } = gatewayRequestPayloadSchemas["tool.search"].parse(query);
     return this.options.toolRuntime
-      .searchDefinitions(gatewayRequestPayloadSchemas["tool.search"].parse(query))
+      .searchDefinitions(all ? { ...search, limit: Number.MAX_SAFE_INTEGER } : search)
       .map((match) => match.definition);
   }
 
@@ -569,11 +710,28 @@ export class GatewayRuntime
     return this.eventLog.list(gatewayEventReplayQuerySchema.parse(query));
   }
 
-  subscribe(listener: (event: GatewayEvent) => void): () => void {
+  subscribe(listener: (event: GatewayEvent) => void, options: GatewaySubscribeOptions = {}): () => void {
     this.on("event", listener);
+    this.eventInterests.set(listener, options.showsApprovals ?? (() => false));
     return () => {
       this.off("event", listener);
+      this.eventInterests.delete(listener);
     };
+  }
+
+  // Whether an approval for this session would reach an operator right now:
+  // a subscriber that shows it, or the channel conversation bound to it.
+  private async canReachOperator(sessionId: string): Promise<boolean> {
+    if ([...this.eventInterests.values()].some((showsApprovals) => showsApprovals(sessionId))) {
+      return true;
+    }
+    // A channel conversation reaches someone who can answer only when its
+    // channel names operators: everyone else's `/approve` is refused, and the
+    // question used to wait out its whole timeout there.
+    const route = await this.options.channelService?.getRouteForSession(sessionId).catch(() => null);
+    return Boolean(
+      route && resolveChannelOperatorIdentities(this.options.config.channels, route.identity.channel).length > 0
+    );
   }
 
   async request(request: GatewayRequest): Promise<GatewayResponse> {
@@ -751,11 +909,18 @@ export class GatewayRuntime
         });
       case "mcp.list": {
         const query = gatewayRequestPayloadSchemas["mcp.list"].parse(request.payload);
-        const filter = query.serverNames ? new Set(query.serverNames) : null;
         return gatewayResponsePayloadSchemas["mcp.list"].parse({
-          servers: this.options.mcpManager
-            .summarizeServers()
-            .filter((server) => !filter || filter.has(server.serverName))
+          servers: this.options.mcpManager.summarizeServers(query.serverNames ? new Set(query.serverNames) : undefined)
+        });
+      }
+      case "mcp.reconnect": {
+        const { serverName } = gatewayRequestPayloadSchemas["mcp.reconnect"].parse(request.payload);
+        const status = await this.options.mcpManager.reconnect(serverName);
+        return gatewayResponsePayloadSchemas["mcp.reconnect"].parse({
+          server: summarizeStatus(
+            status,
+            this.options.mcpManager.getToolCapabilities().filter((tool) => tool.serverName === serverName)
+          )
         });
       }
       case "memory.query":
@@ -815,6 +980,23 @@ export class GatewayRuntime
             gatewayRequestPayloadSchemas["session.snapshot"].parse(request.payload).sessionId
           )
         );
+      case "skills.list": {
+        const query = gatewayRequestPayloadSchemas["skills.list"].parse(request.payload);
+        const discovery = await this.skills.discover(query.cwd ?? this.options.workspaceRoot);
+        // At the budget a run's catalog gets now (the configured one, else 2%
+        // of the context window).
+        const catalogFit = describeCatalogFit(
+          discovery.skills,
+          resolveSkillCatalogBudgetChars({
+            configured: this.skills.settings.maxCatalogChars,
+            contextWindowTokens: this.contextWindow.current
+          })
+        );
+        return gatewayResponsePayloadSchemas["skills.list"].parse({
+          diagnostics: [...discovery.diagnostics, ...(catalogFit ? [catalogFit] : [])],
+          skills: discovery.skills.map(toSkillSummary)
+        });
+      }
       case "steering.inject":
         return gatewayResponsePayloadSchemas["steering.inject"].parse(
           await this.injectSteering(gatewayRequestPayloadSchemas["steering.inject"].parse(request.payload))
@@ -852,6 +1034,9 @@ export class GatewayRuntime
     }
 
     active.cancelRequested = true;
+    // Said before the abort: the run can end, and announce its terminal
+    // record, while this method still waits below. Announced after, this
+    // "still running" record came last, and a watcher saw the run come back.
     active.run = gatewayRunRecordSchema.parse({
       ...active.run,
       metadata: {
@@ -860,17 +1045,26 @@ export class GatewayRuntime
       },
       updatedAt: new Date().toISOString()
     });
+    const requested = active.run;
     await this.emitEvent(
       {
-        createdAt: active.run.updatedAt,
-        id: `run-updated.${active.run.id}.${crypto.randomUUID()}`,
+        createdAt: requested.updatedAt,
+        id: `run-updated.${requested.id}.${crypto.randomUUID()}`,
         metadata: {},
-        payload: active.run,
+        payload: requested,
         topic: "run.updated"
       },
       true
     );
-    return active.run;
+    // The flag alone was only read before and after the whole loop, so a cancel
+    // stopped nothing: the generation ran to its end and further turns and tool
+    // calls kept going. The signal reaches the loop and the model request.
+    active.abortController.abort();
+    // A tool call waiting on the operator's answer to its server's question
+    // would otherwise wait out that question's timeout before the run ends.
+    await this.cancelPendingElicitations(requested.sessionId).catch(() => undefined);
+    // The run as it is now: possibly finished meanwhile.
+    return this.activeRunsById.get(runId)?.run ?? this.finishedRunsById.get(runId) ?? requested;
   }
 
   private getRunRecord(runId: string): GatewayRunRecord {
@@ -906,7 +1100,8 @@ export class GatewayRuntime
   // through the same memory lifecycle the loop uses for threshold compaction,
   // then moves the session's compaction watermark to the newest persisted
   // message so later model requests replay only the summary (via the Durable
-  // Memory prompt section) plus whatever arrives afterwards.
+  // Memory prompt section), the operator's own messages, and whatever arrives
+  // afterwards.
   private async compactSessionNow(sessionId: string): Promise<GatewaySessionCompactResult> {
     const session = await this.requireIdleSession(sessionId);
     const pendingApprovals = await this.options.sessions.readPendingApprovals();
@@ -926,10 +1121,13 @@ export class GatewayRuntime
     const updatedSession = sessionRecordSchema.parse({
       ...session,
       lastActiveAt: updatedAt,
-      metadata: {
-        ...session.metadata,
-        ...(watermarkMessageId ? { [COMPACTION_WATERMARK_METADATA_KEY]: watermarkMessageId } : {})
-      },
+      metadata: watermarkMessageId
+        ? foldedSessionMetadata(
+            session.metadata,
+            watermarkMessageId,
+            await this.options.taskStateService.getTaskState(sessionId)
+          )
+        : session.metadata,
       updatedAt
     });
     // Save the record directly: persistSession() also rewrites resume metadata,
@@ -964,7 +1162,12 @@ export class GatewayRuntime
 
     return {
       compactedThroughMessageId: watermarkMessageId,
-      hiddenMessageCount: visibleMessages.length,
+      // The operator's messages stay visible across the watermark, so count
+      // what actually left the model's view.
+      hiddenMessageCount: Math.max(
+        0,
+        visibleMessages.length - filterModelVisibleMessages(snapshot?.messages ?? [], updatedSession).length
+      ),
       session: updatedSession,
       summary: outcome.summary,
       summaryPath: outcome.summaryPath
@@ -1102,6 +1305,7 @@ export class GatewayRuntime
       },
       true
     );
+    this.elicitationWaiters.get(resolution.requestId)?.(resolution);
 
     return {
       approval: gatewayApprovalRecordSchema.parse({
@@ -1248,12 +1452,25 @@ export class GatewayRuntime
     const materialized = await this.materializeResolvedToolApprovals(currentSession);
     currentSession = materialized.session;
 
+    const onlyDirectToolCalls =
+      materialized.origins.length > 0 && materialized.origins.every((origin) => origin.trigger === "gateway_request");
+    if (onlyDirectToolCalls && (params.userMessages ?? []).length === 0) {
+      await this.finishDirectToolResume(active, materialized);
+      return;
+    }
+
+    // Optional MCP servers still connecting get the rest of their startup
+    // grace; ones that take longer join a later run.
+    await Promise.all([this.options.mcpManager.waitForStartup(), this.refreshContextWindow()]);
     const result = await this.agentLoop.run({
       availableTools: resolveVisibleToolDefinitions({
-        // Surface the MCP status tool under the lean profile only when MCP
-        // servers are configured, so the agent can answer "what MCP servers do
-        // you have?" without bloating the lean catalog otherwise.
-        alwaysInclude: Object.keys(this.options.config.mcp.servers).length > 0 ? ["mcp_status"] : [],
+        // Surface the MCP status tool under the lean profile only when there
+        // are MCP servers, so the agent can answer "what MCP servers do you
+        // have?" without bloating the lean catalog otherwise. Any server the
+        // manager knows counts (imported, withheld as untrusted, added by a
+        // reload), not only the startup config's own `mcp.servers`.
+        // `skill` too; the loop drops it for a session with no skills.
+        alwaysInclude: [...(this.options.mcpManager.getServerStatuses().length > 0 ? ["mcp_status"] : []), "skill"],
         registry: this.options.toolRuntime,
         toolsConfig: this.options.config.tools
       }),
@@ -1262,6 +1479,7 @@ export class GatewayRuntime
       maxTurns: this.options.config.runtime.maxTurnsPerRun,
       reasoningContextTurns: this.options.config.runtime.reasoningContextTurns,
       session: currentSession,
+      signal: active.abortController.signal,
       userMessages: params.userMessages
     });
 
@@ -1392,16 +1610,7 @@ export class GatewayRuntime
       turn.status = "waiting_for_approval";
       turn.summary = `Gateway tool "${input.toolName}" is waiting for approval.`;
       await this.options.sessions.appendTurn(turn);
-      await this.emitEvent(
-        {
-          createdAt: outcome.approvalRequest.createdAt,
-          id: `approval-requested.${outcome.approvalRequest.id}`,
-          metadata: {},
-          payload: outcome.approvalRequest,
-          topic: "approval.requested"
-        },
-        true
-      );
+      await this.emitApprovalRequested(outcome.approvalRequest);
       await this.emitEvent(
         {
           createdAt: turn.completedAt,
@@ -1463,16 +1672,21 @@ export class GatewayRuntime
         : `Gateway tool "${input.toolName}" completed.`;
     await this.options.sessions.appendTurn(turn);
 
-    const finalSession = await this.persistSession(updatedSession, "awaiting_user", {
-      activeTurnId: undefined,
-      clearError: outcome.toolCall.status !== "failed",
-      pendingApprovalIds: [],
-      pendingToolCallIds: [],
-      statusSummary:
-        outcome.toolCall.status === "failed"
-          ? `Gateway tool "${input.toolName}" failed.`
-          : `Gateway tool "${input.toolName}" completed.`
-    });
+    // A skill this call loaded is recorded, as the agent loop records one.
+    const finalSession = await this.persistSession(
+      recordSkillLoads(updatedSession, [{ resultMessageId, toolCall: outcome.toolCall }]),
+      "awaiting_user",
+      {
+        activeTurnId: undefined,
+        clearError: outcome.toolCall.status !== "failed",
+        pendingApprovalIds: [],
+        pendingToolCallIds: [],
+        statusSummary:
+          outcome.toolCall.status === "failed"
+            ? `Gateway tool "${input.toolName}" failed.`
+            : `Gateway tool "${input.toolName}" completed.`
+      }
+    );
 
     await this.emitEvent(
       {
@@ -1579,16 +1793,7 @@ export class GatewayRuntime
 
   private async emitSessionRunEvents(result: Awaited<ReturnType<AgentLoop["run"]>>): Promise<void> {
     for (const approvalRequest of result.approvalRequests) {
-      await this.emitEvent(
-        {
-          createdAt: approvalRequest.createdAt,
-          id: `approval-requested.${approvalRequest.id}`,
-          metadata: {},
-          payload: approvalRequest,
-          topic: "approval.requested"
-        },
-        true
-      );
+      await this.emitApprovalRequested(approvalRequest);
     }
 
     for (const message of result.messages) {
@@ -1773,6 +1978,32 @@ export class GatewayRuntime
     command: Extract<ChannelCommand, { kind: "approval" }>
   ): Promise<GatewayRunRecord | null> {
     const session = await this.requireSession(message.sessionId as string);
+    const requestId = command.requestId ?? (await this.resolveLatestPendingApprovalId(session.id));
+    const pending = requestId ? (await this.options.sessions.readPendingApprovals())[requestId] : undefined;
+    // A conversation answers its own session's approvals only: an id seen
+    // elsewhere must not resolve another session's request from here.
+    if (pending && pending.request.sessionId !== session.id) {
+      await this.sendChannelTextReply(message, "That approval belongs to another conversation.");
+      return null;
+    }
+    // An MCP server's question is answered while the run waits on it: the
+    // tool call that asked is still open, and nothing needs resuming.
+    if (requestId && pending && isLiveApproval(pending.request)) {
+      const resolved = await this.resolveApproval({
+        actor: "channel",
+        comment: command.comment,
+        decision: command.decision,
+        requestId
+      });
+      await this.sendChannelTextReply(
+        message,
+        buildChannelApprovalAcknowledgement(
+          resolved.approval.request,
+          resolved.approval.resolution as ApprovalResolution
+        )
+      );
+      return null;
+    }
     if (this.activeRunsBySession.has(session.id)) {
       await this.sendChannelTextReply(
         message,
@@ -1780,8 +2011,6 @@ export class GatewayRuntime
       );
       return null;
     }
-
-    const requestId = command.requestId ?? (await this.resolveLatestPendingApprovalId(session.id));
     if (!requestId) {
       await this.sendChannelTextReply(message, "There are no pending approvals for this conversation.");
       return null;
@@ -1806,25 +2035,29 @@ export class GatewayRuntime
     command: Extract<ChannelCommand, { kind: "steering" }>
   ): Promise<GatewayRunRecord | null> {
     const session = await this.requireSession(message.sessionId as string);
-    if (this.activeRunsBySession.has(session.id)) {
-      await this.sendChannelTextReply(
-        message,
-        `Session "${session.title}" is busy right now. Please retry after the active run finishes.`
-      );
-      return null;
-    }
-
+    const busy = this.activeRunsBySession.has(session.id);
     const steering = await this.injectSteering({
       createdAt: new Date().toISOString(),
       id: `steering.channel.${crypto.randomUUID()}`,
       message: command.message,
       metadata: {
+        // Only an allowlisted operator gets this far (maybeHandleChannelCommand).
+        [CHANNEL_OPERATOR_METADATA_KEY]: true,
         channelCommandMessageId: message.id
       },
       sessionId: session.id,
       source: "channel",
       state: "queued"
     });
+    // A running task reads queued steering before its next step, so steering
+    // sent mid-run no longer has to wait for (or be retried after) the run.
+    if (busy) {
+      await this.sendChannelTextReply(
+        message,
+        `Queued steering for "${session.title}". The running task will read it before its next step.`
+      );
+      return null;
+    }
     await this.sendChannelTextReply(message, `Queued steering for "${session.title}".`);
     return this.queueSessionResumeRun(session, `gateway-request.channel-steering.${steering.id}`);
   }
@@ -1847,6 +2080,8 @@ export class GatewayRuntime
     if (pendingToolCallIds.length === 0) {
       return {
         messageIds: [],
+        origins: [],
+        remainingPendingApprovalCount: 0,
         session,
         toolCallIds: [],
         turnIds: []
@@ -1867,6 +2102,7 @@ export class GatewayRuntime
       .map((entry) => entry.request.id);
     const remainingPendingToolCallIds: string[] = [];
     const messageIds: string[] = [];
+    const origins: MaterializedApprovalResume["origins"] = [];
     const toolCallIds: string[] = [];
     const turnIds: string[] = [];
 
@@ -1886,11 +2122,18 @@ export class GatewayRuntime
         resolution.decision === "approved"
           ? await this.executeApprovedPendingToolCall(session, snapshot, pendingToolCall, resolution)
           : this.materializeDeclinedPendingToolCall(session, snapshot, pendingToolCall, resolution);
+      session = recordSkillLoads(session, [
+        { resultMessageId: materialized.message?.id, toolCall: materialized.toolCall }
+      ]);
 
       await this.options.sessions.appendToolCalls([materialized.toolCall]);
       await this.options.sessions.appendTurn(materialized.turn);
       toolCallIds.push(materialized.toolCall.id);
       turnIds.push(materialized.turn.id);
+      origins.push({
+        status: materialized.toolCall.status,
+        trigger: snapshot?.turns.find((turn) => turn.id === pendingToolCall.turnId)?.trigger
+      });
 
       if (materialized.message) {
         await this.options.sessions.appendMessages([materialized.message]);
@@ -1935,6 +2178,8 @@ export class GatewayRuntime
     if (toolCallIds.length === 0 && turnIds.length === 0 && messageIds.length === 0) {
       return {
         messageIds,
+        origins,
+        remainingPendingApprovalCount: remainingPendingApprovalIds.length,
         session,
         toolCallIds,
         turnIds
@@ -1968,10 +2213,51 @@ export class GatewayRuntime
 
     return {
       messageIds,
+      origins,
+      remainingPendingApprovalCount: remainingPendingApprovalIds.length,
       session: updatedSession,
       toolCallIds,
       turnIds
     };
+  }
+
+  // Resuming a direct `tool.execute` that paused for approval runs the approved
+  // call and stops there. Continuing into the agent loop handed the session to
+  // the model, which went on to work on the session's goal by itself (observed:
+  // six further turns reading files nobody asked about).
+  private async finishDirectToolResume(active: ActiveGatewayRun, materialized: MaterializedApprovalResume) {
+    const stillWaiting = materialized.remainingPendingApprovalCount > 0;
+    const finalSession = stillWaiting
+      ? materialized.session
+      : await this.persistSession(materialized.session, "awaiting_user", {
+          activeTurnId: undefined,
+          clearError: true,
+          statusSummary: "The approved tool call ran."
+        });
+    if (!stillWaiting) {
+      await this.emitEvent(
+        {
+          createdAt: finalSession.updatedAt,
+          id: `session-updated.${finalSession.id}.${crypto.randomUUID()}`,
+          metadata: {},
+          payload: finalSession,
+          topic: "session.updated"
+        },
+        true
+      );
+    }
+    await this.completeRun(active, {
+      completionReason: stillWaiting
+        ? "tool_awaiting_approval"
+        : materialized.origins.every((origin) => origin.status === "succeeded")
+          ? "tool_succeeded"
+          : "tool_failed",
+      messageIds: materialized.messageIds,
+      sessionId: finalSession.id,
+      status: "completed",
+      toolCallIds: materialized.toolCallIds,
+      turnIds: materialized.turnIds
+    });
   }
 
   private async executeApprovedPendingToolCall(
@@ -2110,12 +2396,23 @@ export class GatewayRuntime
       return;
     }
 
+    const relayedText: string[] = [];
     for (const message of result.messages.filter((entry) => shouldRelayMessageToChannel(entry))) {
       // Tool-call parts are runtime bookkeeping, not user-facing content.
       const relayParts = message.parts.filter((part) => part.kind !== "tool_call");
       if (relayParts.length === 0) {
         continue;
       }
+      const text = relayParts.flatMap((part) => (part.kind === "text" ? [part.text] : [])).join("\n");
+      // The completion summary follows the reply it may merely repeat.
+      if (
+        (message.tags ?? []).includes(COMPLETION_SUMMARY_MESSAGE_TAG) &&
+        relayParts.every((part) => part.kind === "text") &&
+        repeatsShownText(text, relayedText.join("\n"))
+      ) {
+        continue;
+      }
+      relayedText.push(text);
       await this.sendChannelMessage({
         attachments: collectArtifactsFromMessage(message),
         identity: route.identity,
@@ -2132,22 +2429,40 @@ export class GatewayRuntime
     }
 
     for (const approvalRequest of result.approvalRequests) {
-      await this.sendChannelMessage({
-        attachments: [],
-        identity: route.identity,
-        metadata: {
-          approvalRequestId: approvalRequest.id
-        },
-        parts: [
-          {
-            kind: "text",
-            text: buildChannelApprovalPrompt(approvalRequest)
-          }
-        ],
-        replyToId: route.lastInboundMessageId,
-        sessionId: result.session.id
-      });
+      await this.relayApprovalToChannel(approvalRequest);
     }
+  }
+
+  private async cancelPendingElicitations(sessionId: string): Promise<void> {
+    const pending = await this.options.sessions.readPendingApprovals();
+    for (const [requestId, entry] of Object.entries(pending)) {
+      if (entry.sessionId === sessionId && isLiveApproval(entry.request)) {
+        await this.resolveApproval({ actor: "system", decision: "cancelled", requestId });
+      }
+    }
+  }
+
+  /** Shows an approval prompt in the channel conversation bound to its session, when there is one. */
+  private async relayApprovalToChannel(approvalRequest: ApprovalRequest): Promise<void> {
+    const route = await this.options.channelService?.getRouteForSession(approvalRequest.sessionId);
+    if (!route) {
+      return;
+    }
+    await this.sendChannelMessage({
+      attachments: [],
+      identity: route.identity,
+      metadata: {
+        approvalRequestId: approvalRequest.id
+      },
+      parts: [
+        {
+          kind: "text",
+          text: buildChannelApprovalPrompt(approvalRequest)
+        }
+      ],
+      replyToId: route.lastInboundMessageId,
+      sessionId: approvalRequest.sessionId
+    });
   }
 
   private async resolveLatestPendingApprovalId(sessionId: string): Promise<string | null> {
@@ -2178,6 +2493,45 @@ export class GatewayRuntime
         ...(message.sessionId ? { sessionId: message.sessionId } : {})
       });
     });
+  }
+
+  /**
+   * A provider can answer with a model other than the one asked for (LM
+   * Studio serving whatever is loaded, say), and the only trace was the model
+   * id on the response: a session could run on the wrong model and nobody
+   * would know. Warned once per session.
+   */
+  private noteAnsweringModel(
+    request: Parameters<LanguageModelRuntime["generate"]>[0],
+    response: LanguageModelResponse
+  ): LanguageModelResponse {
+    const sessionId = request.sessionId;
+    if (!sessionId || this.modelMismatchNotedSessions.has(sessionId)) {
+      return response;
+    }
+    let requestedModel = request.modelId;
+    try {
+      requestedModel ??= this.options.modelRuntime.resolveRequest(request).modelId;
+    } catch {
+      return response;
+    }
+    if (!requestedModel || isSameModel(requestedModel, response.modelId)) {
+      return response;
+    }
+
+    this.modelMismatchNotedSessions.add(sessionId);
+    void this.emitLogEvent(
+      "warn",
+      `The provider answered with model "${response.modelId}", not the requested "${requestedModel}". It may be serving whatever model is loaded; check the loaded model, or the model id in your config.`,
+      {
+        answeredModel: response.modelId,
+        code: MODEL_MISMATCH_LOG_CODE,
+        providerId: response.provider,
+        requestedModel,
+        sessionId
+      }
+    ).catch(() => undefined);
+    return response;
   }
 
   private async emitLogEvent(
@@ -2219,6 +2573,10 @@ export class GatewayRuntime
       id: `message.channel.user.${message.id}`,
       metadata: {
         ...message.metadata,
+        [CHANNEL_OPERATOR_METADATA_KEY]: isAuthorizedChannelOperator(
+          message.identity,
+          resolveChannelOperatorIdentities(this.options.config.channels, message.identity.channel)
+        ),
         channelAccountId: message.identity.accountId,
         channelDisplayName: message.identity.displayName ?? null,
         channelId: message.identity.channel,
@@ -2250,6 +2608,7 @@ export class GatewayRuntime
       updatedAt: new Date().toISOString()
     });
     const active: ActiveGatewayRun = {
+      abortController: new AbortController(),
       cancelRequested: false,
       run
     };
@@ -2459,6 +2818,22 @@ export class GatewayRuntime
     );
   }
 
+  // Every approval.requested is built here, so a tool's approval and an MCP
+  // server's question look the same to every subscriber (both carry the
+  // session in metadata, as other session events do).
+  private emitApprovalRequested(request: ApprovalRequest): Promise<void> {
+    return this.emitEvent(
+      {
+        createdAt: request.createdAt,
+        id: `approval-requested.${request.id}`,
+        metadata: { sessionId: request.sessionId },
+        payload: request,
+        topic: "approval.requested"
+      },
+      true
+    );
+  }
+
   private async emitEvent(event: GatewayEvent, persist: boolean): Promise<void> {
     const normalizedEvent = normalizeGatewayEventId(event);
     const emitted = persist ? await this.eventLog.append(normalizedEvent) : gatewayEventSchema.parse(normalizedEvent);
@@ -2550,6 +2925,11 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
   sessions?: FileSessionStore;
   userHomeDirectory?: string;
 }): Promise<GatewayRuntime> {
+  // Before anything is spawned: every service below writes under the state
+  // root, and an unwritable one used to fail deep inside the memory service
+  // with a bare errno, after the MCP servers were already running.
+  await ensureStateRootWritable(params.loaded);
+
   const sessions = params.sessions ?? new FileSessionStore(params.loaded.resolvedConfig.memory.stateRoot);
   const mcpManager = createMcpManagerFromLoadedConfig({
     cwd: params.cwd,
@@ -2560,6 +2940,23 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     // Hot-reload MCP servers on config/import file changes unless disabled.
     watch: params.loaded.resolvedConfig.mcp.watch ?? true
   });
+
+  // A stdio MCP server spawned here keeps the event loop alive. When any later
+  // step threw (a required server failing, the memory service, a corrupt
+  // events log), nothing closed it, so the caller printed the error and the
+  // process never exited.
+  try {
+    return await assembleGatewayRuntime(params, { mcpManager, sessions });
+  } catch (error) {
+    await mcpManager.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function assembleGatewayRuntime(
+  params: Parameters<typeof createGatewayRuntimeFromLoadedConfig>[0],
+  { mcpManager, sessions }: { mcpManager: MCPManager; sessions: FileSessionStore }
+): Promise<GatewayRuntime> {
   await mcpManager.initialize();
 
   const memoryService = await createMemoryServiceFromConfig({
@@ -2617,9 +3014,19 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
         fetchImpl: params.fetchImpl
       })
     : undefined;
+  // Built here, like the image service, so the voice tools exist on every
+  // surface (the REPL, the server, the SDK). Only `aia voice` used to build
+  // one, so the model never had them. Nothing touches a device until a tool
+  // runs, and each voice action still goes through approval.
+  const voiceService = Object.values(params.loaded.resolvedConfig.providers.voiceProviders).some(
+    (providerConfig) => providerConfig.enabled
+  )
+    ? createVoiceServiceFromConfig(params.loaded.resolvedConfig, { sessions })
+    : undefined;
   // Auto-approve tools from MCP servers configured as trusted, while keeping
-  // explicit operator deny rules authoritative.
-  const approvals = withMcpTrustRules(params.loaded.approvals, params.loaded.resolvedConfig.mcp.servers);
+  // explicit operator deny rules authoritative. Followed through the MCP
+  // manager's config reloads, which is where `trust: "trusted"` comes and goes.
+  const readCurrentApprovals = followMcpTrustRules(params.loaded.approvals, () => mcpManager.getConfiguredServers());
   // Like the command runtime above, the interactive session service is built
   // before the gateway and the model runtime it depends on, so both hooks are
   // late-bound through sinks instead of threading a half-built runtime around.
@@ -2653,15 +3060,24 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
         terminalApp: params.loaded.resolvedConfig.externalAgents.interactive.terminalApp
       })
     : undefined;
-  const toolRuntime = new ToolRuntime({
-    approvalDecider: createToolApprovalDecider({
-      resolveAdditionalTargets: externalAgentService
-        ? createExternalAgentApprovalTargetResolver({
-            service: externalAgentService
-          })
-        : undefined,
-      settings: approvals
+  // Followed, not fixed at start: `aia skills enable|disable` in another
+  // terminal applies to this session from its next run.
+  const skills = createSkillProvider({
+    settings: await followSkillsSettings({
+      loaded: params.loaded,
+      reload: () =>
+        loadAIAgentConfig({
+          cwd: params.cwd,
+          ...(params.env ? { env: params.env } : {}),
+          resolveSecrets: false,
+          ...(params.userHomeDirectory ? { userHomeDirectory: params.userHomeDirectory } : {}),
+          warnWhenUntrusted: false
+        })
     }),
+    ...(params.userHomeDirectory ? { userHomeDirectory: params.userHomeDirectory } : {})
+  });
+  const toolRuntime = new ToolRuntime({
+    approvalDecider: createToolApprovalDecider({ settings: readCurrentApprovals }),
     registry: createDefaultToolRegistry({
       browserService,
       channelService: params.channelService,
@@ -2674,7 +3090,9 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
       mcpManager,
       memoryService,
       sessions,
+      skills,
       taskStateService,
+      ...(voiceService ? { voiceService } : {}),
       workspaceEngine
     })
   });
@@ -2684,7 +3102,7 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     fetchImpl: params.fetchImpl
   });
   const runtime = new GatewayRuntime({
-    approvals,
+    approvals: readCurrentApprovals(),
     attachEndpoint,
     ...(externalAgentSessionHost
       ? {
@@ -2702,9 +3120,11 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
     memoryService,
     modelRuntime,
     sessions,
+    skills,
     taskStateService,
     toolRuntime,
     userHomeDirectory: params.userHomeDirectory,
+    ...(voiceService ? { voiceService } : {}),
     workspaceRoot: params.cwd
   });
   externalAgentSummarySink.summarize = createExternalAgentTurnSummarizer({
@@ -2737,7 +3157,14 @@ export async function createGatewayRuntimeFromLoadedConfig(params: {
       });
     }
   }
-  await runtime.initialize();
+  try {
+    await runtime.initialize();
+  } catch (error) {
+    // Everything is built by now, so the runtime's own close releases all of
+    // it (model queue, browser, image, MCP, interactive sessions).
+    await runtime.close().catch(() => undefined);
+    throw error;
+  }
   return runtime;
 }
 
@@ -2979,6 +3406,8 @@ function mapSessionStopReasonToCompletionReason(
   switch (stopReason) {
     case "awaiting_approval":
       return "session_awaiting_approval";
+    case "cancelled":
+      return "session_cancelled";
     case "completion_blocked":
       return "session_completion_blocked";
     case "completed":
@@ -2986,6 +3415,38 @@ function mapSessionStopReasonToCompletionReason(
     case "failed":
       return "session_failed";
   }
+}
+
+/** The `code` in a log.emitted event's metadata when the provider answered with another model. */
+export const MODEL_MISMATCH_LOG_CODE = "model_mismatch";
+
+// Spellings of one model: Ollama's implicit ":latest", LM Studio's instance
+// suffix (":2" for a second copy), and an id with or without its publisher.
+function isSameModel(requested: string, answered: string): boolean {
+  const normalize = (id: string) =>
+    id
+      .trim()
+      .toLowerCase()
+      .replace(/:(latest|\d+)$/u, "");
+  const left = normalize(requested);
+  const right = normalize(answered);
+  return left === right || left.split("/").at(-1) === right.split("/").at(-1);
+}
+
+/**
+ * Whether a subscriber following `subscription` shows session `sessionId`'s
+ * approvals: it named `approval.requested` (a subscriber to every topic, a
+ * logger or an events() loop, answers nothing) and follows that session or
+ * every session.
+ */
+export function subscriptionShowsApprovals(
+  subscription: Pick<GatewaySubscription, "sessionId" | "topics"> | null | undefined,
+  sessionId: string
+): boolean {
+  return (
+    subscription?.topics?.includes("approval.requested") === true &&
+    (!subscription.sessionId || subscription.sessionId === sessionId)
+  );
 }
 
 export function eventMatchesGatewaySubscription(
@@ -2997,6 +3458,12 @@ export function eventMatchesGatewaySubscription(
   }
 
   if (!subscription.sessionId) {
+    return true;
+  }
+
+  // An MCP server serves every session in the process, so a session's
+  // subscriber (the CLI) hears when one fails or needs a login.
+  if (event.topic === "mcp.updated") {
     return true;
   }
 
@@ -3016,6 +3483,9 @@ export function deriveGatewayEventSessionId(event: GatewayEvent): string | undef
     case "gateway.status":
     case "log.emitted":
       return typeof event.metadata.sessionId === "string" ? event.metadata.sessionId : undefined;
+    case "mcp.updated":
+      // MCP servers belong to the process, not a session.
+      return undefined;
     case "memory.updated":
       return typeof event.metadata.sessionId === "string" ? event.metadata.sessionId : undefined;
     case "message.created":

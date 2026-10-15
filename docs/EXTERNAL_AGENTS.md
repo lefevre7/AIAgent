@@ -182,10 +182,15 @@ Mitigations in place:
 A spawned agent does **not** inherit your shell. It receives exactly three things, most-specific-wins:
 
 1. **A fixed floor** it cannot run without: `PATH`, `HOME`, `SHELL`, `TERM`/`TERMINFO`/`COLORTERM`,
-   `LANG`/`LC_ALL`/`LC_CTYPE`, `TMPDIR`/`TMP`/`TEMP`, `TZ`, `USER`/`LOGNAME`/`HOSTNAME`, the proxy
-   variables in both cases, and `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`/`SSL_CERT_DIR`. Everything here
-   decides whether the process _runs_, not what it can reach. `listBaseEnvironmentAllowlist()` is the
-   single source of truth.
+   `LANG`/`LANGUAGE` and the locale categories by name (`LC_ALL`, `LC_CTYPE`, `LC_MESSAGES`, ...; not
+   every `LC_*`, which sshd forwards by default), `TMPDIR`/`TMP`/`TEMP`, `TZ`,
+   `USER`/`LOGNAME`/`HOSTNAME`, macOS's `__CF_USER_TEXT_ENCODING`, the proxy variables in both cases,
+   and the CA-bundle variables (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+   `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, ...). On Windows, names match in any case
+   (`Path` is `PATH`), and `SystemRoot`, `windir`, `ComSpec`, `PATHEXT` and the profile folders
+   (`USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, ...) are on it too. Everything here decides whether the
+   process _runs_, not what it can reach. `listBaseEnvironmentAllowlist()` is the single source of
+   truth.
 2. **`externalAgents.passEnv`** — a global list applied to every agent.
 3. **The agent's own `passEnv`**, then its literal **`env`** map, then per-call overrides.
 
@@ -237,6 +242,13 @@ keystroke is interpreted against it**. Consequences to design around:
 
 - Read before you write. The first `send` after `start` should be preceded by a `read`, and the model
   should be told to check what is on screen rather than assume a prompt.
+- **`send` now enforces this.** It reads the bottom of the screen first and refuses, sending nothing,
+  while it shows "Enter to confirm", "Press enter to continue", or a numbered menu with a selection
+  cursor (both screens above). The error tells the model a person needs to attach and answer it. An
+  agent can also name its own input prompt (`interactive.inputPattern`), and then `send` is refused
+  until that prompt is on screen. The Codex preset names `Ask Codex to do anything` and starts Codex
+  with `-c check_for_update_on_startup=false`, so it no longer opens on the update screen. Keystrokes
+  a human types in an attached window are never checked: answering these screens is their job.
 - A modal an agent cannot understand is exactly what `attach` is for — open the window and answer it
   yourself.
 - Whatever the outer approval policy says, the external agent's blast radius is its own `cwd` **plus

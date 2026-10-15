@@ -1,47 +1,32 @@
 import { describe, expect, test } from "vitest";
 
-import { disambiguateInvocationName, sanitizeMcpInvocationName } from "@/core";
+import { buildMcpCapabilityId, entityIdSchema, toMcpIdSegment } from "@/core";
 
-describe("sanitizeMcpInvocationName", () => {
-  test("builds a stable mcp_<server>_<tool> slug within 64 chars", () => {
-    // Hyphens are preserved (allowed in invocation names); other punctuation
-    // (e.g. ".") collapses to "_".
-    expect(sanitizeMcpInvocationName("context7", "resolve-library-id")).toBe("mcp_context7_resolve-library-id");
-    expect(sanitizeMcpInvocationName("docs", "docs.lookup")).toBe("mcp_docs_docs_lookup");
+describe("toMcpIdSegment", () => {
+  test("keeps a name that already fits an id", () => {
+    expect(toMcpIdSegment("docs")).toBe("docs");
+    expect(toMcpIdSegment("web.search_v2:beta-1")).toBe("web.search_v2:beta-1");
   });
 
-  test("hashes over-long names deterministically and keeps distinct inputs distinct", () => {
-    const longTool = "t".repeat(80);
-    const first = sanitizeMcpInvocationName("server", longTool);
-    const second = sanitizeMcpInvocationName("server", longTool);
-
-    // Deterministic for the same input.
-    expect(first).toBe(second);
-    expect(first.length).toBeLessThanOrEqual(64);
-    expect(first.startsWith("mcp_")).toBe(true);
-
-    // Two long names sharing a truncated prefix must not collapse to one name —
-    // that is the entire reason the hash suffix exists.
-    const other = sanitizeMcpInvocationName("server", `${"t".repeat(79)}z`);
-    expect(other.length).toBeLessThanOrEqual(64);
-    expect(other).not.toBe(first);
-  });
-});
-
-describe("disambiguateInvocationName", () => {
-  test("returns the base name the first time and suffixes later collisions", () => {
-    const used = new Set<string>();
-    expect(disambiguateInvocationName("mcp_a_tool", used)).toBe("mcp_a_tool");
-    expect(disambiguateInvocationName("mcp_a_tool", used)).toBe("mcp_a_tool-2");
-    expect(disambiguateInvocationName("mcp_a_tool", used)).toBe("mcp_a_tool-3");
-    // A different base is unaffected.
-    expect(disambiguateInvocationName("mcp_b_tool", used)).toBe("mcp_b_tool");
+  test("slugs any other name, with a hash that keeps names that slug alike apart", () => {
+    const spaced = toMcpIdSegment("brave search");
+    expect(spaced).toMatch(/^brave-search-[0-9a-f]{8}$/u);
+    expect(toMcpIdSegment("brave search")).toBe(spaced);
+    expect(toMcpIdSegment("brave  search")).not.toBe(spaced);
+    expect(toMcpIdSegment("@playwright/mcp")).toMatch(/^playwright-mcp-[0-9a-f]{8}$/u);
+    expect(toMcpIdSegment("🚀")).toMatch(/^[0-9a-f]{8}$/u);
   });
 
-  test("keeps the suffixed name within the 64-char cap", () => {
-    const used = new Set<string>(["a".repeat(64)]);
-    const result = disambiguateInvocationName("a".repeat(64), used);
-    expect(result.length).toBe(64);
-    expect(result.endsWith("-2")).toBe(true);
+  test("builds capability ids that always satisfy the id schema", () => {
+    const names = [
+      ["brave search", "web search"],
+      ["@playwright/mcp", "browser_navigate"],
+      ["docs", "file:///Users/me/notes/a b.md"],
+      ["x".repeat(128), "y".repeat(300)]
+    ] as const;
+    for (const [server, name] of names) {
+      expect(entityIdSchema.safeParse(buildMcpCapabilityId("resource-template", server, name)).success).toBe(true);
+    }
+    expect(buildMcpCapabilityId("tool", "docs", "lookup")).toBe("mcp.tool.docs.lookup");
   });
 });

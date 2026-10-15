@@ -76,6 +76,14 @@ describe("control-plane service over a real runtime context", () => {
     expect(dashboard.bootstrap.name).toBeTruthy();
   });
 
+  test("names the model a turn will ask for, which the provider's own setting decides", async () => {
+    // The page showed runtime.defaultModel, while turns asked for
+    // providers.lmStudio.model.
+    const { service } = await createService({ AIA_LM_STUDIO_MODEL: "the-model-turns-use" });
+    const dashboard = await service.getDashboard();
+    expect(dashboard.settings.runtime.defaultModel).toBe("the-model-turns-use");
+  });
+
   test("streams gateway events to subscribers (for SSE)", async () => {
     const { service, context } = await createService();
     const events: string[] = [];
@@ -124,16 +132,78 @@ describe("control-plane service over a real runtime context", () => {
       service.resolveApproval({ decision: "approved", requestId: "approval.does-not-exist" })
     ).rejects.toBeTruthy();
   });
+
+  // Approving from the dashboard used to only record the decision: the session
+  // stayed paused and the approved action never ran until someone sent another
+  // message.
+  test("resumes the session once the dashboard resolves its last pending approval", async () => {
+    const { service, context } = await createService();
+    const created = await service.createSession({
+      cwd: context.cwd,
+      goal: "Write a file after approval",
+      title: "Web Approval"
+    });
+    const sessionId = created.session.id;
+
+    const executed = await context.gatewayRuntime.request({
+      createdAt: new Date().toISOString(),
+      id: "gateway-request.test.write",
+      metadata: {},
+      payload: {
+        arguments: { content: "approved from the web\n", path: "web-note.txt" },
+        metadata: {},
+        sessionId,
+        toolName: "write_file"
+      },
+      topic: "tool.execute"
+    });
+    expect(executed.ok).toBe(true);
+
+    const pending = await waitForValue(async () =>
+      (await service.listApprovals()).find(
+        (record) => record.request.sessionId === sessionId && record.resolution === undefined
+      )
+    );
+    await service.resolveApproval({ decision: "approved", requestId: pending.request.id });
+
+    await waitForValue(async () => {
+      const text = await fs.readFile(path.join(context.cwd, "web-note.txt"), "utf8").catch(() => null);
+      return text === "approved from the web\n" ? text : undefined;
+    });
+    const view = await waitForValue(async () => {
+      const current = await service.getSessionView(sessionId);
+      return current.snapshot.snapshot.session.status === "awaiting_user" ? current : undefined;
+    });
+    expect(view.snapshot.snapshot.toolCalls.at(-1)?.status).toBe("succeeded");
+  });
 });
 
-async function createService(): Promise<{ context: ServerRuntimeContext; service: ControlPlaneService }> {
+async function waitForValue<T>(read: () => Promise<T | undefined>, timeoutMs = 5_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await read();
+    if (value !== undefined) {
+      return value;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for the expected state.");
+}
+
+async function createService(
+  env: Record<string, string> = {}
+): Promise<{ context: ServerRuntimeContext; service: ControlPlaneService }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-control-plane-"));
   tempRoots.push(root);
   const workspace = path.join(root, "workspace");
+  const home = path.join(root, "home");
   await fs.mkdir(workspace, { recursive: true });
+  await fs.mkdir(home, { recursive: true });
 
   const context = await createServerRuntimeContext({
     cwd: workspace,
+    // The operator's own ~/.aia (config, trust, skills) is not part of the test.
+    userHomeDirectory: home,
     env: {
       AIA_DEFAULT_MODEL: "fake-model",
       AIA_DEFAULT_PROVIDER: "lm_studio",
@@ -145,7 +215,8 @@ async function createService(): Promise<{ context: ServerRuntimeContext; service
       AIA_MEMORY_STATE_ROOT: path.join(root, "state"),
       AIA_MEMORY_USER_GLOBAL_ROOT: path.join(root, "user-memory"),
       AIA_MEMORY_WORKSPACE_ROOT: path.join(root, "workspace-memory"),
-      AIA_OLLAMA_BASE_URL: "http://127.0.0.1:9"
+      AIA_OLLAMA_BASE_URL: "http://127.0.0.1:9",
+      ...env
     }
   });
   contexts.push(context);

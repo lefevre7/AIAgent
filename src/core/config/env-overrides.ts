@@ -28,6 +28,9 @@ export function buildEnvironmentOverrides(environment: Record<string, string | u
 
   assign(config, ["providers", "lmStudio", "baseUrl"], environment.AIA_LM_STUDIO_BASE_URL);
   assign(config, ["providers", "lmStudio", "model"], environment.AIA_LM_STUDIO_MODEL);
+  assign(config, ["providers", "llamaCpp", "baseUrl"], environment.AIA_LLAMA_CPP_BASE_URL);
+  assign(config, ["providers", "llamaCpp", "model"], environment.AIA_LLAMA_CPP_MODEL);
+  assign(config, ["providers", "llamaCpp", "apiKey"], environment.AIA_LLAMA_CPP_API_KEY);
   assign(config, ["providers", "ollama", "baseUrl"], environment.AIA_OLLAMA_BASE_URL);
   assign(config, ["providers", "ollama", "model"], environment.AIA_OLLAMA_MODEL);
 

@@ -115,14 +115,14 @@ describe("memory retrieval", () => {
     expect(result.toolCall.status).toBe("succeeded");
     expect(result.toolCall.result).toMatchObject({
       fallbackUsed: false,
-      hits: [
-        expect.objectContaining({
-          citation: expect.stringContaining("MEMORY.md#L"),
-          path: "MEMORY.md"
-        })
-      ],
       mode: "hybrid",
       semanticAvailable: true
+    });
+    // The query's words also reach weaker matches ("prefers" in the
+    // architecture note), ranked below the note that answers it.
+    expect((result.toolCall.result as { hits: Array<{ citation: string; path: string }> }).hits[0]).toMatchObject({
+      citation: expect.stringContaining("MEMORY.md#L"),
+      path: "MEMORY.md"
     });
 
     const status = await memory.getMemoryStatus();
@@ -294,6 +294,61 @@ describe("memory retrieval", () => {
     // identical), regardless of how much better one match was than the other.
     expect(result.hits[0]?.score).not.toBe(result.hits[1]?.score);
     expect(result.hits[0]?.score).toBeGreaterThan(result.hits[1]?.score ?? Number.POSITIVE_INFINITY);
+  });
+
+  // The query was matched as one string: a phrased question found nothing
+  // unless its exact words appeared together, and FTS5 read punctuation in it
+  // as query syntax. This takes whichever path this Node's SQLite supports:
+  // FTS5 when compiled in, the word scan (what stock Node gets) otherwise.
+  test("finds and ranks chunks by the words of a phrased query", async () => {
+    const root = await createTempRoot();
+    const mtimeMs = Date.now();
+    const documents: IndexedMemoryDocument[] = [
+      {
+        content: "The release checklist lives in docs/RELEASE.md and covers the gateway and the CLI.",
+        filePath: "memory/release.md",
+        mtimeMs,
+        scope: "workspace",
+        uri: "file:///memory/release.md"
+      },
+      {
+        content: "Gateway ports are configured in aia.config.jsonc.",
+        filePath: "memory/ports.md",
+        mtimeMs,
+        scope: "workspace",
+        uri: "file:///memory/ports.md"
+      },
+      {
+        content: "Nothing relevant here at all.",
+        filePath: "memory/other.md",
+        mtimeMs,
+        scope: "workspace",
+        uri: "file:///memory/other.md"
+      }
+    ];
+    const engine = new MemoryRetrievalEngine({
+      candidateLimit: 12,
+      chunkOverlapChars: 64,
+      chunkTargetChars: 512,
+      embeddingProvider: "lm_studio",
+      embeddingsEnabled: false,
+      ftsEnabled: true,
+      hardFailOnStartup: false,
+      loadDocuments: async () => documents,
+      mmrLambda: 0.7,
+      retrievalLimit: 8,
+      sqlitePath: path.join(root, ".aia", "memory.sqlite")
+    });
+    await engine.initialize();
+    const search = async (text: string) =>
+      engine.search({ includeKinds: [], limit: 5, minConfidence: 0, scopes: ["workspace"], text });
+
+    const phrased = await search("where is the release checklist for the gateway?");
+    expect(phrased.hits.map((hit) => hit.entry.metadata.filePath)).toEqual(["memory/release.md", "memory/ports.md"]);
+
+    // Query syntax characters are just text now, not an FTS5 error.
+    const punctuated = await search('gateway "ports" -config (jsonc');
+    expect(punctuated.hits[0]?.entry.metadata.filePath).toBe("memory/ports.md");
   });
 
   test("degrades to lexical retrieval when the embedding provider is unavailable at startup", async () => {

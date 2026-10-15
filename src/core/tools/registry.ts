@@ -1,14 +1,11 @@
-import type {
-  ToolApprovalMode,
-  ToolDefinition,
-  ToolRegistry,
-  ToolSearchMatch,
-  ToolSearchQuery
-} from "@/core/contracts";
+import type { ToolDefinition, ToolRegistry, ToolSearchMatch, ToolSearchQuery } from "@/core/contracts";
 
 import type { RuntimeTool } from "@/core/tools/runtime";
+import { searchToolDefinitions } from "@/core/tools/search";
 
 export interface ExecutableToolRegistry extends ToolRegistry {
+  /** A connected MCP server's usage notes, for the registry that holds its tools. */
+  getServerInstructions?(serverName: string): string | undefined;
   getTool(toolName: string): RuntimeTool | null;
 }
 
@@ -137,24 +134,7 @@ class InMemoryToolRegistry implements ExecutableToolRegistry {
   }
 
   searchDefinitions(query: ToolSearchQuery): ToolSearchMatch[] {
-    const normalizedQuery = query.query?.trim().toLowerCase() ?? "";
-    const filters = {
-      approvalModes: new Set(query.approvalModes ?? []),
-      kinds: new Set(query.kinds ?? []),
-      sideEffects: new Set(query.sideEffects ?? [])
-    };
-
-    const matches = Array.from(this.entries.values())
-      .map((entry) => scoreTool(entry, normalizedQuery, filters))
-      .filter((match): match is ToolSearchMatch => match !== null)
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-        return left.definition.displayName.localeCompare(right.definition.displayName);
-      });
-
-    return matches.slice(0, query.limit);
+    return searchToolDefinitions(this.listDefinitions(), query);
   }
 }
 
@@ -192,26 +172,23 @@ class CompositeToolRegistry implements ExecutableToolRegistry {
     return definitions.sort((left, right) => left.displayName.localeCompare(right.displayName));
   }
 
-  searchDefinitions(query: ToolSearchQuery): ToolSearchMatch[] {
-    const deduped = new Map<string, ToolSearchMatch>();
-
+  getServerInstructions(serverName: string): string | undefined {
     for (const registry of this.registries) {
-      for (const match of registry.searchDefinitions(query)) {
-        const existing = deduped.get(match.definition.toolId);
-        if (!existing || match.score > existing.score) {
-          deduped.set(match.definition.toolId, match);
-        }
+      const instructions = registry.getServerInstructions?.(serverName);
+      if (instructions) {
+        return instructions;
       }
     }
+    return undefined;
+  }
 
-    return Array.from(deduped.values())
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-        return left.definition.displayName.localeCompare(right.definition.displayName);
-      })
-      .slice(0, query.limit);
+  // Ranked over every registry at once: BM25 weighs a word by how rare it is
+  // across the whole catalog, so scores from separate registries would not
+  // compare.
+  searchDefinitions(query: ToolSearchQuery): ToolSearchMatch[] {
+    return searchToolDefinitions(this.listDefinitions(), query, {
+      serverInstructions: (serverName) => this.getServerInstructions(serverName)
+    });
   }
 }
 
@@ -238,286 +215,6 @@ function resolveToolId(
   }
 
   return aliases.get(normalizedKey) ?? null;
-}
-
-function scoreTool(
-  entry: RegisteredTool,
-  normalizedQuery: string,
-  filters: {
-    approvalModes: Set<ToolApprovalMode>;
-    kinds: Set<ToolDefinition["kind"]>;
-    sideEffects: Set<ToolDefinition["sideEffects"][number]>;
-  }
-): ToolSearchMatch | null {
-  const definition = entry.tool.definition;
-
-  if (filters.approvalModes.size > 0 && !filters.approvalModes.has(definition.approvalMode)) {
-    return null;
-  }
-  if (filters.kinds.size > 0 && !filters.kinds.has(definition.kind)) {
-    return null;
-  }
-  if (
-    filters.sideEffects.size > 0 &&
-    !definition.sideEffects.some((sideEffect) => filters.sideEffects.has(sideEffect))
-  ) {
-    return null;
-  }
-
-  if (!normalizedQuery) {
-    return {
-      definition,
-      matchedOn: [],
-      score: 1
-    };
-  }
-
-  let score = 0;
-  const matchedOn: string[] = [];
-  const addMatch = (field: string, increment: number) => {
-    score += increment;
-    if (!matchedOn.includes(field)) {
-      matchedOn.push(field);
-    }
-  };
-
-  matchText(definition.invocationName, normalizedQuery, {
-    contains: 70,
-    exact: 100,
-    field: "invocationName",
-    matchedOn,
-    prefix: 85,
-    updateScore: (increment) => {
-      score += increment;
-    }
-  });
-  matchText(definition.name, normalizedQuery, {
-    contains: 65,
-    exact: 95,
-    field: "name",
-    matchedOn,
-    prefix: 80,
-    updateScore: (increment) => {
-      score += increment;
-    }
-  });
-  matchText(definition.displayName, normalizedQuery, {
-    contains: 60,
-    exact: 90,
-    field: "displayName",
-    matchedOn,
-    prefix: 75,
-    updateScore: (increment) => {
-      score += increment;
-    }
-  });
-  matchText(definition.toolId, normalizedQuery, {
-    contains: 70,
-    exact: 98,
-    field: "toolId",
-    matchedOn,
-    prefix: 82,
-    updateScore: (increment) => {
-      score += increment;
-    }
-  });
-  matchText(definition.description, normalizedQuery, {
-    contains: 35,
-    exact: 0,
-    field: "description",
-    matchedOn,
-    prefix: 0,
-    updateScore: (increment) => {
-      score += increment;
-    }
-  });
-  matchText(definition.usageGuidance, normalizedQuery, {
-    contains: 32,
-    exact: 0,
-    field: "usageGuidance",
-    matchedOn,
-    prefix: 0,
-    updateScore: (increment) => {
-      score += increment;
-    }
-  });
-  matchText(definition.descriptor.purpose, normalizedQuery, {
-    contains: 40,
-    exact: 0,
-    field: "descriptor.purpose",
-    matchedOn,
-    prefix: 0,
-    updateScore: (increment) => {
-      score += increment;
-    }
-  });
-
-  for (const item of definition.descriptor.whenToUse) {
-    matchText(item, normalizedQuery, {
-      contains: 32,
-      exact: 0,
-      field: "descriptor.whenToUse",
-      matchedOn,
-      prefix: 0,
-      updateScore: (increment) => {
-        score += increment;
-      }
-    });
-  }
-
-  for (const item of definition.descriptor.whenNotToUse) {
-    matchText(item, normalizedQuery, {
-      contains: 25,
-      exact: 0,
-      field: "descriptor.whenNotToUse",
-      matchedOn,
-      prefix: 0,
-      updateScore: (increment) => {
-        score += increment;
-      }
-    });
-  }
-
-  for (const alias of definition.aliases) {
-    matchText(alias, normalizedQuery, {
-      contains: 55,
-      exact: 92,
-      field: "aliases",
-      matchedOn,
-      prefix: 70,
-      updateScore: (increment) => {
-        score += increment;
-      }
-    });
-  }
-
-  for (const tag of definition.searchTags) {
-    matchText(tag, normalizedQuery, {
-      contains: 50,
-      exact: 85,
-      field: "searchTags",
-      matchedOn,
-      prefix: 65,
-      updateScore: (increment) => {
-        score += increment;
-      }
-    });
-  }
-
-  if (definition.source.serverName) {
-    matchText(definition.source.serverName, normalizedQuery, {
-      contains: 40,
-      exact: 60,
-      field: "source.serverName",
-      matchedOn,
-      prefix: 55,
-      updateScore: (increment) => {
-        score += increment;
-      }
-    });
-  }
-
-  if (definition.annotations.title) {
-    matchText(definition.annotations.title, normalizedQuery, {
-      contains: 42,
-      exact: 75,
-      field: "annotations.title",
-      matchedOn,
-      prefix: 58,
-      updateScore: (increment) => {
-        score += increment;
-      }
-    });
-  }
-
-  if (definition.kind.toLowerCase().includes(normalizedQuery)) {
-    addMatch("kind", 20);
-  }
-  if (definition.approvalMode.toLowerCase().includes(normalizedQuery)) {
-    addMatch("approvalMode", 18);
-  }
-  if (definition.sideEffects.some((sideEffect) => sideEffect.toLowerCase().includes(normalizedQuery))) {
-    addMatch("sideEffects", 18);
-  }
-  if (definition.execution.inputMode.toLowerCase().includes(normalizedQuery)) {
-    addMatch("execution.inputMode", 15);
-  }
-  if (definition.execution.taskSupport.toLowerCase().includes(normalizedQuery)) {
-    addMatch("execution.taskSupport", 15);
-  }
-  if (definition.source.kind.toLowerCase().includes(normalizedQuery)) {
-    addMatch("source.kind", 15);
-  }
-
-  if (score === 0) {
-    return null;
-  }
-
-  return {
-    definition,
-    matchedOn,
-    score
-  };
-}
-
-/**
- * Query terms worth matching on their own.
- *
- * Two characters and under are dropped: they are the connective tissue of a
- * phrase ("of", "to", "a") and match almost any prose field, which would turn
- * a partial score into noise.
- */
-function tokenizeQuery(normalizedQuery: string): string[] {
-  return normalizedQuery.split(/[^a-z0-9]+/u).filter((token) => token.length > 2);
-}
-
-function matchText(
-  value: string,
-  normalizedQuery: string,
-  options: {
-    contains: number;
-    exact: number;
-    field: string;
-    matchedOn: string[];
-    prefix: number;
-    updateScore: (increment: number) => void;
-  }
-) {
-  const normalizedValue = value.toLowerCase();
-  let increment = 0;
-
-  if (options.exact > 0 && normalizedValue === normalizedQuery) {
-    increment = options.exact;
-  } else if (options.prefix > 0 && normalizedValue.startsWith(normalizedQuery)) {
-    increment = options.prefix;
-  } else if (options.contains > 0 && normalizedValue.includes(normalizedQuery)) {
-    increment = options.contains;
-  } else if (options.contains > 0) {
-    // Whole-query containment alone makes a phrased query invisible: a model
-    // that asks for "external agent CLI jobs list" matches nothing, because no
-    // field contains that exact string. Under the lean tool profile
-    // `tool_search` is the only route to most tools, so a miss costs a whole
-    // turn — observed live, six searches before the model found a tool whose
-    // tags it had already named. Fall back to per-token containment scored by
-    // the share of tokens that hit, which keeps an exact match ranked above a
-    // partial one instead of treating them alike.
-    const tokens = tokenizeQuery(normalizedQuery);
-    if (tokens.length > 1) {
-      const matched = tokens.filter((token) => normalizedValue.includes(token)).length;
-      if (matched > 0) {
-        increment = Math.round((options.contains * matched) / tokens.length);
-      }
-    }
-  }
-
-  if (increment === 0) {
-    return;
-  }
-
-  options.updateScore(increment);
-  if (!options.matchedOn.includes(options.field)) {
-    options.matchedOn.push(options.field);
-  }
 }
 
 function normalizeLookupKey(value: string): string {

@@ -157,4 +157,63 @@ describe("OllamaLanguageModelAdapter", () => {
     ).toContain("Hello");
     expect(events.some((e) => e.kind === "response.completed")).toBe(true);
   });
+
+  test("reports an error Ollama sends mid-stream, and skips a line that is not a record", async () => {
+    // {"error": …} used to read as a record without a message (an empty
+    // answer), and a non-JSON line threw out of the whole stream.
+    const adapter = new OllamaLanguageModelAdapter({
+      baseUrl: "http://localhost:11434",
+      fetchImpl: async () =>
+        streamResponse([
+          `${JSON.stringify({ message: { content: "Partial" }, model: "qwen2.5:14b" })}\n`,
+          "upstream proxy: keep-alive\n",
+          `${JSON.stringify({ error: "model runner has unexpectedly stopped" })}\n`
+        ]),
+      timeoutMs: 1000
+    });
+
+    const events: Array<{ error?: { code: string; message: string }; kind: string }> = [];
+    for await (const event of adapter.stream(buildRequest())) {
+      events.push(event as never);
+    }
+
+    expect(events.map((event) => event.kind)).toEqual(["response.delta", "response.error"]);
+    expect(events[1]?.error).toMatchObject({
+      code: "provider_stream_error",
+      message: "model runner has unexpectedly stopped"
+    });
+  });
+
+  test("keeps a last record that has no newline after it", async () => {
+    const adapter = new OllamaLanguageModelAdapter({
+      baseUrl: "http://localhost:11434",
+      fetchImpl: async () =>
+        streamResponse([
+          `${JSON.stringify({ message: { content: "Hello" }, model: "qwen2.5:14b" })}\n`,
+          JSON.stringify({ done: true, done_reason: "stop", eval_count: 3, prompt_eval_count: 7 })
+        ]),
+      timeoutMs: 1000
+    });
+
+    const events: Array<{ kind: string; response?: { usage: { outputTokens: number } } }> = [];
+    for await (const event of adapter.stream(buildRequest())) {
+      events.push(event as never);
+    }
+    expect(events.at(-1)?.response?.usage.outputTokens).toBe(3);
+  });
+
+  test("lists no models, rather than throwing, when the tags answer is empty or odd", async () => {
+    for (const answer of [
+      new Response("", { status: 200 }),
+      jsonResponse({ models: "none" }),
+      jsonResponse({ models: [null] })
+    ]) {
+      const adapter = new OllamaLanguageModelAdapter({
+        baseUrl: "http://localhost:11434",
+        fetchImpl: async () => answer,
+        timeoutMs: 1000
+      });
+      await expect(adapter.listModels()).resolves.toEqual([]);
+    }
+  });
 });

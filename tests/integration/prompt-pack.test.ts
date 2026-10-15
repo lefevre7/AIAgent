@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import { buildPromptPack, type ToolDefinition } from "@/core";
+import { DEFAULT_SKILLS_SETTINGS, buildPromptPack, type ToolDefinition } from "@/core";
 
 const tempRoots: string[] = [];
 
@@ -24,10 +24,10 @@ describe("prompt pack", () => {
     const nested = path.join(workspace, "packages", "app");
 
     await fs.mkdir(path.join(home, ".aia", "skills", "shared-skill"), { recursive: true });
-    await fs.mkdir(path.join(home, ".aia", "skills", "global-skill"), { recursive: true });
+    await fs.mkdir(path.join(home, ".agents", "skills", "global-skill"), { recursive: true });
     await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
-    await fs.mkdir(path.join(workspace, "skills", "shared-skill"), { recursive: true });
-    await fs.mkdir(path.join(nested, "skills", "local-skill"), { recursive: true });
+    await fs.mkdir(path.join(workspace, ".agents", "skills", "shared-skill"), { recursive: true });
+    await fs.mkdir(path.join(nested, ".aia", "skills", "local-skill"), { recursive: true });
 
     await fs.writeFile(path.join(home, ".aia", "AGENTS.md"), "User-level instruction: be concise.", "utf8");
     await fs.writeFile(path.join(workspace, "AGENTS.md"), "Workspace instruction: prefer the canonical path.", "utf8");
@@ -47,7 +47,7 @@ User version should lose to the workspace copy.`,
       "utf8"
     );
     await fs.writeFile(
-      path.join(home, ".aia", "skills", "global-skill", "SKILL.md"),
+      path.join(home, ".agents", "skills", "global-skill", "SKILL.md"),
       `---
 name: global-skill
 description: Global research workflow
@@ -56,7 +56,7 @@ Use this for reusable research steps.`,
       "utf8"
     );
     await fs.writeFile(
-      path.join(workspace, "skills", "shared-skill", "SKILL.md"),
+      path.join(workspace, ".agents", "skills", "shared-skill", "SKILL.md"),
       `---
 name: shared-skill
 description: Workspace shared skill
@@ -65,7 +65,7 @@ Workspace version should win.`,
       "utf8"
     );
     await fs.writeFile(
-      path.join(nested, "skills", "local-skill", "SKILL.md"),
+      path.join(nested, ".aia", "skills", "local-skill", "SKILL.md"),
       `---
 name: local-skill
 description: Nested skill for this package
@@ -164,6 +164,8 @@ Package-local workflow.`,
     const pack = await buildPromptPack({
       availableTools: tools,
       cwd: nested,
+      // The skills aia ships would be listed too; this test is about the operator's.
+      skillSettings: { ...DEFAULT_SKILLS_SETTINGS, bundled: false },
       taskSummary: "Implement the prompt stack",
       userHomeDirectory: home
     });
@@ -173,7 +175,12 @@ Package-local workflow.`,
       path.join(workspace, "AGENTS.md"),
       path.join(nested, "AGENTS.md")
     ]);
-    expect(pack.availableSkills.map((skill) => skill.name)).toEqual(["global-skill", "local-skill", "shared-skill"]);
+    // Project skills first, then the operator's; by name within each.
+    expect(pack.availableSkills.map((skill) => `${skill.scope}:${skill.name}`)).toEqual([
+      "project:local-skill",
+      "project:shared-skill",
+      "user:global-skill"
+    ]);
     expect(pack.availableSkills.find((skill) => skill.name === "shared-skill")?.description).toBe(
       "Workspace shared skill"
     );
@@ -181,7 +188,11 @@ Package-local workflow.`,
     expect(pack.systemPrompt).toContain("Workspace instruction: prefer the canonical path.");
     expect(pack.systemPrompt).toContain("Nested instruction: edit only files under this app when possible.");
     expect(pack.systemPrompt).toContain("`attempt_complete`");
-    expect(pack.systemPrompt).toContain("use the `skill` tool to load the full skill instructions");
+    expect(pack.systemPrompt).toContain("load it with the `skill` tool before acting");
+    expect(pack.systemPrompt).toContain(
+      `<skill><name>shared-skill</name><description>Workspace shared skill</description><scope>project</scope><location>${path.join(workspace, ".agents", "skills", "shared-skill", "SKILL.md")}</location></skill>`
+    );
+    expect(pack.systemPrompt).not.toContain("User shared skill");
     expect(pack.nudges.taskContinuation).toContain("attempt_complete");
   });
 
@@ -225,7 +236,7 @@ Package-local workflow.`,
     await fs.writeFile(path.join(workspace, "AGENTS.md"), `Start marker. ${"x".repeat(5_000)} End marker.`, "utf8");
 
     const pack = await buildPromptPack({
-      availableTools: [],
+      availableTools: [readFileDefinition()],
       cwd: workspace,
       instructionDocCharBudget: 500,
       memoryContext: {
@@ -392,10 +403,106 @@ Package-local workflow.`,
     expect(pack.systemPrompt).toContain("Prefer concise updates.");
     expect(pack.systemPrompt).toContain("# Session Summary");
   });
+  test("restates Active Skills within their budget: whole while they fit, then cut, then named with their file", async () => {
+    // They had no budget: a large loaded skill came straight back after every
+    // compaction, and each later prompt of the session overflowed.
+    const root = await createTempRoot();
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
+    const active = ["alpha", "beta", "gamma"].map((name) => ({
+      allowedTools: [],
+      body: name[0]!.repeat(300),
+      description: `${name} description`,
+      directory: path.join(root, "skills", name),
+      disableModelInvocation: false,
+      enabled: true,
+      filePath: path.join(root, "skills", name, "SKILL.md"),
+      metadata: {},
+      name,
+      scope: "project" as const
+    }));
+    const readFile = { ...readFileDefinition() };
+    const build = (tools: ToolDefinition[]) =>
+      buildPromptPack({
+        activeSkills: active,
+        activeSkillsCharBudget: 900,
+        availableTools: tools,
+        cwd: workspace,
+        skills: { diagnostics: [], skills: [] },
+        userHomeDirectory: root
+      });
+
+    const prompt = (await build([readFile])).systemPrompt;
+    expect(prompt).toContain("a".repeat(300));
+    expect(prompt).toMatch(/\[Cut to \d+ of \d+ characters by the Active Skills budget/u);
+    expect(prompt).toContain(`For the rest, read ${active[1]!.filePath} with read_file.`);
+    // Only the first is restated whole; the third is not restated at all.
+    expect(prompt.match(/<\/skill_content>/gu)).toHaveLength(1);
+    expect(prompt).not.toContain("c".repeat(300));
+    expect(prompt).toContain(
+      `[The "gamma" skill is still loaded, but its instructions do not fit in the Active Skills budget (runtime.promptBudgets.activeSkillsChars): read ${active[2]!.filePath} with read_file.]`
+    );
+    // Without read_file, the pointer does not name a tool the model lacks.
+    const withoutReadFile = (await build([])).systemPrompt;
+    expect(withoutReadFile).toContain(`they are in ${active[2]!.filePath}`);
+    expect(withoutReadFile).not.toContain("with read_file");
+  });
+  test("still takes extraSkillRoots, and its skills still carry their earlier fields", async () => {
+    // For code written against the earlier buildPromptPack and DiscoveredSkill.
+    const root = await createTempRoot();
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(path.join(workspace, ".git"), { recursive: true });
+    const skillFile = path.join(root, "extra", "older", "SKILL.md");
+    await fs.mkdir(path.dirname(skillFile), { recursive: true });
+    await fs.writeFile(skillFile, "---\nname: older\ndescription: From an extra root.\n---\nSteps.\n");
+
+    const pack = await buildPromptPack({
+      availableTools: [],
+      cwd: workspace,
+      extraSkillRoots: [path.join(root, "extra")],
+      skillSettings: { ...DEFAULT_SKILLS_SETTINGS, bundled: false },
+      userHomeDirectory: root
+    });
+
+    const older = pack.availableSkills.find((skill) => skill.name === "older");
+    expect(older).toMatchObject({
+      skillDirectory: path.dirname(skillFile),
+      skillFilePath: skillFile,
+      source: "extra"
+    });
+    expect(older?.content).toBe("---\nname: older\ndescription: From an extra root.\n---\nSteps.\n");
+  });
 });
 
 async function createTempRoot(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aiagent-prompts-"));
   tempRoots.push(root);
   return root;
+}
+
+function readFileDefinition(): ToolDefinition {
+  return {
+    aliases: [],
+    annotations: { meta: {}, readOnlyHint: true, title: "Read File" },
+    approvalMode: "never",
+    descriptor: { examples: [], purpose: "Read a file.", whenNotToUse: [], whenToUse: [] },
+    description: "Read a file.",
+    displayName: "Read File",
+    execution: { inputMode: "json", resumable: false, taskSupport: "forbidden" },
+    idempotent: true,
+    inputSchema: { type: "object" },
+    invocationName: "read_file",
+    kind: "built_in",
+    metadata: {},
+    name: "read_file",
+    outputKind: "json",
+    retryable: true,
+    searchTags: [],
+    sideEffects: ["workspace_read"],
+    source: { displayName: "Built-in Tools", kind: "built_in" },
+    streamingMode: "none",
+    toolId: "tool.builtin.read_file",
+    usageGuidance: "Read a file.",
+    version: "1.0.0"
+  };
 }

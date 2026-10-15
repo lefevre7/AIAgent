@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 
-import { toJsonRecord, toJsonValue } from "@/core/contracts";
+import { extractStructuredError, toJsonRecord, toJsonValue } from "@/core/contracts";
 import type {
   ApprovalRequest,
+  ApprovalTarget,
   ApprovalTargetKind,
   JsonValue,
   MessagePart,
@@ -15,14 +16,30 @@ import type {
   TurnRecord
 } from "@/core/contracts";
 import type { AgentLoopToolExecutionResult, AgentLoopToolExecutor } from "@/core/agent";
+import type { SkillDiscovery } from "@/core/skills/types";
 import type { ExecutableToolRegistry } from "@/core/tools/registry";
 
 export type RuntimeToolContext = {
+  /**
+   * The tools the model can call this turn, when the call came from the agent
+   * loop; a tool reporting others (mcp_status) can say which are not callable
+   * yet. Absent for a direct call (`tool.execute`).
+   */
+  callableToolNames?: ReadonlySet<string>;
   registry: ExecutableToolRegistry;
   runtime: ToolRuntime;
   session: SessionRecord;
+  /**
+   * The skills the agent loop found for this run: the `skill` tool loads from
+   * these, so it agrees with the catalog and the name enum the model was
+   * given, and the skill folders are not walked again on every call.
+   */
+  skills?: SkillDiscovery;
   turn: TurnRecord;
 };
+
+/** What a caller of the runtime says about the call: its session and turn, and from the loop, the turn's tools. */
+export type ToolExecutionContext = Pick<RuntimeToolContext, "callableToolNames" | "session" | "skills" | "turn">;
 
 export type RuntimeToolResult = Partial<ToolResultEnvelope> & {
   /**
@@ -38,10 +55,44 @@ export type RuntimeToolResult = Partial<ToolResultEnvelope> & {
   result?: JsonValue;
 };
 
+/**
+ * What a call must be approved as when the tool acts through another
+ * capability, such as `web_search` running an MCP server's search tool, or
+ * what else it reaches, such as the agent `external_agent` starts and the
+ * command line that runs.
+ *
+ * `targets` are weighed ahead of the tool's own, so a deny rule on that
+ * server or tool applies here exactly as it does to a direct call.
+ * `approvalMode` replaces the definition's for this call. `binding` pins what
+ * was approved: it is recorded on the call as `approvalBinding`, and a tool
+ * given one must act on exactly that, since an approval can be resolved long
+ * after the decision and what the tool would pick by then may differ.
+ */
+export type ToolApprovalScope = {
+  approvalMode: ToolDefinition["approvalMode"];
+  binding?: JsonValue;
+  targets: ApprovalTarget[];
+};
+
+/** The call metadata key holding the `binding` of an approved scope. */
+export const APPROVAL_BINDING_METADATA_KEY = "approvalBinding";
+
+/** What a tool can ask while choosing its scope. */
+export type ToolApprovalScopeContext = {
+  /**
+   * Whether the approval policy would refuse a call with this scope (a deny
+   * rule on its targets). A tool with several ways to act (web_search with
+   * several search backends) uses it to pick one the operator allows.
+   */
+  isDenied(scope: ToolApprovalScope): Promise<boolean>;
+};
+
 export interface RuntimeTool {
   readonly definition: ToolDefinition;
 
   execute(call: ToolCallRecord, context: RuntimeToolContext): Promise<RuntimeToolResult>;
+  /** See `ToolApprovalScope`. Omitted when the tool is approved as itself. */
+  resolveApprovalScope?(call: ToolCallRecord, context: ToolApprovalScopeContext): Promise<ToolApprovalScope>;
 }
 
 export type ToolApprovalDecision =
@@ -61,6 +112,7 @@ export type ToolApprovalDecision =
 export type ToolApprovalDeciderParams = {
   call: ToolCallRecord;
   definition: ToolDefinition;
+  scope?: ToolApprovalScope;
   session: SessionRecord;
   turn: TurnRecord;
 };
@@ -87,29 +139,25 @@ export class ToolRuntime implements AgentLoopToolExecutor {
     return this.options.registry.searchDefinitions(query);
   }
 
-  async execute(
-    call: ToolCallRecord,
-    context: { session: SessionRecord; turn: TurnRecord }
-  ): Promise<AgentLoopToolExecutionResult> {
+  async execute(call: ToolCallRecord, context: ToolExecutionContext): Promise<AgentLoopToolExecutionResult> {
     return this.executeInternal(call, context);
   }
 
-  async executeApproved(
-    call: ToolCallRecord,
-    context: { session: SessionRecord; turn: TurnRecord }
-  ): Promise<AgentLoopToolExecutionResult> {
+  async executeApproved(call: ToolCallRecord, context: ToolExecutionContext): Promise<AgentLoopToolExecutionResult> {
     return this.executeInternal(call, context, {
       skipApproval: true
     });
   }
 
   private async executeInternal(
-    call: ToolCallRecord,
-    context: { session: SessionRecord; turn: TurnRecord },
+    requestedCall: ToolCallRecord,
+    context: ToolExecutionContext,
     options: {
       skipApproval?: boolean;
     } = {}
   ): Promise<AgentLoopToolExecutionResult> {
+    // Rebound below when an approval scope pins what this call may act on.
+    let call = requestedCall;
     const tool = this.options.registry.getTool(call.toolName);
     if (!tool) {
       const failedCall = this.completeFailure(call, {
@@ -127,13 +175,44 @@ export class ToolRuntime implements AgentLoopToolExecutor {
       };
     }
 
+    // Resolved only where approval is decided. An approved call resumes with
+    // the binding its approval recorded rather than resolving a new scope.
+    let scope: ToolApprovalScope | undefined;
+    const decide = this.options.approvalDecider ?? defaultApprovalDecider;
+    try {
+      scope = options.skipApproval
+        ? undefined
+        : await tool.resolveApprovalScope?.(call, {
+            isDenied: async (candidate) =>
+              (
+                await decide({
+                  call,
+                  definition: tool.definition,
+                  scope: candidate,
+                  session: context.session,
+                  turn: context.turn
+                })
+              ).mode === "deny"
+          });
+    } catch (error) {
+      const failedCall = this.completeFailure(call, normalizeRuntimeError(error));
+      return {
+        resultMessage: createToolResultMessage(call.sessionId, call.turnId, failedCall),
+        toolCall: failedCall
+      };
+    }
+    if (scope?.binding !== undefined) {
+      call = { ...call, metadata: { ...call.metadata, [APPROVAL_BINDING_METADATA_KEY]: scope.binding } };
+    }
+
     const approvalDecision = options.skipApproval
       ? {
           mode: "execute" as const
         }
-      : await (this.options.approvalDecider ?? defaultApprovalDecider)({
+      : await decide({
           call,
           definition: tool.definition,
+          ...(scope ? { scope } : {}),
           session: context.session,
           turn: context.turn
         });
@@ -167,9 +246,11 @@ export class ToolRuntime implements AgentLoopToolExecutor {
 
     try {
       const result = await tool.execute(call, {
+        ...(context.callableToolNames ? { callableToolNames: context.callableToolNames } : {}),
         registry: this.options.registry,
         runtime: this,
         session: context.session,
+        ...(context.skills ? { skills: context.skills } : {}),
         turn: context.turn
       });
       // Tool results are arbitrary values from arbitrary tools (MCP servers
@@ -321,8 +402,11 @@ function resolveApprovalTargetKind(definition: ToolDefinition): ApprovalTargetKi
 }
 
 function normalizeRuntimeError(error: unknown): StructuredError {
-  if (isStructuredError(error)) {
-    return error;
+  // A provider's error (a ProviderRequestError) keeps its own code, so a
+  // context overflow inside a tool still reads as one.
+  const structured = extractStructuredError(error);
+  if (structured) {
+    return structured;
   }
 
   if (error instanceof Error) {
@@ -452,8 +536,4 @@ function omitDisplayedResultKeys(result: JsonValue | undefined, displayedKeys: s
   const next = Object.fromEntries(Object.entries(result).filter(([key]) => !omitted.has(key)));
 
   return Object.keys(next).length > 0 ? next : undefined;
-}
-
-function isStructuredError(error: unknown): error is StructuredError {
-  return typeof error === "object" && error !== null && "code" in error && "message" in error && "retriable" in error;
 }

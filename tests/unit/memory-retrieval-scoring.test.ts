@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { bm25ToRelevance } from "@/core/memory";
+import { bm25ToRelevance, buildFtsMatchExpression } from "@/core/memory";
 
 // sqlite's bm25() returns 0 or a negative number, with *more negative*
 // meaning a *better* match. Clamping the raw score to a minimum of 0 before
@@ -41,5 +41,26 @@ describe("bm25ToRelevance", () => {
 
   test("floors an unexpected positive value to the weakest score instead of going negative", () => {
     expect(bm25ToRelevance(5)).toBe(0);
+  });
+});
+
+// FTS5 read the raw query as its own syntax: a quote or a hyphen was an error,
+// and several words had to appear together. Each word is now a quoted prefix
+// term, joined with OR so bm25 ranks by how many of them a chunk has.
+describe("FTS5 match expression", () => {
+  test("quotes each meaningful word as a prefix term", () => {
+    expect(buildFtsMatchExpression("Where is the release checklist for the gateway?")).toBe(
+      '"release"* OR "checklist"* OR "gateway"*'
+    );
+  });
+
+  test("reads query syntax as plain words", () => {
+    expect(buildFtsMatchExpression('gateway "ports" -config (jsonc OR NOT')).toBe(
+      '"gateway"* OR "ports"* OR "config"* OR "jsonc"*'
+    );
+  });
+
+  test("matches a query with no meaningful word as a quoted phrase", () => {
+    expect(buildFtsMatchExpression('to "be"')).toBe('"to ""be"""');
   });
 });

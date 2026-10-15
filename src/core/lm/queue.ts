@@ -5,15 +5,15 @@ import { z } from "zod";
 
 import type {
   LanguageModelAdapter,
+  LanguageModelCallOptions,
   LanguageModelProvider,
   LanguageModelQueueJob,
   LanguageModelRequest,
   LanguageModelResponse,
-  LanguageModelStreamEvent,
-  StructuredError
+  LanguageModelStreamEvent
 } from "@/core/contracts";
 import { entityIdSchema, isoTimestampSchema, languageModelQueueJobSchema } from "@/core/contracts";
-import { normalizeUnknownProviderError } from "@/core/lm/http";
+import { normalizeUnknownProviderError, ProviderRequestError } from "@/core/lm/http";
 import { writeJsonAtomic, sleep } from "@/core/io/files";
 
 const queueStateSchema = z
@@ -35,10 +35,14 @@ export type LanguageModelStreamSink = (event: LanguageModelStreamEvent) => void;
 
 export interface LanguageModelExecutionQueue {
   close?(): Promise<void>;
-  execute(request: LanguageModelRequest): Promise<LanguageModelResponse>;
+  execute(request: LanguageModelRequest, options?: LanguageModelCallOptions): Promise<LanguageModelResponse>;
   getJob(jobId: string): Promise<LanguageModelQueueJob | null>;
   listJobs(): Promise<LanguageModelQueueJob[]>;
-  stream?(request: LanguageModelRequest, onEvent: LanguageModelStreamSink): Promise<LanguageModelResponse>;
+  stream?(
+    request: LanguageModelRequest,
+    onEvent: LanguageModelStreamSink,
+    options?: LanguageModelCallOptions
+  ): Promise<LanguageModelResponse>;
 }
 
 export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
@@ -49,26 +53,39 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
   // In-process bridge from a queued job to a live streaming sink. The disk
   // queue stays the source of truth for job state; deltas are ephemeral.
   private readonly deltaSinks = new Map<string, LanguageModelStreamSink>();
+  // Cancellation for jobs this process owns. A running job is aborted through
+  // its controller; a job cancelled before the pump reaches it is either
+  // dropped from the queue or, if the pump claimed it in the meantime, aborted
+  // the moment its controller exists.
+  private readonly jobControllers = new Map<string, AbortController>();
+  private readonly cancelledJobIds = new Set<string>();
 
   constructor(private readonly options: FileLanguageModelQueueOptions) {
     this.recoveryPromise = this.recoverState();
     void this.recoveryPromise.then(() => this.triggerPump());
   }
 
-  async execute(request: LanguageModelRequest): Promise<LanguageModelResponse> {
-    return this.enqueueAndWait(request);
+  async execute(request: LanguageModelRequest, options: LanguageModelCallOptions = {}): Promise<LanguageModelResponse> {
+    return this.enqueueAndWait(request, options);
   }
 
-  async stream(request: LanguageModelRequest, onEvent: LanguageModelStreamSink): Promise<LanguageModelResponse> {
+  async stream(
+    request: LanguageModelRequest,
+    onEvent: LanguageModelStreamSink,
+    options: LanguageModelCallOptions = {}
+  ): Promise<LanguageModelResponse> {
     this.deltaSinks.set(request.id, onEvent);
     try {
-      return await this.enqueueAndWait(request);
+      return await this.enqueueAndWait(request, options);
     } finally {
       this.deltaSinks.delete(request.id);
     }
   }
 
-  private async enqueueAndWait(request: LanguageModelRequest): Promise<LanguageModelResponse> {
+  private async enqueueAndWait(
+    request: LanguageModelRequest,
+    options: LanguageModelCallOptions
+  ): Promise<LanguageModelResponse> {
     if (this.closed) {
       throw new Error("Language model queue is closed.");
     }
@@ -111,8 +128,51 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
       await this.writeQueueState(state);
     });
 
+    // A cancelled run must stop its model request, not wait for it to finish.
+    const signal = options.signal;
+    const onAbort = () => {
+      void this.cancelJob(job.id);
+    };
+    if (signal?.aborted) {
+      onAbort();
+    } else {
+      signal?.addEventListener("abort", onAbort, { once: true });
+    }
+
     this.triggerPump();
-    return this.waitForTerminalJob(job.id);
+    try {
+      return await this.waitForTerminalJob(job.id);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      // The job is terminal, so the pump is done reading its cancel marker.
+      this.cancelledJobIds.delete(job.id);
+    }
+  }
+
+  private async cancelJob(jobId: string): Promise<void> {
+    this.cancelledJobIds.add(jobId);
+    const running = this.jobControllers.get(jobId);
+    if (running) {
+      running.abort();
+      return;
+    }
+
+    // Still queued: drop it. Otherwise the pump has claimed it and reads the
+    // marker when it creates the job's controller, so the marker stays.
+    await this.withStateLock(async () => {
+      const state = await this.readQueueState();
+      const index = state.queuedJobIds.indexOf(jobId);
+      if (index === -1) {
+        return;
+      }
+      state.queuedJobIds.splice(index, 1);
+      const job = await this.readJob(jobId);
+      if (job) {
+        await this.writeJob(buildCancelledJob(job));
+      }
+      state.updatedAt = new Date().toISOString();
+      await this.writeQueueState(state);
+    });
   }
 
   async getJob(jobId: string): Promise<LanguageModelQueueJob | null> {
@@ -211,13 +271,18 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
         }
 
         const adapter = this.options.resolveAdapter(claimedJob.request.provider);
+        const controller = new AbortController();
+        this.jobControllers.set(claimedJob.id, controller);
+        if (this.cancelledJobIds.has(claimedJob.id)) {
+          controller.abort();
+        }
         let finalizedJob: LanguageModelQueueJob;
         try {
           const sink = this.deltaSinks.get(claimedJob.id);
           const response =
             sink && adapter.stream
-              ? await this.streamJob(adapter, claimedJob.request, sink)
-              : await adapter.generate(claimedJob.request);
+              ? await this.streamJob(adapter, claimedJob.request, sink, controller.signal)
+              : await adapter.generate(claimedJob.request, { signal: controller.signal });
           finalizedJob = languageModelQueueJobSchema.parse({
             ...claimedJob,
             completedAt: new Date().toISOString(),
@@ -234,24 +299,30 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
             timestamp: finalizedJob.updatedAt
           });
         } catch (error) {
-          const normalizedError = normalizeUnknownProviderError(error, {
-            code: "lm_queue_execution_failed"
-          });
-          finalizedJob = languageModelQueueJobSchema.parse({
-            ...claimedJob,
-            completedAt: new Date().toISOString(),
-            error: normalizedError,
-            logPaths: {
-              ...claimedJob.logPaths,
-              error: this.errorLogFile(claimedJob.id)
-            },
-            status: "failed",
-            updatedAt: new Date().toISOString()
-          });
-          await writeJsonAtomic(this.errorLogFile(claimedJob.id), {
-            error: normalizedError,
-            timestamp: finalizedJob.updatedAt
-          });
+          if (controller.signal.aborted) {
+            finalizedJob = buildCancelledJob(claimedJob);
+          } else {
+            const normalizedError = normalizeUnknownProviderError(error, {
+              code: "lm_queue_execution_failed"
+            });
+            finalizedJob = languageModelQueueJobSchema.parse({
+              ...claimedJob,
+              completedAt: new Date().toISOString(),
+              error: normalizedError,
+              logPaths: {
+                ...claimedJob.logPaths,
+                error: this.errorLogFile(claimedJob.id)
+              },
+              status: "failed",
+              updatedAt: new Date().toISOString()
+            });
+            await writeJsonAtomic(this.errorLogFile(claimedJob.id), {
+              error: normalizedError,
+              timestamp: finalizedJob.updatedAt
+            });
+          }
+        } finally {
+          this.jobControllers.delete(claimedJob.id);
         }
 
         await this.finalizeJob(finalizedJob);
@@ -264,19 +335,22 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
   private async streamJob(
     adapter: LanguageModelAdapter,
     request: LanguageModelRequest,
-    sink: LanguageModelStreamSink
+    sink: LanguageModelStreamSink,
+    signal: AbortSignal
   ): Promise<LanguageModelResponse> {
     if (!adapter.stream) {
-      return adapter.generate(request);
+      return adapter.generate(request, { signal });
     }
 
     let completed: LanguageModelResponse | null = null;
-    for await (const event of adapter.stream(request)) {
+    for await (const event of adapter.stream(request, { signal })) {
       sink(event);
       if (event.kind === "response.completed") {
         completed = event.response;
       } else if (event.kind === "response.error") {
-        throw new Error(event.error.message);
+        // Keep the provider's structured error: the agent loop acts on its
+        // code (a context overflow is compacted and retried), not its message.
+        throw new ProviderRequestError(event.error);
       }
     }
 
@@ -344,7 +418,14 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
       }
 
       if (job.status === "failed" || job.status === "cancelled") {
-        throw new Error(formatQueueJobError(job.error));
+        throw new ProviderRequestError(
+          job.error ?? {
+            code: "lm_queue_job_failed",
+            details: { jobId },
+            message: "Language model queue job failed without a structured error.",
+            retriable: false
+          }
+        );
       }
 
       await sleep(50);
@@ -490,18 +571,26 @@ export class FileLanguageModelQueue implements LanguageModelExecutionQueue {
   }
 }
 
-function formatQueueJobError(error: StructuredError | undefined): string {
-  if (!error) {
-    return "Language model queue job failed without a structured error.";
-  }
-
-  return error.message;
-}
-
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error;
 }
 
 function isTerminalJobStatus(status: LanguageModelQueueJob["status"]): boolean {
   return status === "cancelled" || status === "completed" || status === "failed";
+}
+
+function buildCancelledJob(job: LanguageModelQueueJob): LanguageModelQueueJob {
+  const now = new Date().toISOString();
+  return languageModelQueueJobSchema.parse({
+    ...job,
+    completedAt: now,
+    error: {
+      code: "lm_request_cancelled",
+      details: {},
+      message: "The model request was cancelled.",
+      retriable: false
+    },
+    status: "cancelled",
+    updatedAt: now
+  });
 }

@@ -40,6 +40,7 @@ import {
 import {
   createGatewayRuntimeFromLoadedConfig,
   eventMatchesGatewaySubscription,
+  subscriptionShowsApprovals,
   type GatewayRuntimeLike,
   type GatewayRuntimeProviderRegistrationHost
 } from "@/gateway";
@@ -118,6 +119,7 @@ export class AIAgentSdk {
   readonly memory = new AIAgentMemory(this);
   readonly providers = new AIAgentProviders(this);
   readonly sessions = new AIAgentSessions(this);
+  readonly skills = new AIAgentSkills(this);
   readonly steering = new AIAgentSteering(this);
   readonly tools = new AIAgentTools(this);
 
@@ -145,7 +147,12 @@ export class AIAgentSdk {
         listener(event);
       }
     };
-    const unsubscribe = this.options.controlPlane.subscribe(wrappedListener);
+    const unsubscribe = this.options.controlPlane.subscribe(wrappedListener, {
+      // Only by naming the topic: a subscriber to everything (a logger, an
+      // events() loop) is not someone who answers questions, and a question
+      // put to it waited out its timeout.
+      showsApprovals: (sessionId) => subscriptionShowsApprovals(subscription, sessionId)
+    });
     const abortCleanup = bindAbortCleanup(options.signal, unsubscribe);
 
     return () => {
@@ -510,6 +517,18 @@ class AIAgentSessions {
   }
 }
 
+class AIAgentSkills {
+  constructor(private readonly sdk: AIAgentSdk) {}
+
+  /** The skills that apply in `cwd` (default: the gateway's workspace), and what is wrong with any that do not load. */
+  async list(
+    query: GatewayRequestPayloadByTopic["skills.list"] = {},
+    options: AIAgentGatewayRequestOptions = {}
+  ): Promise<GatewayResponsePayloadByTopic["skills.list"]> {
+    return this.sdk.request("skills.list", query, options);
+  }
+}
+
 class AIAgentSteering {
   constructor(private readonly sdk: AIAgentSdk) {}
 
@@ -538,8 +557,9 @@ class AIAgentSteering {
 class AIAgentTools {
   constructor(private readonly sdk: AIAgentSdk) {}
 
+  /** Every registered tool. It went through a plain search, so it returned the first ten. */
   async list(options: AIAgentGatewayRequestOptions = {}): Promise<ToolDefinition[]> {
-    return this.search({}, options);
+    return (await this.sdk.request("tool.search", { all: true }, options)).tools;
   }
 
   async search(

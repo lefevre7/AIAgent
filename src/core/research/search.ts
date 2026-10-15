@@ -1,5 +1,5 @@
-import type { JsonValue, MCPToolCapability, StructuredError } from "@/core/contracts";
-import type { MCPManager } from "@/core/mcp";
+import { toJsonValue, type JsonValue, type MCPToolCapability, type StructuredError } from "@/core/contracts";
+import type { MCPManager, McpCallContext } from "@/core/mcp";
 
 const QUERY_FIELDS = ["query", "q", "term", "search", "searchQuery", "keywords", "question", "libraryName"] as const;
 const LIMIT_FIELDS = ["limit", "maxResults", "count", "numResults", "topK"] as const;
@@ -37,6 +37,18 @@ export type MCPWebSearchServiceOptions = {
   mcpManager: MCPManager;
 };
 
+/**
+ * Identifies one connected MCP search tool, as recorded when a search was
+ * approved: by its server and the tool's own name, which survive a relist
+ * (an invocation name can gain a "-2" when another tool slugs alike).
+ */
+export type WebSearchBackendBinding = {
+  invocationName: string;
+  /** Absent in bindings recorded before it was added. */
+  rawName?: string;
+  serverName: string;
+};
+
 export class MCPWebSearchService {
   private readonly defaultLimit: number;
   private readonly mcpManager: MCPManager;
@@ -46,13 +58,42 @@ export class MCPWebSearchService {
     this.mcpManager = options.mcpManager;
   }
 
-  async search(query: string, options: { limit?: number } = {}): Promise<WebSearchResult> {
+  /** The MCP tool a search would run right now, or null when none qualifies. */
+  selectBackend(): MCPToolCapability | null {
+    return this.rankBackends()[0] ?? null;
+  }
+
+  /**
+   * Every connected MCP tool a search could run, best first. Optional
+   * servers still connecting at startup are waited for (within the startup
+   * grace) first: a search in the first second used to find no backend.
+   */
+  async listBackends(): Promise<MCPToolCapability[]> {
+    await this.mcpManager.waitForStartup();
+    return this.rankBackends();
+  }
+
+  private rankBackends(): MCPToolCapability[] {
+    return rankSearchCapabilities(this.mcpManager.getToolCapabilities());
+  }
+
+  /**
+   * Runs a search. With `backend`, it runs exactly that MCP tool, which is how
+   * an approved search executes: the tool was approved, and the best match
+   * could be a different one by the time the approval is resolved.
+   */
+  async search(
+    query: string,
+    options: { backend?: WebSearchBackendBinding; context?: McpCallContext; limit?: number } = {}
+  ): Promise<WebSearchResult> {
     const normalizedQuery = query.trim();
     if (!normalizedQuery) {
       throw searchError("Search query cannot be empty.", "web_search_invalid_query");
     }
 
-    const capability = selectSearchCapability(this.mcpManager.getToolCapabilities());
+    const capability = options.backend
+      ? this.findBoundBackend(options.backend)
+      : ((await this.listBackends())[0] ?? null);
     if (!capability) {
       throw searchError(
         "No MCP search-capable tool is connected. Configure an MCP server that exposes a search or web-search tool.",
@@ -61,10 +102,13 @@ export class MCPWebSearchService {
     }
 
     const argumentsObject = buildSearchArguments(capability, normalizedQuery, options.limit ?? this.defaultLimit);
+    // The call's own session and turn: a server that asks a question during
+    // the search reaches that session's operator, and its clock is the call's.
     const response = await this.mcpManager.callTool(
       capability.serverName ?? "",
       capability.invocationName,
-      argumentsObject
+      argumentsObject,
+      options.context ?? {}
     );
     const rawText = Array.isArray(response.content)
       ? response.content
@@ -77,6 +121,14 @@ export class MCPWebSearchService {
           .join("\n\n")
           .trim()
       : "";
+    if (response.isError === true) {
+      // The tool ran and failed (a quota, a bad key); its text says why. It
+      // used to be parsed as a result set: "no results", or the error as one.
+      throw searchError(
+        `The search tool ${capability.rawName} on MCP server "${capability.serverName ?? ""}" reported an error${rawText ? `: ${rawText}` : "."}`,
+        "web_search_backend_error"
+      );
+    }
     const results = normalizeSearchResults(response.structuredContent, rawText);
 
     return {
@@ -91,10 +143,29 @@ export class MCPWebSearchService {
       results
     };
   }
+
+  private findBoundBackend(backend: WebSearchBackendBinding): MCPToolCapability {
+    const capability = this.mcpManager
+      .getToolCapabilities()
+      .find(
+        (candidate) =>
+          candidate.serverName === backend.serverName &&
+          (backend.rawName !== undefined
+            ? candidate.rawName === backend.rawName
+            : candidate.invocationName === backend.invocationName)
+      );
+    if (!capability) {
+      throw searchError(
+        `The search tool this call was approved for (${backend.invocationName} on MCP server "${backend.serverName}") is no longer connected. Run web_search again.`,
+        "web_search_backend_changed"
+      );
+    }
+    return capability;
+  }
 }
 
-function selectSearchCapability(capabilities: MCPToolCapability[]): MCPToolCapability | null {
-  const ranked = capabilities
+function rankSearchCapabilities(capabilities: MCPToolCapability[]): MCPToolCapability[] {
+  return capabilities
     .map((capability) => ({
       capability,
       score: scoreSearchCapability(capability)
@@ -105,9 +176,8 @@ function selectSearchCapability(capabilities: MCPToolCapability[]): MCPToolCapab
         return right.score - left.score;
       }
       return left.capability.displayName.localeCompare(right.capability.displayName);
-    });
-
-  return ranked[0]?.capability ?? null;
+    })
+    .map((candidate) => candidate.capability);
 }
 
 function scoreSearchCapability(capability: MCPToolCapability): number {
@@ -328,11 +398,4 @@ function searchError(message: string, code: StructuredError["code"]): Structured
     message,
     retriable: false
   };
-}
-
-function toJsonValue(value: unknown): JsonValue | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  return JSON.parse(JSON.stringify(value)) as JsonValue;
 }

@@ -23,7 +23,9 @@ import {
   gatewayResponsePayloadSchemas,
   type GatewaySessionSnapshot
 } from "@/core/contracts";
+import { resolveConfiguredModelId } from "@/core/lm/providers";
 import type { MemorySystemStatus } from "@/core/memory";
+import { isLiveApproval } from "@/gateway/elicitation";
 import { normalizeGatewayError } from "@/gateway/errors";
 import { createGatewayHealthSnapshot, type GatewayHealthSnapshot } from "@/gateway/router";
 import type { ServerRuntimeContext } from "@/server/runtime-context";
@@ -232,20 +234,28 @@ export class ControlPlaneService {
   }
 
   subscribeEvents(listener: (event: GatewayEvent) => void, filter: { sessionId?: string } = {}): () => void {
-    return this.context.gatewayRuntime.subscribe((event) => {
-      if (filter.sessionId) {
-        const eventSessionId =
-          typeof (event.metadata as { sessionId?: unknown }).sessionId === "string"
-            ? (event.metadata as { sessionId: string }).sessionId
-            : "payload" in event && typeof (event.payload as { sessionId?: unknown }).sessionId === "string"
-              ? (event.payload as { sessionId: string }).sessionId
-              : undefined;
-        if (eventSessionId && eventSessionId !== filter.sessionId) {
-          return;
-        }
+    const wants = (event: GatewayEvent): boolean => {
+      if (!filter.sessionId) {
+        return true;
       }
-      listener(event);
-    });
+      const eventSessionId =
+        typeof (event.metadata as { sessionId?: unknown }).sessionId === "string"
+          ? (event.metadata as { sessionId: string }).sessionId
+          : "payload" in event && typeof (event.payload as { sessionId?: unknown }).sessionId === "string"
+            ? (event.payload as { sessionId: string }).sessionId
+            : undefined;
+      return !eventSessionId || eventSessionId === filter.sessionId;
+    };
+    // An open web page shows approvals as they arrive, so an MCP server's
+    // question can be answered there mid-call.
+    return this.context.gatewayRuntime.subscribe(
+      (event) => {
+        if (wants(event)) {
+          listener(event);
+        }
+      },
+      { showsApprovals: (sessionId) => !filter.sessionId || filter.sessionId === sessionId }
+    );
   }
 
   async getMemory(query: { sessionId?: string; text?: string }): Promise<ControlPlaneMemorySummary> {
@@ -333,7 +343,10 @@ export class ControlPlaneService {
         workspaceRoot: config.memory.workspaceRoot
       },
       runtime: {
-        defaultModel: config.runtime.defaultModel,
+        // The model a turn will ask for: the provider's own `model` setting
+        // comes first (resolveConfiguredModelId). The page showed
+        // runtime.defaultModel, which can name another model entirely.
+        defaultModel: resolveConfiguredModelId(config, config.runtime.defaultProvider) ?? config.runtime.defaultModel,
         defaultProvider: config.runtime.defaultProvider,
         logLevel: config.runtime.logLevel,
         statusUpdates: config.runtime.statusUpdates,
@@ -381,12 +394,33 @@ export class ControlPlaneService {
     decision: "approved" | "cancelled" | "denied" | "expired";
     requestId: string;
   }): Promise<z.infer<(typeof gatewayResponsePayloadSchemas)["approval.resolve"]>> {
-    return this.dispatch("approval.resolve", {
+    const resolved = await this.dispatch("approval.resolve", {
       actor: "web",
       comment: input.comment,
       decision: input.decision,
       requestId: input.requestId
     });
+
+    // Resolving alone left the session paused: an approved action never ran
+    // (and a denial never reached the agent) until the operator happened to
+    // send another message. Once nothing is left to answer, carry on, the way
+    // the CLI and channel `/approve` already do. An MCP server's question is
+    // answered while its run waits: that run carries on by itself.
+    if (isLiveApproval(resolved.approval.request)) {
+      return resolved;
+    }
+    const sessionId = resolved.approval.request.sessionId;
+    const { approvals } = await this.dispatch("approval.list", { pendingOnly: true, sessionId });
+    if (approvals.length === 0) {
+      await this.dispatch("session.resume", { sessionId }).catch((error: unknown) => {
+        // Another surface already resumed it; that run carries the decision.
+        if (normalizeGatewayError(error).code !== "busy") {
+          throw error;
+        }
+      });
+    }
+
+    return resolved;
   }
 
   async sendSessionMessage(input: {

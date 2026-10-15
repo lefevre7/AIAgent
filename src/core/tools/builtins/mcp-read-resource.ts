@@ -1,8 +1,22 @@
 import { z } from "zod";
 
-import type { ToolDefinition } from "@/core/contracts";
+import { buildMcpApprovalTargets } from "@/core/approvals/policy";
+import type { ToolCallRecord, ToolDefinition } from "@/core/contracts";
 import type { MCPManager } from "@/core/mcp/manager";
-import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
+import type { RuntimeTool, RuntimeToolResult, ToolApprovalScope } from "@/core/tools/runtime";
+
+/**
+ * Reading a resource never asks, but it reaches an MCP server, so an operator
+ * deny rule on that server applies here as it does to the server's tools.
+ * Shared with mcp_read_resource_template.
+ */
+export async function resolveMcpResourceApprovalScope(call: ToolCallRecord): Promise<ToolApprovalScope> {
+  const serverName = call.arguments.serverName;
+  return {
+    approvalMode: "never",
+    targets: typeof serverName === "string" && serverName.length > 0 ? buildMcpApprovalTargets({ serverName }) : []
+  };
+}
 
 const inputSchema = z
   .object({
@@ -14,6 +28,7 @@ const inputSchema = z
 export function createMcpReadResourceTool(params: { mcpManager: MCPManager }): RuntimeTool {
   return {
     definition: mcpReadResourceToolDefinition,
+    resolveApprovalScope: resolveMcpResourceApprovalScope,
     async execute(call): Promise<RuntimeToolResult> {
       const input = inputSchema.parse(call.arguments as unknown);
       const result = await params.mcpManager.readResource(input.serverName, input.uri);
@@ -44,7 +59,8 @@ export const mcpReadResourceToolDefinition: ToolDefinition = {
   },
   approvalMode: "never",
   descriptor: {
-    approvalNotes: "No operator approval is required because this tool performs a read-only MCP resource fetch.",
+    approvalNotes:
+      "No operator approval is required because this tool performs a read-only MCP resource fetch; an operator deny rule on the server still applies.",
     examples: [
       "Read a specific MCP resource URI after discovering it with mcp_search.",
       "Fetch a known MCP resource directly when you already have the URI."

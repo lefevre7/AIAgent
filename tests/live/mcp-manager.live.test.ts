@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { describe, expect } from "vitest";
 
-import { MCPManager, createDefaultAppConfig } from "@/core";
+import { MCPManager, appConfigSchema, createDefaultAppConfig } from "@/core";
 import { createLiveTestHarness, envFlag, readJsonEnv } from "./helpers";
 
 type LiveMcpConfig = {
@@ -19,11 +19,20 @@ const { createTempRoot, liveTest } = createLiveTestHarness({
 describe("MCP manager (live)", () => {
   liveTest("connects to the configured live MCP server set", async () => {
     const root = await createTempRoot();
-    const config = createDefaultAppConfig({
+    const defaults = createDefaultAppConfig({
       userStateDirectory: path.join(root, "home", ".aia")
     });
-    config.mcp.servers = liveMcpConfig?.servers ?? {};
-    config.mcp.templates = liveMcpConfig?.templates ?? {};
+    // Parsed like a config file, so the schema fills its defaults. Assigning
+    // the JSON as-is left out, for one, a server's `env`, and the manager
+    // failed on it ("Cannot convert undefined or null to object").
+    const config = appConfigSchema.parse({
+      ...defaults,
+      mcp: {
+        ...defaults.mcp,
+        servers: liveMcpConfig?.servers ?? {},
+        templates: liveMcpConfig?.templates ?? {}
+      }
+    });
 
     const manager = new MCPManager({
       config,

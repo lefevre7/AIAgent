@@ -8,7 +8,6 @@ import type {
   ToolRegistry,
   VoiceService
 } from "@/core/contracts";
-import { createExternalAgentApprovalTargetResolver } from "@/core/external-agents";
 import type { MCPManager } from "@/core/mcp";
 import { createMcpExecutableToolRegistry } from "@/core/mcp";
 import { createAskUserQuestionTool } from "@/core/tools/builtins/ask-user-question";
@@ -31,6 +30,7 @@ import { createMcpSearchTool } from "@/core/tools/builtins/mcp-search";
 import { createMcpStatusTool } from "@/core/tools/builtins/mcp-status";
 import { createPdfReadTool } from "@/core/tools/builtins/pdf-read";
 import { createSessionsSearchTool } from "@/core/tools/builtins/sessions-search";
+import { createSkillTool } from "@/core/tools/builtins/skill";
 import { createThinkTool } from "@/core/tools/builtins/think";
 import { createToolSearchTool } from "@/core/tools/builtins/tool-search";
 import { createViewImageTool } from "@/core/tools/builtins/view-image";
@@ -45,6 +45,7 @@ import type { ChannelService } from "@/core/channels";
 import type { FileBackedMemoryService } from "@/core/memory";
 import type { TaskStateService } from "@/core/plans";
 import type { FileSessionStore } from "@/core/sessions";
+import type { SkillProvider } from "@/core/skills";
 import { WorkspaceMutationEngine } from "@/core/workspace";
 
 // Core tools exposed to the model by default under the "lean" tools profile.
@@ -114,6 +115,7 @@ export function createDefaultToolRegistry(
     mcpManager?: MCPManager;
     memoryService?: FileBackedMemoryService;
     sessions?: FileSessionStore;
+    skills?: SkillProvider;
     stateRoot?: string;
     taskStateService?: TaskStateService;
     voiceService?: VoiceService;
@@ -230,6 +232,10 @@ export function createDefaultToolRegistry(
     builder.register(createSessionsSearchTool({ sessions: options.sessions }));
   }
 
+  if (options.skills) {
+    builder.register(createSkillTool({ skills: options.skills }));
+  }
+
   if (options.channelService) {
     builder.register(createChannelSendTool({ channelService: options.channelService }));
   }
@@ -297,6 +303,7 @@ export function createDefaultToolRuntime(
     mcpManager?: MCPManager;
     memoryService?: FileBackedMemoryService;
     sessions?: FileSessionStore;
+    skills?: SkillProvider;
     stateRoot?: string;
     taskStateService?: TaskStateService;
     voiceService?: VoiceService;
@@ -305,14 +312,7 @@ export function createDefaultToolRuntime(
   } = {}
 ) {
   return new ToolRuntime({
-    approvalDecider: createToolApprovalDecider({
-      resolveAdditionalTargets: options.externalAgentService
-        ? createExternalAgentApprovalTargetResolver({
-            service: options.externalAgentService
-          })
-        : undefined,
-      settings: DEFAULT_APPROVAL_SETTINGS
-    }),
+    approvalDecider: createToolApprovalDecider({ settings: DEFAULT_APPROVAL_SETTINGS }),
     registry: createDefaultToolRegistry(options)
   });
 }

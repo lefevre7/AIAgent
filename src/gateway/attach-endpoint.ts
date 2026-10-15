@@ -177,12 +177,24 @@ export async function readAttachEndpoint(
   stateRoot: string,
   options: { url?: string } = {}
 ): Promise<AttachEndpointRecord | null> {
+  const records = await listAttachEndpoints(stateRoot);
+  if (options.url !== undefined) {
+    return records.find((record) => record.url === options.url) ?? null;
+  }
+  return records[0] ?? null;
+}
+
+/**
+ * Every live published listener in this state root, newest first: one per
+ * running `aia` session of the workspace. `aia mcp reconnect` asks each.
+ */
+export async function listAttachEndpoints(stateRoot: string): Promise<AttachEndpointRecord[]> {
   const directory = attachEndpointsDirectory(stateRoot);
   let names: string[];
   try {
     names = await fs.readdir(directory);
   } catch {
-    return null;
+    return [];
   }
 
   const records: AttachEndpointRecord[] = [];
@@ -192,11 +204,7 @@ export async function readAttachEndpoint(
       records.push(record);
     }
   }
-
-  if (options.url !== undefined) {
-    return records.find((record) => record.url === options.url) ?? null;
-  }
-  return records.sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null;
+  return records.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 async function readAttachEndpointRecord(filePath: string): Promise<AttachEndpointRecord | null> {

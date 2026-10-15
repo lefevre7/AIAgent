@@ -25,6 +25,9 @@ export type ChannelCommand =
       message: string;
     };
 
+// Built from a model's tool-call id, which may hold any character but space.
+const APPROVAL_ID_PATTERN = /^approval\.\S+$/u;
+
 export function parseChannelCommand(message: ChannelMessage): ChannelCommand | null {
   const text = extractChannelCommandText(message);
   if (!text?.startsWith("/")) {
@@ -38,8 +41,11 @@ export function parseChannelCommand(message: ChannelMessage): ChannelCommand | n
     case "cancel":
     case "deny": {
       const [maybeRequestId, ...commentTokens] = rest;
-      const hasRequestId =
-        typeof maybeRequestId === "string" && maybeRequestId.length > 0 && maybeRequestId.includes(".");
+      // Every approval id starts with "approval.". Anything else is the
+      // answer itself: an MCP server's question is answered as
+      // `/approve 3.5` or `/approve me@example.com`, which used to be read as
+      // a request id because it contains a dot.
+      const hasRequestId = typeof maybeRequestId === "string" && APPROVAL_ID_PATTERN.test(maybeRequestId);
       const comment = (hasRequestId ? commentTokens : rest).join(" ").trim() || undefined;
       return {
         comment,

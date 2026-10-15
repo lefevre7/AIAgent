@@ -1,7 +1,14 @@
-import type { ToolDefinition } from "@/core/contracts";
+import { buildMcpApprovalTargets } from "@/core/approvals/policy";
+import type { MCPToolCapability, ToolCallRecord, ToolDefinition } from "@/core/contracts";
 import type { MCPManager } from "@/core/mcp";
-import { MCPWebSearchService } from "@/core/research";
-import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
+import { formatMcpToolName } from "@/core/mcp/names";
+import { MCPWebSearchService, type WebSearchBackendBinding } from "@/core/research";
+import {
+  APPROVAL_BINDING_METADATA_KEY,
+  type RuntimeTool,
+  type RuntimeToolResult,
+  type ToolApprovalScope
+} from "@/core/tools/runtime";
 
 export function createWebSearchTool(options: { mcpManager: MCPManager }): RuntimeTool {
   const searchService = new MCPWebSearchService({
@@ -10,9 +17,33 @@ export function createWebSearchTool(options: { mcpManager: MCPManager }): Runtim
 
   return {
     definition: webSearchToolDefinition,
-    async execute(call): Promise<RuntimeToolResult> {
+    // A search runs an MCP server's tool, so it is approved exactly as a
+    // direct call to that tool would be: a trusted server or an allow rule
+    // runs it, a deny rule refuses it, and anything else asks. It used to
+    // skip approval entirely, which ran whatever connected tool happened to
+    // have a `query` field.
+    async resolveApprovalScope(_call, { isDenied }) {
+      const scopes = (await searchService.listBackends()).flatMap((backend) =>
+        backend.serverName ? [scopeFor(backend, backend.serverName)] : []
+      );
+      // The best backend the operator allows: a deny rule on one search
+      // server used to refuse every search while another one was allowed.
+      // With every one denied, the first is kept so the refusal names its rule.
+      for (const scope of scopes) {
+        if (!(await isDenied(scope))) {
+          return scope;
+        }
+      }
+      // With none, nothing would run: the call fails with web_search_no_backend.
+      return scopes[0] ?? { approvalMode: "never", targets: [] };
+    },
+    async execute(call, context): Promise<RuntimeToolResult> {
       const query = normalizeQueryInput(call);
-      const result = await searchService.search(query);
+      const backend = readApprovedBackend(call);
+      const result = await searchService.search(query, {
+        ...(backend ? { backend } : {}),
+        context: { sessionId: context.session.id, toolCallId: call.id, turnId: context.turn.id }
+      });
 
       return {
         citations: result.results
@@ -38,10 +69,10 @@ export const webSearchToolDefinition: ToolDefinition = {
     readOnlyHint: true,
     title: "Web Search"
   },
-  approvalMode: "never",
+  approvalMode: "ask",
   descriptor: {
     approvalNotes:
-      "No operator approval is required because this tool only performs read-only internet search through configured MCP backends.",
+      "Approved like a direct call to the MCP search tool it runs: runs without asking when that server is trusted or an allow rule covers it, and asks otherwise. An operator deny rule always wins.",
     examples: [
       "Search the web for a recent product or API change before answering.",
       "Use this to discover URLs, then follow up with web_fetch for the best source."
@@ -90,6 +121,40 @@ export const webSearchToolDefinition: ToolDefinition = {
     "Use this when you need current or external information. It relies on connected MCP search tools, so configure an MCP search backend if internet search should be available.",
   version: "1.0.0"
 };
+
+/** Approval for running one MCP search tool: as a direct call to it would be. */
+function scopeFor(backend: MCPToolCapability, serverName: string): ToolApprovalScope {
+  const binding: WebSearchBackendBinding = {
+    invocationName: backend.invocationName,
+    rawName: backend.rawName,
+    serverName
+  };
+  return {
+    approvalMode: "ask",
+    binding,
+    targets: [
+      ...buildMcpApprovalTargets({
+        serverName,
+        tool: { label: backend.displayName, name: formatMcpToolName(serverName, backend.rawName) }
+      }),
+      // The `tool` target a direct call to that MCP tool carries (its
+      // invocation name), so a `tool` deny rule on it stops this too.
+      { kind: "tool", label: backend.displayName, value: backend.invocationName }
+    ]
+  };
+}
+
+function readApprovedBackend(call: ToolCallRecord): WebSearchBackendBinding | null {
+  const binding = call.metadata[APPROVAL_BINDING_METADATA_KEY];
+  if (typeof binding !== "object" || binding === null || Array.isArray(binding)) {
+    return null;
+  }
+  const { invocationName, rawName, serverName } = binding as Record<string, unknown>;
+  if (typeof invocationName !== "string" || typeof serverName !== "string") {
+    return null;
+  }
+  return { invocationName, ...(typeof rawName === "string" ? { rawName } : {}), serverName };
+}
 
 function normalizeQueryInput(call: Parameters<RuntimeTool["execute"]>[0]): string {
   if (typeof call.inputText === "string" && call.inputText.trim().length > 0) {

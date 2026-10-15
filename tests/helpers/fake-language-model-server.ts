@@ -119,8 +119,21 @@ export async function startFakeLanguageModelServer(
   };
 }
 
-function buildDefaultPlan(request: FakeLanguageModelRequest): FakeLanguageModelPlan {
+async function buildDefaultPlan(request: FakeLanguageModelRequest): Promise<FakeLanguageModelPlan> {
   const tools = Array.isArray(request.body?.tools) ? request.body.tools : [];
+  // "[ask-later]": a moment later, ask the operator a question, as a model
+  // that needs an answer mid-run does (lets the dashboard show it live).
+  const messages = Array.isArray(request.body?.messages) ? request.body.messages : [];
+  const answered = messages.some(
+    (entry) => typeof entry === "object" && entry !== null && (entry as { role?: string }).role === "tool"
+  );
+  if (extractLastUserText(request.body)?.includes("[ask-later]") && !answered) {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    return {
+      content: "",
+      toolCalls: [{ arguments: { question: "Which color should the button be?" }, name: "ask_user_question" }]
+    };
+  }
   const hasAttemptComplete = tools.some((tool) => {
     if (typeof tool !== "object" || tool === null) {
       return false;

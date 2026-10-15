@@ -31,3 +31,20 @@ test("creates and completes a session from the web control plane", async ({ page
     })
     .toContain("Completed fake task");
 });
+
+// A question asked mid-run used to appear only after a reload, so an operator
+// watching the session page never saw it.
+test("shows an approval that arrives while the session page is open, without a reload", async ({ page }) => {
+  await page.goto("/");
+
+  const createSessionForm = page.locator('form[action="/api/control-plane/sessions"]');
+  await createSessionForm.getByLabel("Title").fill("Live Approval Session");
+  await createSessionForm.getByLabel("Goal").fill("Ask the operator a question.");
+  await createSessionForm.getByLabel("Initial message").fill("[ask-later] Pick a color.");
+  await createSessionForm.getByRole("button", { name: "Create Session" }).click();
+  await expect(page.getByText("Session created.")).toBeVisible();
+
+  const approvals = page.locator("#session-approvals");
+  await expect(approvals).toContainText("No approvals for this session.");
+  await expect(approvals).toContainText("Which color should the button be?", { timeout: 15_000 });
+});

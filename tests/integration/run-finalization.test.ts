@@ -249,9 +249,10 @@ describe("gateway run finalization", () => {
           }
         ]
       },
-      run: async ({ sdk, workspaceRoot }) => {
+      run: async ({ sdk, userHomeDirectory, workspaceRoot }) => {
         const exitCode = await runCli(["--cwd", workspaceRoot], capture.streams as never, {
           createSdk: async () => sdk,
+          userHomeDirectory,
           interactiveInput: lineSource(["please run an example prompt in codex", "y", "/exit"])
         });
 
@@ -276,12 +277,13 @@ describe("gateway run finalization", () => {
       providers: {
         languageModelAdapters: [{ adapter: scriptToolCalls([]), defaultModel: "run-finalization-model", enabled: true }]
       },
-      run: async ({ sdk, workspaceRoot }) => {
+      run: async ({ sdk, userHomeDirectory, workspaceRoot }) => {
         const setAttachEndpoint = vi.spyOn(sdk.controlPlane as Required<typeof sdk.controlPlane>, "setAttachEndpoint");
         const url = "ws://127.0.0.1:52011/api/gateway/ws";
 
         const exitCode = await runCli(["--cwd", workspaceRoot], createCaptureStreams().streams as never, {
           createSdk: async () => sdk,
+          userHomeDirectory,
           interactiveInput: lineSource(["/exit"]),
           serveAttachEndpoint: async () => ({ close: async () => undefined, url })
         });
@@ -316,9 +318,10 @@ describe("gateway run finalization", () => {
         providers: {
           languageModelAdapters: [{ adapter, defaultModel: "run-finalization-model", enabled: true }]
         },
-        run: async ({ sdk, workspaceRoot }) => {
+        run: async ({ sdk, userHomeDirectory, workspaceRoot }) => {
           const exitCode = await runCli(["--cwd", workspaceRoot], capture.streams as never, {
             createSdk: async () => sdk,
+            userHomeDirectory,
             interactiveInput: lineSource(["What is 17 * 23?", "Now tell me a joke.", "/exit"]),
             serveAttachEndpoint: async () => null
           });

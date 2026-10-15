@@ -22,6 +22,9 @@ export type MemorySkillsMcpTaskExampleResult = {
   promptPreview: string;
   runStatus: string;
   sessionId: string;
+  // A run that pauses for an approval still ends "completed"; this is what
+  // says whether the task itself finished.
+  sessionStatus: string;
   toolCalls: string[];
 };
 
@@ -85,6 +88,10 @@ export async function runMemorySkillsMcpTaskExample(): Promise<MemorySkillsMcpTa
         required: true,
         stderr: "pipe",
         tags: ["docs", "fixture"],
+        // Trusted, so its tools run without an approval prompt. Untrusted, the
+        // docs lookup waited for an approval nobody here gives, and the task
+        // never reached its final turn.
+        trust: "trusted",
         type: "stdio"
       };
     },
@@ -99,7 +106,7 @@ export async function runMemorySkillsMcpTaskExample(): Promise<MemorySkillsMcpTa
       ]
     },
     setupWorkspace: async ({ workspaceRoot }) => {
-      await fs.mkdir(path.join(workspaceRoot, "skills", "release-readiness"), { recursive: true });
+      await fs.mkdir(path.join(workspaceRoot, ".agents", "skills", "release-readiness"), { recursive: true });
       await Promise.all([
         fs.writeFile(
           path.join(workspaceRoot, "AGENTS.md"),
@@ -112,7 +119,7 @@ export async function runMemorySkillsMcpTaskExample(): Promise<MemorySkillsMcpTa
           "utf8"
         ),
         fs.writeFile(
-          path.join(workspaceRoot, "skills", "release-readiness", "SKILL.md"),
+          path.join(workspaceRoot, ".agents", "skills", "release-readiness", "SKILL.md"),
           "---\nname: release-readiness\ndescription: Verify shared runtime paths before release.\n---\nCheck the prompt pack, task state, and runtime surfaces before closing the task.\n",
           "utf8"
         )
@@ -135,7 +142,7 @@ export async function runMemorySkillsMcpTaskExample(): Promise<MemorySkillsMcpTa
       const snapshot = await created.handle.snapshot();
       return summarizeMemoryExample({
         adapter,
-        runStatus: run?.status ?? "completed",
+        runStatus: run?.status ?? "not started",
         snapshot
       });
     }
@@ -157,9 +164,11 @@ function summarizeMemoryExample(params: {
   return {
     assistantSummaries: extractAssistantTexts(params.snapshot),
     memoryHitPath: typeof memoryResult?.hits?.[0]?.path === "string" ? memoryResult.hits[0].path : null,
-    promptPreview: previewPromptSection(params.adapter.requests[0]?.instructions ?? "", "Available Skills"),
+    // The heading, the how-to lines, then the catalog itself.
+    promptPreview: previewPromptSection(params.adapter.requests[0]?.instructions ?? "", "Available Skills", 16),
     runStatus: params.runStatus,
     sessionId: params.snapshot.snapshot.session.id,
+    sessionStatus: params.snapshot.snapshot.session.status,
     toolCalls: params.snapshot.snapshot.toolCalls.map((toolCall) => toolCall.toolName)
   };
 }
@@ -171,6 +180,7 @@ async function main(): Promise<void> {
       "Memory + Skills + MCP Task Example",
       `Session: ${result.sessionId}`,
       `Run status: ${result.runStatus}`,
+      `Session status: ${result.sessionStatus}`,
       `Top memory hit: ${result.memoryHitPath ?? "none"}`,
       `Tool calls: ${result.toolCalls.join(", ")}`,
       "",

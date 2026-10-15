@@ -82,6 +82,32 @@ const DEFAULT_STABILITY_MS = 1_000;
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
 const DEFAULT_TURN_TIMEOUT_MS = 600_000;
 
+// How much of the bottom of the screen the send guard reads: where a TUI draws
+// its input box, and where a modal covering it sits.
+const SEND_GUARD_TAIL_LINES = 15;
+
+/**
+ * Finds a screen that answers to Enter by choosing something: an update
+ * offer, a folder-trust or permissions question, any numbered menu with a
+ * selection cursor. Text sent to one picks an option; that is how a Codex
+ * "Update available" screen accepted "1. Update now" and started
+ * `brew upgrade`. Returns the text that gave it away.
+ */
+function findConsentScreen(tail: string): string | null {
+  for (const marker of [/enter to confirm/iu, /press enter to (continue|confirm)/iu]) {
+    const match = tail.match(marker);
+    if (match) {
+      return match[0];
+    }
+  }
+  // The cursor on one numbered option and at least one more option listed; a
+  // single "› 1. …" line may just be an echoed message.
+  const lines = tail.split("\n");
+  const selected = lines.find((line) => /^\s*[›❯▸►>]\s*\d+[.)]\s+\S/u.test(line));
+  const options = lines.filter((line) => /^\s*(?:[›❯▸►>]\s*)?\d+[.)]\s+\S/u.test(line));
+  return selected && options.length >= 2 ? selected.trim() : null;
+}
+
 /**
  * Runs external agent CLIs as long-lived interactive terminals.
  *
@@ -239,6 +265,7 @@ export class FileExternalAgentSessionService implements ExternalAgentSessionServ
   async sendToSession(request: ExternalAgentSessionSendRequest): Promise<ExternalAgentSessionTurn> {
     const session = this.requireLive(request.externalSessionId);
     this.assertWritable(session.record);
+    await this.assertAtInputPrompt(session);
 
     session.process.write(request.text, true);
     // Before persisting: the echo can land while the write below is in flight,
@@ -365,6 +392,32 @@ export class FileExternalAgentSessionService implements ExternalAgentSessionServ
     }
     signalAll(sessions, "SIGKILL");
     await settlesWithin(finalized, SHUTDOWN_KILL_WAIT_MS);
+  }
+
+  /**
+   * Refuses to type into anything but the agent's own input prompt. A consent
+   * or menu screen needs a person, and an agent that names its prompt
+   * (`interactive.inputPattern`) must be showing it. Human keystrokes from an
+   * attached window are never checked: answering those screens is their job.
+   */
+  private async assertAtInputPrompt(session: LiveSession): Promise<void> {
+    const { id } = session.record;
+    const lines = (await session.watcher.read()).split("\n").filter((line) => line.trim().length > 0);
+    const tail = lines.slice(-SEND_GUARD_TAIL_LINES).join("\n");
+
+    const consent = findConsentScreen(tail);
+    if (consent) {
+      throw new Error(
+        `External agent session ${id} is showing a screen that needs a person ("${consent}"), so nothing was sent: text typed now would choose one of its options. Ask the operator to attach (aia attach ${id}) and answer it, then send again.`
+      );
+    }
+
+    const inputPattern = this.options.agents[session.record.agentId]?.interactive?.inputPattern;
+    if (inputPattern && !new RegExp(inputPattern, "mu").test(tail)) {
+      throw new Error(
+        `External agent session ${id} is not at its input prompt (the screen does not match externalAgents.agents.${session.record.agentId}.interactive.inputPattern "${inputPattern}"), so nothing was sent. It may still be starting or busy, or showing a screen that needs a person: read the session to see it, or ask the operator to attach (aia attach ${id}).`
+      );
+    }
   }
 
   private assertWritable(record: ExternalAgentSessionRecord): void {

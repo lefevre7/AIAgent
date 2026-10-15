@@ -1,4 +1,5 @@
 export * from "@/core/config/constants";
+export * from "@/core/config/edit";
 export * from "@/core/config/env-overrides";
 export * from "@/core/config/jsonc";
 export * from "@/core/config/load";
@@ -7,4 +8,5 @@ export * from "@/core/config/normalize";
 export * from "@/core/config/paths";
 export * from "@/core/config/schema";
 export * from "@/core/config/secrets";
+export * from "@/core/config/state-root";
 export * from "@/core/config/trust";

@@ -12,9 +12,20 @@ const runtimeSchema = z.object({
 
 export type ServerRuntimeConfig = z.infer<typeof runtimeSchema>;
 
+/**
+ * Where the server listens. Precedence, most specific first: `--hostname` /
+ * `--port`, then the `HOSTNAME` / `PORT` environment variables, then the
+ * config's `gateway.hostname` / `gateway.port` (which `AIA_GATEWAY_HOST` /
+ * `AIA_GATEWAY_PORT` already feed), then the built-in defaults.
+ *
+ * The config used to be skipped entirely, so `gateway.port: 4000` changed what
+ * `aia info` reported and where `aia attach` dialled, while the server kept
+ * listening on 3000.
+ */
 export function resolveServerRuntimeConfig(
   argv: string[] = process.argv.slice(2),
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  gatewayDefaults: { hostname?: string; port?: number } = {}
 ): ServerRuntimeConfig {
   const { values } = parseArgs({
     args: argv,
@@ -33,7 +44,7 @@ export function resolveServerRuntimeConfig(
 
   return runtimeSchema.parse({
     dev: values.dev ?? environment.NODE_ENV !== "production",
-    hostname: values.hostname ?? environment.HOSTNAME ?? DEFAULT_HOSTNAME,
-    port: values.port ?? environment.PORT ?? DEFAULT_PORT
+    hostname: values.hostname ?? environment.HOSTNAME ?? gatewayDefaults.hostname ?? DEFAULT_HOSTNAME,
+    port: values.port ?? environment.PORT ?? gatewayDefaults.port ?? DEFAULT_PORT
   });
 }

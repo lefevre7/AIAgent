@@ -10,6 +10,7 @@ import {
   createMcpExecutableToolRegistry,
   createMcpRuntimeTool,
   createMcpRuntimeTools,
+  createToolSearchTool,
   toolCallRecordSchema,
   type MCPManager,
   type MCPToolCapability
@@ -43,11 +44,14 @@ function makeCap(overrides: Partial<MCPToolCapability> = {}): MCPToolCapability 
 }
 
 function stubManager(
-  overrides: Partial<Pick<MCPManager, "callTool" | "getToolCapabilities" | "getGeneration">> = {}
+  overrides: Partial<
+    Pick<MCPManager, "callTool" | "getToolCapabilities" | "getGeneration" | "getServerInstructions">
+  > = {}
 ): MCPManager {
   return {
     callTool: async () => ({ content: [], isError: false }),
     getGeneration: () => 0,
+    getServerInstructions: () => undefined,
     getToolCapabilities: () => [],
     ...overrides
   } as unknown as MCPManager;
@@ -66,7 +70,7 @@ function makeCall(toolName = "mcp_srv_tool") {
   });
 }
 
-const context = {} as unknown as RuntimeToolContext;
+const context = { session: { id: "session.test" }, turn: { id: "turn.test" } } as unknown as RuntimeToolContext;
 
 describe("buildMcpToolDefinition", () => {
   test("always requires approval, even for server-declared read-only tools", () => {
@@ -250,6 +254,45 @@ describe("DynamicMcpToolRegistry", () => {
     generation = 2;
     registry.listDefinitions();
     expect(builds).toBe(2);
+  });
+
+  test("keeps a server's instructions off its tools, and searches and shows them once per server", async () => {
+    // They used to be copied onto every tool definition, and from there into
+    // every model request (the queue keeps each one).
+    const instructions = "Tracks sprint work items for the release team.";
+    const mgr = stubManager({
+      getServerInstructions: (serverName) => (serverName === "srv" ? instructions : undefined),
+      getToolCapabilities: () => [
+        makeCap(),
+        makeCap({ id: "mcp.tool.srv.other", invocationName: "mcp_srv_other", name: "other", rawName: "other" })
+      ]
+    });
+    const registry = createMcpExecutableToolRegistry(mgr);
+
+    expect(registry.listDefinitions().some((definition) => JSON.stringify(definition).includes("sprint"))).toBe(false);
+    expect(
+      registry
+        .searchDefinitions({ limit: 5, query: "sprint work" })
+        .map((match) => match.definition.invocationName)
+        .sort()
+    ).toEqual(["mcp_srv_other", "mcp_srv_tool"]);
+
+    const found = await createToolSearchTool().execute(
+      toolCallRecordSchema.parse({
+        arguments: { query: "sprint" },
+        id: "tool-call.search.1",
+        metadata: {},
+        sessionId: "session.mcp.1",
+        startedAt: "2026-03-27T12:00:00.000Z",
+        status: "pending",
+        toolName: "tool_search",
+        turnId: "turn.mcp.1"
+      }),
+      { ...context, registry }
+    );
+    expect(found.result).toMatchObject({ serverInstructions: { srv: instructions } });
+    // What the agent loop makes callable for the rest of the session.
+    expect((found.metadata?.activatesTools as string[]).sort()).toEqual(["mcp_srv_other", "mcp_srv_tool"]);
   });
 
   test("skips duplicate invocation names instead of throwing so one bad server cannot break the catalog", () => {

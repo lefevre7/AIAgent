@@ -245,7 +245,7 @@ Current implementation notes:
 
 - The system prompt is assembled from a reusable prompt pack rather than one giant string literal.
 - AGENTS.md files are loaded root-to-leaf from the project root to the current working directory, with user-level `~/.aia/AGENTS.md` loaded separately at lower precedence.
-- Skills are discovered from workspace `skills/` directories closest to the cwd first, then from user-level `~/.aia/skills`, then from extra roots supplied at runtime.
+- Skills are discovered from the project's `.aia/skills/` and `.agents/skills/` directories closest to the cwd first (then the older `skills/` layout, one level deep, with a note to move it), then from user-level `~/.aia/skills` and `~/.agents/skills`, then from `skills.extraRoots`, then the bundled skills. See `docs/SKILLS.md`.
 - The prompt pack also produces reusable nudges for task continuation, completion rejection, steering resumption, and terse status updates.
 
 ### Loop states
@@ -686,13 +686,12 @@ This keeps the task-state surface extensible without fragmenting the runtime ear
 
 ## Skills behavior
 
-- workspace `skills/*/SKILL.md`
-- user `~/.aia/skills/*/SKILL.md`
-- extra configured roots
-- precedence:
-  - workspace
-  - user
-  - bundled
+- project `.aia/skills/*/SKILL.md` and `.agents/skills/*/SKILL.md`, closest to the cwd first
+  (the older `skills/` layout still loads, with a note to move it)
+- user `~/.aia/skills/*/SKILL.md` and `~/.agents/skills/*/SKILL.md`
+- extra configured roots (`skills.extraRoots`)
+- bundled skills (`bundled-skills/`)
+- precedence, first wins on a name: project, user, extra roots, bundled (see `docs/SKILLS.md`)
 
 ## Memory Architecture
 

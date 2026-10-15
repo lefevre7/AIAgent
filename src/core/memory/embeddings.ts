@@ -5,6 +5,9 @@ import type {
   EmbeddingResponse,
   ProviderHealth
 } from "@/core/contracts";
+import { fetchFollowingSameOriginRedirects } from "@/core/io/http";
+import { fetchJson, providerMaxAttempts } from "@/core/lm/http";
+import { BUILT_IN_LANGUAGE_MODEL_PROVIDERS } from "@/core/lm/provider-table";
 
 type EmbeddingRuntimeOptions = {
   defaultProvider: string;
@@ -73,47 +76,127 @@ export class EmbeddingRuntime {
 
 type OpenAICompatibleEmbeddingsAdapterOptions = {
   baseUrl: string;
+  /** How the server is named in errors. */
+  displayName: string;
   fetchImpl?: typeof fetch;
   headers?: Record<string, string>;
-  providerId: "lm_studio";
+  /** Retries after the first attempt, as for the provider's chat requests. */
+  maxRetries?: number;
+  providerId: string;
   timeoutMs: number;
 };
 
-export class LMStudioEmbeddingAdapter implements EmbeddingAdapter {
-  readonly providerId = "lm_studio" as const;
+/**
+ * An embeddings server is called the way the same server's chat requests are
+ * (`fetchJson`): retried with backoff and Retry-After, redirected only within
+ * its own origin (a custom key header would follow a redirect anywhere), and
+ * a llama.cpp server's 503 "Loading model" waited out for up to `timeoutMs`
+ * rather than failing at once.
+ */
+async function postEmbeddings<T>(params: {
+  body: unknown;
+  fetchImpl: typeof fetch | undefined;
+  headers: Record<string, string> | undefined;
+  maxRetries: number | undefined;
+  timeoutMs: number;
+  url: string;
+}): Promise<T> {
+  const response = await fetchJson<T>({
+    body: params.body,
+    ...(params.fetchImpl ? { fetchImpl: params.fetchImpl } : {}),
+    ...(params.headers ? { headers: params.headers } : {}),
+    maxAttempts: providerMaxAttempts(params.maxRetries),
+    retryUnavailableForMs: params.timeoutMs,
+    timeoutMs: params.timeoutMs,
+    url: params.url
+  });
+  return response.data;
+}
 
-  private readonly fetchImpl: typeof fetch;
+async function getModelListing<T>(params: {
+  fetchImpl: typeof fetch | undefined;
+  headers: Record<string, string> | undefined;
+  timeoutMs: number;
+  url: string;
+}): Promise<T> {
+  const response = await fetchJson<T>({
+    ...(params.fetchImpl ? { fetchImpl: params.fetchImpl } : {}),
+    ...(params.headers ? { headers: params.headers } : {}),
+    maxAttempts: 1,
+    timeoutMs: params.timeoutMs,
+    url: params.url
+  });
+  return response.data;
+}
+
+async function checkEmbeddingsHealth(params: {
+  displayName: string;
+  fetchImpl: typeof fetch | undefined;
+  headers: Record<string, string> | undefined;
+  providerId: string;
+  timeoutMs: number;
+  url: string;
+}): Promise<ProviderHealth> {
+  try {
+    const response = await fetchFollowingSameOriginRedirects({
+      fetchImpl: params.fetchImpl ?? fetch,
+      init: {
+        ...(params.headers ? { headers: params.headers } : {}),
+        method: "GET",
+        signal: AbortSignal.timeout(params.timeoutMs)
+      },
+      label: params.displayName,
+      url: params.url
+    });
+    await response.body?.cancel().catch(() => undefined);
+    return {
+      checkedAt: new Date().toISOString(),
+      details: {
+        statusCode: response.status
+      },
+      providerId: params.providerId,
+      status: response.ok ? "healthy" : "degraded"
+    };
+  } catch (error) {
+    return {
+      checkedAt: new Date().toISOString(),
+      details: {
+        error: error instanceof Error ? error.message : String(error)
+      },
+      providerId: params.providerId,
+      status: "unavailable"
+    };
+  }
+}
+
+/**
+ * Embeddings over the OpenAI `/embeddings` endpoint, shared by every server
+ * that speaks it (LM Studio, llama.cpp started with --embeddings).
+ */
+export class OpenAICompatibleEmbeddingAdapter implements EmbeddingAdapter {
+  readonly providerId: string;
 
   constructor(private readonly options: OpenAICompatibleEmbeddingsAdapterOptions) {
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.providerId = options.providerId;
   }
 
   async createEmbeddings(request: EmbeddingRequest): Promise<EmbeddingResponse> {
-    const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, "")}/embeddings`, {
-      body: JSON.stringify({
+    const payload = await postEmbeddings<{ data?: Array<{ embedding?: number[] }> } | null>({
+      body: {
         input: request.inputs.length === 1 ? request.inputs[0] : request.inputs,
         model: request.modelId
-      }),
-      headers: {
-        "content-type": "application/json",
-        ...this.options.headers
       },
-      method: "POST",
-      signal: AbortSignal.timeout(this.options.timeoutMs)
+      fetchImpl: this.options.fetchImpl,
+      headers: this.options.headers,
+      maxRetries: this.options.maxRetries,
+      timeoutMs: this.options.timeoutMs,
+      url: this.url("embeddings")
     });
-
-    if (!response.ok) {
-      throw new Error(`LM Studio embeddings request failed with ${response.status}.`);
-    }
-
-    const payload = (await response.json()) as {
-      data?: Array<{ embedding?: number[] }>;
-    };
-    const vectors = (payload.data ?? []).map((item) => item.embedding ?? []);
+    const vectors = (payload?.data ?? []).map((item) => item.embedding ?? []);
     const dimensions = vectors[0]?.length ?? 0;
 
     if (vectors.length === 0 || dimensions === 0) {
-      throw new Error("LM Studio returned no embeddings.");
+      throw new Error(`${this.options.displayName} returned no embeddings.`);
     }
 
     return {
@@ -126,48 +209,25 @@ export class LMStudioEmbeddingAdapter implements EmbeddingAdapter {
   }
 
   async health(): Promise<ProviderHealth> {
-    try {
-      const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, "")}/models`, {
-        headers: this.options.headers,
-        method: "GET",
-        signal: AbortSignal.timeout(this.options.timeoutMs)
-      });
-      return {
-        checkedAt: new Date().toISOString(),
-        details: {
-          statusCode: response.status
-        },
-        providerId: this.providerId,
-        status: response.ok ? "healthy" : "degraded"
-      };
-    } catch (error) {
-      return {
-        checkedAt: new Date().toISOString(),
-        details: {
-          error: error instanceof Error ? error.message : String(error)
-        },
-        providerId: this.providerId,
-        status: "unavailable"
-      };
-    }
+    return checkEmbeddingsHealth({
+      displayName: this.options.displayName,
+      fetchImpl: this.options.fetchImpl,
+      headers: this.options.headers,
+      providerId: this.providerId,
+      timeoutMs: this.options.timeoutMs,
+      url: this.url("models")
+    });
   }
 
   async listModels(): Promise<EmbeddingModelDescriptor[]> {
-    const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, "")}/models`, {
+    const payload = await getModelListing<{ data?: Array<{ id?: string }> } | null>({
+      fetchImpl: this.options.fetchImpl,
       headers: this.options.headers,
-      method: "GET",
-      signal: AbortSignal.timeout(this.options.timeoutMs)
+      timeoutMs: this.options.timeoutMs,
+      url: this.url("models")
     });
 
-    if (!response.ok) {
-      throw new Error(`LM Studio model listing failed with ${response.status}.`);
-    }
-
-    const payload = (await response.json()) as {
-      data?: Array<{ id?: string }>;
-    };
-
-    return (payload.data ?? [])
+    return (payload?.data ?? [])
       .map((entry) => entry.id?.trim())
       .filter((modelId): modelId is string => Boolean(modelId))
       .map((modelId) => ({
@@ -176,12 +236,31 @@ export class LMStudioEmbeddingAdapter implements EmbeddingAdapter {
         providerId: this.providerId
       }));
   }
+
+  private url(endpoint: string): string {
+    return `${this.options.baseUrl.replace(/\/$/, "")}/${endpoint}`;
+  }
+}
+
+/** LM Studio's embeddings; the shared adapter under its own provider id. */
+export class LMStudioEmbeddingAdapter extends OpenAICompatibleEmbeddingAdapter {
+  constructor(
+    options: Omit<OpenAICompatibleEmbeddingsAdapterOptions, "displayName" | "providerId"> & { providerId?: "lm_studio" }
+  ) {
+    super({
+      ...options,
+      displayName: BUILT_IN_LANGUAGE_MODEL_PROVIDERS.lm_studio.displayName,
+      providerId: "lm_studio"
+    });
+  }
 }
 
 type OllamaEmbeddingAdapterOptions = {
   baseUrl: string;
   fetchImpl?: typeof fetch;
   headers?: Record<string, string>;
+  /** Retries after the first attempt, as for the provider's chat requests. */
+  maxRetries?: number;
   providerId: "ollama";
   timeoutMs: number;
 };
@@ -189,34 +268,21 @@ type OllamaEmbeddingAdapterOptions = {
 export class OllamaEmbeddingAdapter implements EmbeddingAdapter {
   readonly providerId = "ollama" as const;
 
-  private readonly fetchImpl: typeof fetch;
-
-  constructor(private readonly options: OllamaEmbeddingAdapterOptions) {
-    this.fetchImpl = options.fetchImpl ?? fetch;
-  }
+  constructor(private readonly options: OllamaEmbeddingAdapterOptions) {}
 
   async createEmbeddings(request: EmbeddingRequest): Promise<EmbeddingResponse> {
-    const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, "")}/api/embed`, {
-      body: JSON.stringify({
+    const payload = await postEmbeddings<{ embeddings?: number[][] } | null>({
+      body: {
         input: request.inputs,
         model: request.modelId
-      }),
-      headers: {
-        "content-type": "application/json",
-        ...this.options.headers
       },
-      method: "POST",
-      signal: AbortSignal.timeout(this.options.timeoutMs)
+      fetchImpl: this.options.fetchImpl,
+      headers: this.options.headers,
+      maxRetries: this.options.maxRetries,
+      timeoutMs: this.options.timeoutMs,
+      url: this.url("api/embed")
     });
-
-    if (!response.ok) {
-      throw new Error(`Ollama embeddings request failed with ${response.status}.`);
-    }
-
-    const payload = (await response.json()) as {
-      embeddings?: number[][];
-    };
-    const vectors = payload.embeddings ?? [];
+    const vectors = payload?.embeddings ?? [];
     const dimensions = vectors[0]?.length ?? 0;
 
     if (vectors.length === 0 || dimensions === 0) {
@@ -233,51 +299,25 @@ export class OllamaEmbeddingAdapter implements EmbeddingAdapter {
   }
 
   async health(): Promise<ProviderHealth> {
-    try {
-      const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, "")}/api/tags`, {
-        headers: this.options.headers,
-        method: "GET",
-        signal: AbortSignal.timeout(this.options.timeoutMs)
-      });
-      return {
-        checkedAt: new Date().toISOString(),
-        details: {
-          statusCode: response.status
-        },
-        providerId: this.providerId,
-        status: response.ok ? "healthy" : "degraded"
-      };
-    } catch (error) {
-      return {
-        checkedAt: new Date().toISOString(),
-        details: {
-          error: error instanceof Error ? error.message : String(error)
-        },
-        providerId: this.providerId,
-        status: "unavailable"
-      };
-    }
+    return checkEmbeddingsHealth({
+      displayName: BUILT_IN_LANGUAGE_MODEL_PROVIDERS.ollama.displayName,
+      fetchImpl: this.options.fetchImpl,
+      headers: this.options.headers,
+      providerId: this.providerId,
+      timeoutMs: this.options.timeoutMs,
+      url: this.url("api/tags")
+    });
   }
 
   async listModels(): Promise<EmbeddingModelDescriptor[]> {
-    const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, "")}/api/tags`, {
+    const payload = await getModelListing<{ models?: Array<{ model?: string; name?: string }> } | null>({
+      fetchImpl: this.options.fetchImpl,
       headers: this.options.headers,
-      method: "GET",
-      signal: AbortSignal.timeout(this.options.timeoutMs)
+      timeoutMs: this.options.timeoutMs,
+      url: this.url("api/tags")
     });
 
-    if (!response.ok) {
-      throw new Error(`Ollama model listing failed with ${response.status}.`);
-    }
-
-    const payload = (await response.json()) as {
-      models?: Array<{
-        model?: string;
-        name?: string;
-      }>;
-    };
-
-    return (payload.models ?? [])
+    return (payload?.models ?? [])
       .map((entry) => entry.model?.trim() || entry.name?.trim())
       .filter((modelId): modelId is string => Boolean(modelId))
       .map((modelId) => ({
@@ -285,5 +325,9 @@ export class OllamaEmbeddingAdapter implements EmbeddingAdapter {
         modelId,
         providerId: this.providerId
       }));
+  }
+
+  private url(endpoint: string): string {
+    return `${this.options.baseUrl.replace(/\/$/, "")}/${endpoint}`;
   }
 }

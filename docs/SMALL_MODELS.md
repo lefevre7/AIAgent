@@ -35,6 +35,8 @@ The payload budget is enforced by `tests/integration/prompt-payload.test.ts` so 
 
 ### No duplicated tool catalog in the system prompt
 
+Two tools join the lean set only when they have something to offer: `mcp_status` when an MCP server is configured, and `skill` when the session has at least one model-visible Agent Skill (the bundled `skill-creator` counts; `skills.bundled: false` with no skills of your own keeps it out). The `skill` tool's `name` parameter is an enum of the session's skills, so llama.cpp's grammar-constrained tool calls can only name a skill that exists (docs/SKILLS.md).
+
 The system prompt no longer lists tools; it contains a short "Working With Tools" section that defers to the provider tool list and explains `tool_search` activation. Tool descriptions exist in exactly one place: the `tools` array (`renderToolDescription` in `src/core/lm/shared.ts`).
 
 ### Native tool-call transcript fidelity
@@ -51,7 +53,7 @@ The system prompt no longer lists tools; it contains a short "Working With Tools
 
 ### Turns and the no-progress guard
 
-`runtime.maxTurnsPerRun` defaults to `"unlimited"` (matching codex/Roo-Code-style loops, which bound work by completion discipline rather than turn count; mistral-vibe uses a finite configurable cap; openai-agents-js defaults to 10). A no-progress guard stops the run as `completion_blocked` after `runtime.maxConsecutiveNudges` (default 3) consecutive unproductive turns (no tool calls, or completion attempts that were mixed/rejected). Productive tool execution resets the guard.
+`runtime.maxTurnsPerRun` defaults to `"unlimited"` (matching codex/Roo-Code-style loops, which bound work by completion discipline rather than turn count; mistral-vibe uses a finite configurable cap; openai-agents-js defaults to 10). A no-progress guard stops the run as `completion_blocked` after `runtime.maxConsecutiveNudges` (default 3) consecutive unproductive turns (no tool calls, completion attempts that were mixed/rejected, planning-only turns after the first, or turns whose every call was refused as an identical repeat after the second in a row). Productive tool execution resets the guard.
 
 ### Repeated identical tool calls
 
@@ -61,10 +63,10 @@ This closes a gap the no-progress guard cannot see: a model that keeps reissuing
 
 ### Threshold compaction
 
-When the last model request's real `usage.inputTokens` reaches the threshold, the loop triggers `compactSession({ trigger: "threshold" })`, refreshes the prompt pack (so the new session summary lands in the Durable Memory section), and sets a session watermark — messages before the watermark are no longer replayed to the model. Threshold resolution order:
+When the last model request's real `usage.inputTokens` reaches the threshold, the loop triggers `compactSession({ trigger: "threshold" })`, refreshes the prompt pack (so the new session summary lands in the Durable Memory section), and sets a session watermark — messages before the watermark are no longer replayed to the model, except the operator's own (newest first, up to 80,000 characters; see `docs/AGENT_LOOP.md`, "Compaction keeps what people said"). Threshold resolution order:
 
 1. `memory.autoCompactThresholdTokens` (0 disables)
-2. `runtime.modelSettings.contextWindowTokens × 0.8`
+2. the context window × 0.8: `runtime.modelSettings.contextWindowTokens`, else the window the provider reports for the model (looked up before every run)
 3. fallback `100_000` tokens
 
 ### Model settings and Ollama context
@@ -88,6 +90,8 @@ When the last model request's real `usage.inputTokens` reaches the threshold, th
                                    // being forwarded as image input (omitted → true)
   },
   "promptBudgets": {
+    "activeSkillsChars": 16000,    // skills restated after compaction, together; past it a
+                                   // skill is cut or named with its SKILL.md to read
     "instructionDocChars": 12000,  // per AGENTS.md document; truncated with a read_file pointer
     "memorySummaryChars": 4000     // per memory summary block
   },
@@ -97,13 +101,13 @@ When the last model request's real `usage.inputTokens` reaches the threshold, th
 },
 "providers": {
   "lmStudio": {
-    "streamFirstTokenTimeoutMs": 300000, // budget for prompt eval before the FIRST token (big models are slow to start)
-    "streamIdleTimeoutMs": 60000         // after the first token, abort only after 60s with no new tokens
+    "streamFirstTokenTimeoutMs": 1800000, // budget for prompt eval before the FIRST token (big models are slow to start)
+    "streamIdleTimeoutMs": 60000          // after the first token, abort only after 60s with no new tokens
   },
   "ollama": {
     "contextLength": 32768,              // sent as options.num_ctx on every request
     "keepAlive": "10m",                  // keeps the model loaded between turns
-    "streamFirstTokenTimeoutMs": 300000,
+    "streamFirstTokenTimeoutMs": 1800000,
     "streamIdleTimeoutMs": 60000
   }
 }

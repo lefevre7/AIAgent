@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { checkProcessLiveness } from "@/core/process/liveness";
+
 /**
  * `mode` applies to the file as it is created, so a secret-bearing record is
  * never readable by others, not even between the write and the rename.
@@ -18,6 +20,61 @@ export async function writeJsonAtomic(
     ...(options.mode === undefined ? {} : { mode: options.mode })
   });
   await fs.rename(tempFilePath, filePath);
+}
+
+/**
+ * Runs `operation` holding `lockPath`, a file created exclusively, so a
+ * read-modify-write of a shared file (the MCP credentials, which every session
+ * and `aia mcp login` write) never loses another process's change. A lock left
+ * by a process that died, or older than `staleMs`, is taken over.
+ */
+export async function withFileLock<T>(
+  lockPath: string,
+  operation: () => Promise<T>,
+  options: { staleMs?: number; waitMs?: number } = {}
+): Promise<T> {
+  const startedAt = Date.now();
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  for (;;) {
+    let handle: fs.FileHandle;
+    try {
+      handle = await fs.open(lockPath, "wx", 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      if (await isLockAbandoned(lockPath, options.staleMs ?? 30_000)) {
+        await fs.rm(lockPath, { force: true });
+        continue;
+      }
+      if (Date.now() - startedAt > (options.waitMs ?? 10_000)) {
+        throw new Error(`Timed out waiting for the lock ${lockPath}; if no aia process is running, delete it.`);
+      }
+      await sleep(20);
+      continue;
+    }
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, timestamp: new Date().toISOString() }));
+      return await operation();
+    } finally {
+      await handle.close().catch(() => undefined);
+      await fs.rm(lockPath, { force: true }).catch(() => undefined);
+    }
+  }
+}
+
+async function isLockAbandoned(lockPath: string, staleMs: number): Promise<boolean> {
+  try {
+    const [stats, text] = await Promise.all([fs.stat(lockPath), fs.readFile(lockPath, "utf8")]);
+    if (Date.now() - stats.mtimeMs > staleMs) {
+      return true;
+    }
+    const pid = (JSON.parse(text) as { pid?: unknown }).pid;
+    return typeof pid === "number" && checkProcessLiveness(pid) === "dead";
+  } catch {
+    // Gone already, or written but not yet filled in: not abandoned.
+    return false;
+  }
 }
 
 export async function sleep(milliseconds: number): Promise<void> {

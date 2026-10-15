@@ -1,6 +1,7 @@
-import express, { type Request, type Response } from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 
 import { createBootstrapInfo } from "@/core/index";
+import { createGatewayError } from "@/gateway/errors";
 import { createGatewayRouter, type GatewayRouterOptions } from "@/gateway/index";
 import { createChannelRouter, type ChannelRouterOptions } from "@/server/channel-router";
 import { createControlPlaneRouter, type ControlPlaneRouterOptions } from "@/server/control-plane/router";
@@ -54,5 +55,31 @@ export function createHttpApp(nextRequestHandler: NextRequestHandler, options: H
     await nextRequestHandler(request, response);
   });
 
+  app.use(respondToUnreadableBody);
+
   return app as HttpApp;
+}
+
+/**
+ * A body the parsers cannot read (malformed JSON, or too large) used to get
+ * Express's HTML error page, stack trace included in development, instead of
+ * the `{ ok: false, error }` envelope every API client parses.
+ */
+function respondToUnreadableBody(error: unknown, _request: Request, response: Response, next: NextFunction): void {
+  const type = typeof error === "object" && error !== null ? (error as { type?: unknown }).type : undefined;
+  if (type === "entity.parse.failed") {
+    response.status(400).json({
+      error: createGatewayError("invalid_request", "The request body is not valid JSON."),
+      ok: false
+    });
+    return;
+  }
+  if (type === "entity.too.large") {
+    response.status(413).json({
+      error: createGatewayError("invalid_request", "The request body is larger than the 1 MB limit."),
+      ok: false
+    });
+    return;
+  }
+  next(error);
 }

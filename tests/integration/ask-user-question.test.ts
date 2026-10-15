@@ -52,6 +52,27 @@ describe("ask_user_question tool runtime", () => {
     });
   });
 
+  test("reads an option's number as that option, as an MCP server's question does", async () => {
+    // Over a channel or the web the operator may answer "2". An MCP question
+    // read that as option 2, ask_user_question as an unmatched answer.
+    const runtime = createDefaultToolRuntime();
+    const resumed = await runtime.executeApproved(
+      toolCallRecordSchema.parse({
+        arguments: { options: [{ label: "REST" }, { label: "GraphQL" }], question: "Which API style should I use?" },
+        id: "tool-call.ask.resumed.3",
+        metadata: { approvalResolutionComment: "2" },
+        sessionId: "session.ask.1",
+        startedAt: "2026-06-10T12:00:00.000Z",
+        status: "pending",
+        toolName: "ask_user_question",
+        turnId: "turn.ask.1"
+      }),
+      { session: buildSession(), turn: buildTurn() }
+    );
+
+    expect(resumed.toolCall.result).toMatchObject({ answer: "2", matchedOption: true, selectedOption: "GraphQL" });
+  });
+
   test("reports free text as an unmatched answer rather than omitting the signal", async () => {
     const runtime = createDefaultToolRuntime();
     const resumed = await runtime.executeApproved(
@@ -119,7 +140,7 @@ describe("ask_user_question end-to-end through the gateway runtime", () => {
           title: "Ask Example"
         });
 
-        await created.run?.wait();
+        await created.run?.wait({ timeoutMs: 10_000 });
         const paused = await created.handle.snapshot();
         expect(paused.snapshot.session.status).toBe("awaiting_approval");
 
@@ -135,7 +156,7 @@ describe("ask_user_question end-to-end through the gateway runtime", () => {
         });
 
         const resumeRun = await created.handle.resume();
-        await resumeRun.wait();
+        await resumeRun.wait({ timeoutMs: 10_000 });
 
         const finished = await created.handle.snapshot();
         expect(finished.snapshot.session.status).toBe("completed");
@@ -189,7 +210,7 @@ describe("denied approval resume through the gateway runtime", () => {
           title: "Deny Example"
         });
 
-        await created.run?.wait();
+        await created.run?.wait({ timeoutMs: 10_000 });
         const approvals = await created.handle.listPendingApprovals();
         expect(approvals).toHaveLength(1);
 
@@ -200,7 +221,7 @@ describe("denied approval resume through the gateway runtime", () => {
         });
 
         const resumeRun = await created.handle.resume();
-        await resumeRun.wait();
+        await resumeRun.wait({ timeoutMs: 10_000 });
 
         const finished = await created.handle.snapshot();
         expect(finished.snapshot.session.status).toBe("completed");

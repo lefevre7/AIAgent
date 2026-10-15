@@ -12,6 +12,8 @@ export default defineConfig({
     globals: true,
     include: ["tests/integration/**/*.test.ts"],
     name: "integration",
+    globalSetup: ["tests/setup/test-homes.ts"],
+    setupFiles: ["tests/setup/isolated-home.ts"],
     // Integration tests spawn real child processes, and several now spawn real
     // PTYs (the command runtime and interactive external agents share one
     // process primitive). Under the full suite's parallelism a native PTY spawn

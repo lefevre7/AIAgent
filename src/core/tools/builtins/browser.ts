@@ -8,6 +8,7 @@ import type {
   JsonSchemaDocument,
   ToolDefinition
 } from "@/core/contracts";
+import { resolveLocalPath } from "@/core/tools/builtins/local-paths";
 import type { RuntimeTool, RuntimeToolResult } from "@/core/tools/runtime";
 
 const pageIdSchema = z.string().min(1).max(128).optional();
@@ -325,9 +326,14 @@ export function createBrowserUploadTool(params: { browserService: BrowserAutomat
   return createPageMutationTool({
     browserService: params.browserService,
     definition: browserUploadToolDefinition,
-    execute: (sessionId, input) =>
+    // Resolved the way the approval policy resolves them (against the
+    // session's directory, with `~` and file:// handled), so the file that is
+    // uploaded is the one the operator approved. Playwright resolved relative
+    // paths against the server process's own directory instead.
+    execute: (sessionId, input, cwd) =>
       params.browserService.upload({
         ...input,
+        paths: input.paths.map((entry) => resolveLocalPath(entry, cwd)),
         sessionId
       }),
     schema: browserUploadSchema,
@@ -402,7 +408,7 @@ export function createBrowserClosePageTool(params: { browserService: BrowserAuto
 type PageMutationToolParams<TSchema extends z.ZodTypeAny> = {
   browserService: BrowserAutomationService;
   definition: ToolDefinition;
-  execute: (sessionId: string, input: z.infer<TSchema>) => Promise<BrowserPageRecord>;
+  execute: (sessionId: string, input: z.infer<TSchema>, cwd: string) => Promise<BrowserPageRecord>;
   schema: TSchema;
   successState: string;
 };
@@ -412,7 +418,7 @@ function createPageMutationTool<TSchema extends z.ZodTypeAny>(params: PageMutati
     definition: params.definition,
     async execute(call, context): Promise<RuntimeToolResult> {
       const input = params.schema.parse(call.arguments as unknown);
-      const page = await params.execute(context.session.id, input);
+      const page = await params.execute(context.session.id, input, context.session.cwd);
       return {
         display: [
           {

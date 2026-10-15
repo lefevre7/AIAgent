@@ -296,6 +296,34 @@ button {
   padding: 0.9rem;
 }
 
+.approval-targets {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.approval-targets li {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.approval-targets span {
+  flex: none;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+/* A command line or path is shown whole: approving it means reading all of it. */
+.approval-targets code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .session-card {
   display: grid;
   gap: 0.75rem;

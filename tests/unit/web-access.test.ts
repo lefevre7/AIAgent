@@ -43,6 +43,40 @@ describe("web access auth", () => {
     expect(result.ok === false && result.error.message).toMatch(/proxy or tunnel/u);
   });
 
+  // Without a token, loopback was the only check, and a browser gives every
+  // page loopback: a form on another site could post to the control plane
+  // (resolving an approval), and a DNS-rebound name could read the dashboard.
+  describe("browser requests without a token", () => {
+    const loopbackRequest = (method: "GET" | "POST", headers: Record<string, string>) => {
+      const request = httpMocks.createRequest({ headers, method, url: "/api/control-plane/approvals/a/resolve" });
+      Object.defineProperty(request.socket, "remoteAddress", { value: "127.0.0.1" });
+      return request;
+    };
+
+    test.each([
+      [
+        "a form posted from another site",
+        "POST" as const,
+        { host: "127.0.0.1:3000", origin: "https://attacker.example" }
+      ],
+      ["a form posted from a sandboxed frame", "POST" as const, { host: "127.0.0.1:3000", origin: "null" }],
+      ["a page on a DNS-rebound name", "GET" as const, { host: "attacker.example:3000" }]
+    ])("refuses %s", (_label, method, headers) => {
+      const result = authorizeWebAccessRequest(loopbackRequest(method, headers), {}, "api");
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.statusCode).toBe(403);
+      expect(result.ok === false && result.error.code).toBe("forbidden");
+    });
+
+    test.each([
+      ["this server's own page posting", "POST" as const, { host: "127.0.0.1:3000", origin: "http://127.0.0.1:3000" }],
+      ["a client that is not a browser", "POST" as const, { host: "localhost:3000" }],
+      ["a page load by address", "GET" as const, { host: "[::1]:3000" }]
+    ])("accepts %s", (_label, method, headers) => {
+      expect(authorizeWebAccessRequest(loopbackRequest(method, headers), {}, "api").ok).toBe(true);
+    });
+  });
+
   test("rejects remote page requests when no token is configured", () => {
     const request = httpMocks.createRequest({
       method: "GET",

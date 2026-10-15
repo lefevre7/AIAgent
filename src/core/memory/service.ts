@@ -34,12 +34,12 @@ const memoryCompactionRecordSchema = z
     createdAt: z.string().min(1),
     id: z.string().min(1),
     outputTokenCount: z.number().int().nonnegative(),
-    phase: z.enum(["manual", "startup_phase_1", "startup_phase_2", "session_completion", "threshold"]),
+    phase: z.enum(["manual", "overflow", "startup_phase_1", "startup_phase_2", "session_completion", "threshold"]),
     placeholderMode: z.boolean(),
     sessionId: z.string().min(1),
     sourceTokenCount: z.number().int().nonnegative(),
     summary: z.string().min(1),
-    trigger: z.enum(["completion", "manual", "startup", "threshold"]),
+    trigger: z.enum(["completion", "manual", "overflow", "startup", "threshold"]),
     updatedAt: z.string().min(1)
   })
   .strict();
@@ -54,9 +54,15 @@ export interface MemoryContextProvider {
   getPromptContext(sessionId: string): Promise<MemoryPromptContext | null>;
 }
 
-// "completion" and "threshold" are fired by the agent loop; "manual" is an
+// "completion", "threshold", and "overflow" (the provider refused a prompt
+// larger than its context window) are fired by the agent loop; "manual" is an
 // operator request (gateway `session.compact`, CLI `/compact`).
-export type MemoryCompactionTrigger = "completion" | "manual" | "threshold";
+export type MemoryCompactionTrigger = "completion" | "manual" | "overflow" | "threshold";
+
+// The compactions that fold history: their caller moves the session's
+// compaction watermark, so the summary is all the model has of what came
+// before it. A completion leaves the whole transcript in place.
+const FOLDING_TRIGGERS: ReadonlySet<string> = new Set<MemoryCompactionTrigger>(["manual", "overflow", "threshold"]);
 
 export type MemoryCompactionParams = {
   sessionId: string;
@@ -143,7 +149,7 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
 
   async getPromptContext(sessionId: string): Promise<MemoryPromptContext | null> {
     const [sessionSummary, workspaceSummary, userGlobalSummary] = await Promise.all([
-      this.readTextFile(this.chatSessionSummaryFile(sessionId)),
+      this.readFoldedSummary(sessionId),
       this.readTextFile(this.workspaceMemorySummaryFile()),
       this.readTextFile(this.userGlobalMemorySummaryFile())
     ]);
@@ -253,6 +259,10 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
 
     await fs.mkdir(this.options.chatSessionRoot, { recursive: true });
     await fs.writeFile(this.chatSessionSummaryFile(params.sessionId), summary, "utf8");
+    if (FOLDING_TRIGGERS.has(params.trigger)) {
+      await fs.mkdir(path.dirname(this.foldedSummaryFile(params.sessionId)), { recursive: true });
+      await fs.writeFile(this.foldedSummaryFile(params.sessionId), summary, "utf8");
+    }
 
     const summaryEntry = memoryEntrySchema.parse({
       confidence: 0.8,
@@ -503,6 +513,34 @@ export class FileBackedMemoryService implements MemoryStore, MemoryContextProvid
 
   private compactionHistoryFile(sessionId: string): string {
     return path.join(this.options.stateRoot, "memory", "compactions", `${sessionId}.jsonl`);
+  }
+
+  // The session summary as of the last fold: what the system prompt carries.
+  private foldedSummaryFile(sessionId: string): string {
+    return path.join(this.options.stateRoot, "memory", "folded-summaries", `${sessionId}.md`);
+  }
+
+  /**
+   * The summary the prompt carries: the one written when history was last
+   * folded, not the live one. A completion rewrites the live summary after
+   * every finished task while the whole transcript is still replayed, so
+   * putting it in the system prompt changed the prompt on every task, and a
+   * local server re-read the whole conversation before answering the next
+   * message (13 minutes for a 90k-token session, 2026-10-02).
+   */
+  private async readFoldedSummary(sessionId: string): Promise<string | null> {
+    const folded = await this.readTextFile(this.foldedSummaryFile(sessionId));
+    if (folded !== null) {
+      return folded;
+    }
+    // Folded before the frozen copy existed: the live summary is all there is.
+    let foldedBefore = false;
+    try {
+      foldedBefore = (await this.readCompactionHistory(sessionId)).some((entry) => FOLDING_TRIGGERS.has(entry.trigger));
+    } catch {
+      // An unreadable history must not stop a prompt from being built.
+    }
+    return foldedBefore ? this.readTextFile(this.chatSessionSummaryFile(sessionId)) : null;
   }
 
   private async loadEntriesForScopes(scopes: MemoryQuery["scopes"], sessionId?: string): Promise<MemoryEntry[]> {
@@ -969,6 +1007,8 @@ function resolveCompactionPhase(
       return "session_completion";
     case "manual":
       return "manual";
+    case "overflow":
+      return "overflow";
     case "threshold":
       return "threshold";
   }

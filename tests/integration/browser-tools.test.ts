@@ -1,8 +1,12 @@
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, test } from "vitest";
 
 import {
   type BrowserAutomationService,
   createDefaultToolRegistry,
+  extractApprovalTargets,
   sessionRecordSchema,
   ToolRuntime,
   toolCallRecordSchema,
@@ -48,6 +52,41 @@ describe("browser tools", () => {
 
     expect(result.toolCall.status).toBe("awaiting_approval");
     expect(result.approvalRequest?.target.kind).toBe("browser_action");
+  });
+
+  // The policy resolved an upload path against the session's directory, while
+  // Playwright resolved it against the server's: the file approved and the
+  // file uploaded could differ.
+  test("uploads the same file the approval policy evaluated", async () => {
+    const uploads: string[][] = [];
+    const service = fakeBrowserService();
+    service.upload = async (params) => {
+      uploads.push(params.paths);
+      return browserPage({ url: "https://example.com" });
+    };
+    let approvedPaths: string[] = [];
+    const runtime = new ToolRuntime({
+      approvalDecider: async (input) => {
+        approvedPaths = extractApprovalTargets(input.call, input.definition, { cwd: input.session.cwd })
+          .filter((target) => target.kind === "path")
+          .map((target) => target.value);
+        return { mode: "execute" };
+      },
+      registry: createDefaultToolRegistry({ browserService: service })
+    });
+
+    const result = await runtime.execute(
+      createCall({
+        arguments: { paths: ["docs/report.pdf", "~/avatar.png"], selector: "#file" },
+        id: "tool-call.browser.upload.resolved",
+        toolName: "browser_upload_file"
+      }),
+      { session: buildSession(), turn: buildTurn() }
+    );
+
+    expect(result.toolCall.status).toBe("succeeded");
+    expect(uploads).toEqual([[path.join("/workspace", "docs/report.pdf"), path.join(os.homedir(), "avatar.png")]]);
+    expect(uploads[0]).toEqual(approvedPaths);
   });
 
   test("executes every browser tool against the automation service", async () => {

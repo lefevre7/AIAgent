@@ -1,20 +1,22 @@
 import type {
   LanguageModelAdapter,
+  LanguageModelCallOptions,
   LanguageModelDescriptor,
   LanguageModelRequest,
   LanguageModelResponse,
   LanguageModelStreamEvent,
   ProviderHealth
 } from "@/core/contracts";
-import { languageModelResponseSchema } from "@/core/contracts";
-import { fetchJson, fetchStream, normalizeUnknownProviderError } from "@/core/lm/http";
+import { buildStreamedProviderError, fetchJson, fetchStream, providerMaxAttempts } from "@/core/lm/http";
+import { classifyContextOverflow, classifyThrownContextOverflow } from "@/core/lm/overflow";
 import {
-  buildRejectedToolCallMetadata,
   buildStreamAbortError,
   compactRecord,
   createStreamGuard,
-  mapStopReason,
-  resolveToolCallProposals,
+  finishLanguageModelResponse,
+  healthFromModelListing,
+  joinUrl,
+  readBodyLines,
   serializeOllamaMessages,
   serializeOllamaResponseFormat,
   serializeToolDefinitions
@@ -26,7 +28,13 @@ type OllamaAdapterOptions = {
   fetchImpl?: typeof fetch;
   headers?: Record<string, string>;
   keepAlive?: string;
+  /** How to give the model a larger window, put on a context-overflow error (see classifyContextOverflow). */
+  contextWindowRemedy?: string;
+  /** Retries after the first attempt of a model request. Default 3. */
+  maxRetries?: number;
   providerId?: string;
+  /** The provider's config section (`providers.ollama`), named in timeout errors. */
+  settingsPath?: string;
   streamFirstTokenTimeoutMs?: number;
   streamIdleTimeoutMs?: number;
   timeoutMs: number;
@@ -37,6 +45,8 @@ const STREAM_REPETITION_THRESHOLD = 6;
 type OllamaChatResponse = {
   created_at?: string;
   done?: boolean;
+  // Mid-generation failures arrive as a record of their own: {"error": "…"}.
+  error?: unknown;
   done_reason?: string;
   eval_count?: number;
   message?: {
@@ -63,40 +73,27 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     this.providerId = options.providerId ?? "ollama";
   }
 
-  async generate(request: LanguageModelRequest): Promise<LanguageModelResponse> {
+  async generate(
+    request: LanguageModelRequest,
+    options: LanguageModelCallOptions = {}
+  ): Promise<LanguageModelResponse> {
     const response = await fetchJson<OllamaChatResponse>({
       body: await this.buildPayload(request, false),
+      ...(options.signal ? { cancelSignal: options.signal } : {}),
       fetchImpl: this.options.fetchImpl,
       headers: this.options.headers,
-      maxAttempts: 2,
+      maxAttempts: providerMaxAttempts(this.options.maxRetries),
       timeoutMs: this.options.timeoutMs,
       url: this.buildUrl("api/chat")
+    }).catch((error: unknown) => {
+      throw classifyThrownContextOverflow(error, this.options.contextWindowRemedy);
     });
 
     return this.buildResponse(request, response.data);
   }
 
   async health(): Promise<ProviderHealth> {
-    try {
-      const models = await this.listModels();
-      return {
-        checkedAt: new Date().toISOString(),
-        details: {
-          modelCount: models.length
-        },
-        providerId: this.providerId,
-        status: "healthy"
-      };
-    } catch (error) {
-      return {
-        checkedAt: new Date().toISOString(),
-        details: {
-          error: normalizeUnknownProviderError(error).message
-        },
-        providerId: this.providerId,
-        status: "unavailable"
-      };
-    }
+    return healthFromModelListing(this.providerId, () => this.listModels());
   }
 
   async listModels(): Promise<LanguageModelDescriptor[]> {
@@ -108,12 +105,17 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
       url: this.buildUrl("api/tags")
     });
 
-    return (response.data.models ?? []).map((model) => ({
-      displayName: model.name ?? model.model ?? "unknown",
-      modelId: model.model ?? model.name ?? "unknown",
-      provider: this.provider,
-      toolCalling: true
-    }));
+    // An empty body parses as null, and a proxy may answer with anything:
+    // `models` was read off whatever came back, and threw.
+    const models = Array.isArray(response.data?.models) ? response.data.models : [];
+    return models
+      .filter((model): model is NonNullable<typeof model> => typeof model === "object" && model !== null)
+      .map((model) => ({
+        displayName: model.name ?? model.model ?? "unknown",
+        modelId: model.model ?? model.name ?? "unknown",
+        provider: this.provider,
+        toolCalling: true
+      }));
   }
 
   // Ollama reports context length in /api/show under model_info as an
@@ -130,7 +132,7 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
         timeoutMs: Math.min(this.options.timeoutMs, 5_000),
         url: this.buildUrl("api/show")
       });
-      const info = response.data.model_info ?? {};
+      const info = response.data?.model_info ?? {};
       for (const [key, value] of Object.entries(info)) {
         if (key.endsWith(".context_length") && typeof value === "number" && value > 0) {
           return value;
@@ -142,24 +144,38 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     }
   }
 
-  async *stream(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent> {
+  async *stream(
+    request: LanguageModelRequest,
+    options: LanguageModelCallOptions = {}
+  ): AsyncIterable<LanguageModelStreamEvent> {
     const guard = createStreamGuard({
       firstTokenTimeoutMs: this.options.streamFirstTokenTimeoutMs,
       idleTimeoutMs: this.options.streamIdleTimeoutMs,
       repetitionThreshold: STREAM_REPETITION_THRESHOLD
     });
-    const response = await fetchStream({
-      body: await this.buildPayload(request, true),
-      fetchImpl: this.options.fetchImpl,
-      headers: this.options.headers,
-      maxAttempts: 1,
-      signal: guard.signal,
-      timeoutMs: this.options.timeoutMs,
-      url: this.buildUrl("api/chat")
-    });
+    let response: Response;
+    try {
+      response = await fetchStream({
+        body: await this.buildPayload(request, true),
+        fetchImpl: this.options.fetchImpl,
+        headers: this.options.headers,
+        ...(options.signal ? { cancelSignal: options.signal } : {}),
+        // Safe only before the stream starts: nothing has been generated yet.
+        maxAttempts: providerMaxAttempts(this.options.maxRetries),
+        signal: guard.signal,
+        timeoutMs: this.options.timeoutMs,
+        url: this.buildUrl("api/chat")
+      });
+    } catch (error) {
+      // As in the OpenAI-compatible adapter: the first-token timer is armed,
+      // and a request that never started must not keep the process open.
+      guard.dispose();
+      throw classifyThrownContextOverflow(error, this.options.contextWindowRemedy);
+    }
 
     const reader = response.body?.getReader();
     if (!reader) {
+      guard.dispose();
       yield {
         error: {
           code: "provider_stream_unavailable",
@@ -174,8 +190,6 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
       return;
     }
 
-    const decoder = new TextDecoder();
-    let buffer = "";
     let content = "";
     let modelId = request.modelId;
     let stopReason = "end_turn";
@@ -186,83 +200,96 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
     };
     const toolCalls: unknown[] = [];
 
+    let finished = false;
     try {
-      while (true) {
-        let chunk: ReadableStreamReadResult<Uint8Array>;
+      for await (const line of readBodyLines(reader, guard)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+
+        let parsed: OllamaChatResponse;
         try {
-          chunk = await reader.read();
-        } catch (error) {
-          if (guard.abortReason()) {
-            break;
-          }
-          throw error;
+          parsed = JSON.parse(trimmed) as OllamaChatResponse;
+        } catch {
+          // Not a record (a proxy's notice): one such line used to throw out
+          // of the whole stream.
+          continue;
         }
-        const { done, value } = chunk;
-        if (done) {
-          break;
+        // Ollama ends a failed generation with {"error": "…"}. Read as a
+        // record without a message, it became an empty answer.
+        if (parsed.error !== undefined && parsed.error !== null) {
+          yield {
+            error: classifyContextOverflow(
+              buildStreamedProviderError(parsed.error, this.providerId),
+              this.options.contextWindowRemedy
+            ),
+            kind: "response.error"
+          };
+          return;
         }
-        guard.touch();
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) {
-            continue;
-          }
-
-          const parsed = JSON.parse(trimmed) as OllamaChatResponse;
-          modelId = parsed.model ?? modelId;
-          if (typeof parsed.message?.thinking === "string" && parsed.message.thinking.length > 0) {
-            guard.observe(parsed.message.thinking);
-            yield {
-              delta: parsed.message.thinking,
-              kind: "response.reasoning"
-            };
-          }
-          if (parsed.message?.content) {
-            content += parsed.message.content;
-            guard.observe(parsed.message.content);
-            yield {
-              delta: parsed.message.content,
-              kind: "response.delta"
-            };
-          }
-          if (parsed.message?.tool_calls) {
-            toolCalls.push(...parsed.message.tool_calls);
-          }
-          if (parsed.done_reason) {
-            stopReason = parsed.done_reason;
-          }
-          usage = {
-            inputTokens: parsed.prompt_eval_count ?? usage.inputTokens,
-            outputTokens: parsed.eval_count ?? usage.outputTokens,
-            totalTokens: (parsed.prompt_eval_count ?? usage.inputTokens) + (parsed.eval_count ?? usage.outputTokens)
+        modelId = parsed.model ?? modelId;
+        if (typeof parsed.message?.thinking === "string" && parsed.message.thinking.length > 0) {
+          guard.observe(parsed.message.thinking);
+          yield {
+            delta: parsed.message.thinking,
+            kind: "response.reasoning"
           };
         }
+        if (parsed.message?.content) {
+          content += parsed.message.content;
+          guard.observe(parsed.message.content);
+          yield {
+            delta: parsed.message.content,
+            kind: "response.delta"
+          };
+        }
+        if (parsed.message?.tool_calls) {
+          toolCalls.push(...parsed.message.tool_calls);
+        }
+        if (parsed.done_reason) {
+          stopReason = parsed.done_reason;
+        }
+        usage = {
+          inputTokens: parsed.prompt_eval_count ?? usage.inputTokens,
+          outputTokens: parsed.eval_count ?? usage.outputTokens,
+          totalTokens: (parsed.prompt_eval_count ?? usage.inputTokens) + (parsed.eval_count ?? usage.outputTokens)
+        };
       }
+      finished = guard.abortReason() === null;
     } finally {
       guard.dispose();
+      if (!finished) {
+        // Stopped early: close the response, or the server keeps generating.
+        await reader.cancel().catch(() => undefined);
+      }
     }
 
     const abortReason = guard.abortReason();
     if (abortReason) {
       yield {
-        error: buildStreamAbortError(this.providerId, abortReason),
+        error: buildStreamAbortError(this.providerId, abortReason, {
+          firstTokenTimeoutMs: this.options.streamFirstTokenTimeoutMs,
+          idleTimeoutMs: this.options.streamIdleTimeoutMs,
+          settingsPath: this.options.settingsPath
+        }),
         kind: "response.error"
       };
       return;
     }
 
-    const resolved = resolveToolCallProposals({
+    const completed = finishLanguageModelResponse({
       content,
-      definitions: request.availableTools,
       fallbackPrefix: `${request.id}.tool`,
-      nativeToolCalls: toolCalls
+      id: `ollama-response.${request.id}`,
+      modelId,
+      nativeToolCalls: toolCalls,
+      provider: this.provider,
+      request,
+      stopReason,
+      usage
     });
-    for (const toolCall of resolved.proposals) {
+    for (const toolCall of completed.toolCalls) {
       yield {
         kind: "response.tool_call",
         toolCall
@@ -271,79 +298,25 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
 
     yield {
       kind: "response.completed",
-      response: this.buildParsedResponse({
-        content: resolved.content,
-        metadata: {
-          ...buildRejectedToolCallMetadata(resolved.rejected),
-          ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
-        },
-        modelId,
-        request,
-        stopReason: resolved.proposals.length > 0 ? "tool_calls" : stopReason,
-        toolCalls: resolved.proposals,
-        usage
-      })
+      response: completed
     };
   }
 
   private buildResponse(request: LanguageModelRequest, response: OllamaChatResponse): LanguageModelResponse {
-    const resolved = resolveToolCallProposals({
+    return finishLanguageModelResponse({
       content: response.message?.content ?? "",
-      definitions: request.availableTools,
       fallbackPrefix: `${request.id}.tool`,
-      nativeToolCalls: response.message?.tool_calls ?? []
-    });
-    return this.buildParsedResponse({
-      content: resolved.content,
-      metadata: {
-        ...buildRejectedToolCallMetadata(resolved.rejected),
-        ...(resolved.recoveredFromText ? { toolCallsRecoveredFromText: true } : {})
-      },
+      id: `ollama-response.${request.id}`,
       modelId: response.model ?? request.modelId,
+      nativeToolCalls: response.message?.tool_calls ?? [],
+      provider: this.provider,
       request,
-      stopReason: resolved.proposals.length > 0 ? "tool_calls" : (response.done_reason ?? "end_turn"),
-      toolCalls: resolved.proposals,
+      stopReason: response.done_reason ?? "end_turn",
       usage: {
         inputTokens: response.prompt_eval_count ?? 0,
         outputTokens: response.eval_count ?? 0,
         totalTokens: (response.prompt_eval_count ?? 0) + (response.eval_count ?? 0)
       }
-    });
-  }
-
-  private buildParsedResponse(params: {
-    content: string;
-    metadata?: Record<string, unknown>;
-    modelId: string;
-    request: LanguageModelRequest;
-    stopReason: unknown;
-    toolCalls: LanguageModelResponse["toolCalls"];
-    usage: LanguageModelResponse["usage"];
-  }): LanguageModelResponse {
-    const responseId = `ollama-response.${params.request.id}`;
-    return languageModelResponseSchema.parse({
-      id: responseId,
-      message:
-        params.content.trim().length === 0
-          ? undefined
-          : {
-              createdAt: new Date().toISOString(),
-              id: `message.${responseId}`,
-              metadata: {},
-              parts: [{ kind: "text", text: params.content }],
-              role: "assistant",
-              sessionId: params.request.sessionId ?? params.request.id,
-              source: "assistant",
-              tags: [],
-              turnId: params.request.turnId,
-              visibility: "default"
-            },
-      metadata: params.metadata ?? {},
-      modelId: params.modelId,
-      provider: this.provider,
-      stopReason: mapStopReason(params.stopReason),
-      toolCalls: params.toolCalls,
-      usage: params.usage
     });
   }
 
@@ -372,6 +345,6 @@ export class OllamaLanguageModelAdapter implements LanguageModelAdapter {
   }
 
   private buildUrl(pathname: string): string {
-    return `${this.options.baseUrl.replace(/\/+$/u, "")}/${pathname.replace(/^\/+/u, "")}`;
+    return joinUrl(this.options.baseUrl, pathname);
   }
 }

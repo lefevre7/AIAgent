@@ -1,4 +1,5 @@
 import type {
+  LanguageModelCallOptions,
   LanguageModelAdapter,
   LanguageModelDescriptor,
   LanguageModelProvider,
@@ -7,13 +8,12 @@ import type {
   ProviderHealth
 } from "@/core/contracts";
 import type { AppConfig } from "@/core/config";
+import { createBuiltInLanguageModelAdapters, resolveConfiguredModelId } from "@/core/lm/providers";
 import {
   FileLanguageModelQueue,
   type LanguageModelExecutionQueue,
   type LanguageModelStreamSink
 } from "@/core/lm/queue";
-import { LMStudioLanguageModelAdapter } from "@/core/lm/lm-studio";
-import { OllamaLanguageModelAdapter } from "@/core/lm/ollama";
 
 export type LanguageModelInvocation = Omit<LanguageModelRequest, "modelId" | "provider"> & {
   modelId?: string;
@@ -40,35 +40,9 @@ export class LanguageModelRuntime {
 
   constructor(private readonly options: LanguageModelRuntimeOptions) {
     this.adapters = new Map<LanguageModelProvider, LanguageModelAdapter>();
-    this.registerAdapter({
-      adapter: new LMStudioLanguageModelAdapter({
-        baseUrl: options.config.providers.lmStudio.baseUrl,
-        fetchImpl: options.fetchImpl,
-        headers: materializeHeaders(options.config.providers.lmStudio.headers, "lmStudio"),
-        providerId: "lm_studio",
-        streamFirstTokenTimeoutMs: options.config.providers.lmStudio.streamFirstTokenTimeoutMs,
-        streamIdleTimeoutMs: options.config.providers.lmStudio.streamIdleTimeoutMs,
-        timeoutMs: options.config.providers.lmStudio.timeoutMs
-      }),
-      defaultModel: options.config.providers.lmStudio.model,
-      enabled: options.config.providers.lmStudio.enabled
-    });
-    this.registerAdapter({
-      adapter: new OllamaLanguageModelAdapter({
-        baseUrl: options.config.providers.ollama.baseUrl,
-        contextLength:
-          options.config.providers.ollama.contextLength ?? options.config.runtime.modelSettings.contextWindowTokens,
-        fetchImpl: options.fetchImpl,
-        headers: materializeHeaders(options.config.providers.ollama.headers, "ollama"),
-        keepAlive: options.config.providers.ollama.keepAlive,
-        providerId: "ollama",
-        streamFirstTokenTimeoutMs: options.config.providers.ollama.streamFirstTokenTimeoutMs,
-        streamIdleTimeoutMs: options.config.providers.ollama.streamIdleTimeoutMs,
-        timeoutMs: options.config.providers.ollama.timeoutMs
-      }),
-      defaultModel: options.config.providers.ollama.model,
-      enabled: options.config.providers.ollama.enabled
-    });
+    for (const registration of createBuiltInLanguageModelAdapters(options.config, options.fetchImpl)) {
+      this.registerAdapter(registration);
+    }
     for (const registration of options.adapters ?? []) {
       this.registerAdapter(registration);
     }
@@ -81,13 +55,20 @@ export class LanguageModelRuntime {
       });
   }
 
-  async generate(request: LanguageModelInvocation): Promise<LanguageModelResponse> {
-    return this.queue.execute(this.resolveRequest(request));
+  async generate(
+    request: LanguageModelInvocation,
+    options: LanguageModelCallOptions = {}
+  ): Promise<LanguageModelResponse> {
+    return this.queue.execute(this.resolveRequest(request), options);
   }
 
-  async stream(request: LanguageModelInvocation, onEvent: LanguageModelStreamSink): Promise<LanguageModelResponse> {
+  async stream(
+    request: LanguageModelInvocation,
+    onEvent: LanguageModelStreamSink,
+    options: LanguageModelCallOptions = {}
+  ): Promise<LanguageModelResponse> {
     const resolved = this.resolveRequest(request);
-    return this.queue.stream ? this.queue.stream(resolved, onEvent) : this.queue.execute(resolved);
+    return this.queue.stream ? this.queue.stream(resolved, onEvent, options) : this.queue.execute(resolved, options);
   }
 
   async close(): Promise<void> {
@@ -110,8 +91,11 @@ export class LanguageModelRuntime {
     const enabledProviders = Array.from(this.adapters.entries())
       .filter(([providerId]) => this.adapterSettings.get(providerId)?.enabled !== false)
       .map(([, adapter]) => adapter);
-    const descriptors = await Promise.all(enabledProviders.map(async (adapter) => adapter.listModels()));
-    return descriptors.flat();
+    // Every built-in provider is enabled by default and most machines run one
+    // or two of them, so one that is not running must not hide the others'
+    // models. Asking for a specific provider still reports its failure.
+    const settled = await Promise.allSettled(enabledProviders.map(async (adapter) => adapter.listModels()));
+    return settled.flatMap((outcome) => (outcome.status === "fulfilled" ? outcome.value : []));
   }
 
   registerAdapter(registration: LanguageModelAdapterRegistration): void {
@@ -142,6 +126,15 @@ export class LanguageModelRuntime {
     return adapter;
   }
 
+  /**
+   * The model a turn asks `provider` for when the session names none. The
+   * gateway's context-window lookup asks here too, so the window it reports is
+   * the window of the model the turn actually gets.
+   */
+  resolveModelId(provider: LanguageModelProvider = this.options.config.runtime.defaultProvider): string | undefined {
+    return resolveConfiguredModelId(this.options.config, provider, this.adapterSettings.get(provider)?.defaultModel);
+  }
+
   resolveRequest(request: LanguageModelInvocation): LanguageModelRequest {
     const provider = request.provider ?? this.options.config.runtime.defaultProvider;
     const registration = this.adapterSettings.get(provider);
@@ -152,15 +145,7 @@ export class LanguageModelRuntime {
       throw new Error(`Language-model provider "${provider}" is disabled in the current configuration.`);
     }
 
-    const builtInDefaultModel =
-      provider === "lm_studio"
-        ? this.options.config.providers.lmStudio.model
-        : provider === "ollama"
-          ? this.options.config.providers.ollama.model
-          : undefined;
-    const configuredDefaultModel =
-      provider === this.options.config.runtime.defaultProvider ? this.options.config.runtime.defaultModel : undefined;
-    const modelId = request.modelId ?? registration.defaultModel ?? builtInDefaultModel ?? configuredDefaultModel;
+    const modelId = request.modelId ?? this.resolveModelId(provider);
     if (!modelId) {
       throw new Error(
         `No default model is configured for provider "${provider}". Pass modelId explicitly or register a default model.`
@@ -173,21 +158,4 @@ export class LanguageModelRuntime {
       provider
     };
   }
-}
-
-function materializeHeaders(
-  headers: Record<string, string | { id: string; provider?: string; source: string }>,
-  label: string
-) {
-  const resolvedEntries = Object.entries(headers).map(([key, value]) => {
-    if (typeof value !== "string") {
-      throw new Error(
-        `Provider "${label}" has unresolved secret-backed header "${key}". Use resolvedConfig when creating the runtime.`
-      );
-    }
-
-    return [key, value] as const;
-  });
-
-  return Object.fromEntries(resolvedEntries);
 }

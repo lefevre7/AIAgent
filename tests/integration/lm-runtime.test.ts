@@ -92,6 +92,7 @@ describe("language model runtime", () => {
     const config = createDefaultAppConfig({ userStateDirectory: path.join(root, "user") });
     config.memory.stateRoot = stateRoot;
     config.providers.lmStudio.baseUrl = "http://localhost:1234/v1";
+    config.providers.llamaCpp.enabled = false;
     config.providers.ollama.enabled = false;
     config.runtime.defaultProvider = "lm_studio";
     // Both knobs, explicitly. The outgoing request carries
@@ -260,12 +261,74 @@ describe("language model runtime", () => {
     });
   });
 
+  test("routes llama.cpp turns through the runtime with its model, key, cache_prompt, and request extras", async () => {
+    const root = await createTempRoot();
+    const observed: Array<{ body: Record<string, unknown>; headers: Headers; url: string }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      observed.push({
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+        headers: new Headers(init?.headers),
+        url
+      });
+      if (url === "http://127.0.0.1:8080/health") {
+        return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+      }
+      if (url === "http://127.0.0.1:8080/v1/chat/completions") {
+        return new Response(
+          JSON.stringify({
+            choices: [{ finish_reason: "stop", message: { content: "Hello from llama.cpp." } }],
+            model: "gemma-4-e4b",
+            usage: { completion_tokens: 4, prompt_tokens: 12, total_tokens: 16 }
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${url}`);
+    };
+
+    const config = createDefaultAppConfig({ userStateDirectory: path.join(root, "user") });
+    config.memory.stateRoot = path.join(root, ".aia");
+    config.providers.lmStudio.enabled = false;
+    config.providers.ollama.enabled = false;
+    config.providers.llamaCpp.apiKey = "local-key";
+    config.providers.llamaCpp.model = "gemma-4-e4b";
+    config.providers.llamaCpp.requestExtras = { chat_template_kwargs: { enable_thinking: false } };
+    config.runtime.defaultProvider = "llama_cpp";
+
+    const runtime = new LanguageModelRuntime({ config, fetchImpl });
+    try {
+      await expect(runtime.health()).resolves.toMatchObject({ providerId: "llama_cpp", status: "healthy" });
+      const response = await runtime.generate({
+        availableTools: [],
+        id: "lm-request.runtime.llama",
+        instructions: "Be brief.",
+        messages: [buildUserMessage()],
+        metadata: {},
+        responseFormat: { kind: "text" },
+        settings: { stopSequences: [], toolChoice: "auto" }
+      });
+
+      expect(response).toMatchObject({ modelId: "gemma-4-e4b", provider: "llama_cpp", stopReason: "end_turn" });
+      const chat = observed.find((call) => call.url.endsWith("/v1/chat/completions"));
+      expect(chat?.headers.get("authorization")).toBe("Bearer local-key");
+      expect(chat?.body).toMatchObject({
+        cache_prompt: true,
+        chat_template_kwargs: { enable_thinking: false },
+        model: "gemma-4-e4b"
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
   test("supports registered custom language-model providers at construction time and after runtime creation", async () => {
     const root = await createTempRoot();
     const config = createDefaultAppConfig({
       userStateDirectory: path.join(root, "user")
     });
     config.memory.stateRoot = path.join(root, ".aia");
+    config.providers.llamaCpp.enabled = false;
     config.providers.lmStudio.enabled = false;
     config.providers.ollama.enabled = false;
     config.runtime.defaultProvider = "custom_provider";

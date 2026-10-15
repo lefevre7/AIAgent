@@ -18,7 +18,8 @@ export default defineConfig({
     globals: true,
     include: ["tests/unit/**/*.test.ts", "tests/unit/**/*.test.tsx"],
     name: "unit",
-    setupFiles: ["tests/setup/unit.ts"],
+    globalSetup: ["tests/setup/test-homes.ts"],
+    setupFiles: ["tests/setup/isolated-home.ts", "tests/setup/unit.ts"],
     // Matches the integration project. A few unit tests spawn real macOS
     // helpers (`say`, the native voice helper); under V8 coverage
     // instrumentation those exceed vitest's 5s default, which made

@@ -34,10 +34,14 @@ npm run cli
 
 It creates a session and keeps prompting for input. The loop stays open until you type `/exit` or `/quit` (or stdin reaches end-of-input); `/help` lists the commands. Anything else is sent to the agent as a message.
 
+At a terminal the prompt appears as soon as the config is read, while MCP servers, memory and the model check start behind it: type straight away, and a message is sent once the session is ready (the session id is printed then). If startup fails, `aia` says why and prints anything you typed that was not sent. Piped input waits for startup, so a script's lines keep their order.
+
+Ctrl-C stops the running turn (the model request is cancelled, and nothing else starts); a second Ctrl-C while it is stopping, or Ctrl-C at the prompt, exits. At an approval prompt, Ctrl-C cancels the turn and the approvals it was waiting on.
+
 While the model works, the CLI shows a `Thinking…` indicator and then streams the response live, along with tool-activity lines. When a tool needs approval (file writes, shell commands, etc.) it prompts inline — `Approve <tool> → <target>? [y/N/a/e]` — and only runs the tool if you approve:
 
 - `y` approves this request once.
-- `a` approves it and auto-approves the same target (same tool, command, path, or MCP server) for the rest of this CLI session.
+- `a` approves it and auto-approves the same target (same tool, command, path, or MCP server) for the rest of this CLI session. The prompt says which: "this exact command line", "every write_file request", and so on. Above the prompt the CLI lists everything the approval covers: the full command line with its arguments, each path, and the tool.
 - `e` denies it and asks what the agent should do instead; your note is queued as steering so it adapts on the resumed turn rather than retrying the same action.
 - anything else (including a bare Enter) denies it.
 
@@ -47,13 +51,17 @@ When the agent asks you a question (`ask_user_question`), the CLI prints the que
 
 When the agent starts an interactive external-agent session, a real terminal window opens on your desktop running `aia attach <id>`, so you and the agent drive the same terminal at once (Ctrl-] detaches without killing the session). The interactive CLI serves the gateway on loopback to make that possible — see [docs/EXTERNAL_AGENTS.md](docs/EXTERNAL_AGENTS.md). Set `externalAgents.interactive.autoAttachOnStart` to `false` to keep sessions headless.
 
-Interactive commands: `/help`, `/compact` (summarize the transcript so far into `chat-session-memory/` and stop replaying it to the model, useful when the context-window percentage climbs), `/mcp` (list configured MCP servers and their tools), and `/exit` / `/quit`.
+Interactive commands: `/help`, `/compact` (summarize the transcript so far into `chat-session-memory/` and stop replaying it to the model, useful when the context-window percentage climbs), `/mcp` (list configured MCP servers and their tools), `/skills` (list the Agent Skills available here), and `/exit` / `/quit`.
+
+Agent Skills: put a skill in `.agents/skills/<name>/SKILL.md` (in the repository) or `~/.agents/skills/<name>/SKILL.md` (for you only), in the same format Codex and Claude Code read. The agent sees each skill's name and description and loads the instructions when a task matches; `$name` in a message loads one directly. `aia skills list` shows what was found and anything that failed to load; `aia skills disable <name>` turns one off. aia ships `skill-creator`, so "make a skill for this" works out of the box. See [docs/SKILLS.md](docs/SKILLS.md).
 
 > If you use the linked `aia` command, it runs the built `dist/cli.js`. Rebuild after changing source (`npm run build:node`); `npm install`/`npm link` rebuild it automatically via the `prepare` script.
 
+MCP servers: `aia mcp list` shows what is configured (secrets masked), `aia mcp add <name> -- <command>` / `aia mcp add <name> --url <url>` adds one to your config (keeping its comments), `aia mcp login <name>` signs in to an OAuth server, and `/mcp reconnect <name>` in a session reconnects one. Servers connect in the background, so a slow one no longer holds the session up; one that fails or needs a sign-in is noted with a dim line. See [docs/MCP.md](docs/MCP.md).
+
 Use `aia info` to print the version, the config files in effect, the chat model and provider, and whether the workspace config is trusted, without starting a session. It never resolves secrets, so it runs no secret provider, even in an untrusted checkout.
 
-The interactive session needs a reachable chat model (the configured default provider, e.g. LM Studio or Ollama). If it isn't running, `aia` prints a clear message and exits rather than opening a session that fails on every turn. If only the embedding provider is down, memory degrades to lexical search (with a warning) and the session still opens.
+The interactive session needs a reachable chat model (the configured default provider: LM Studio, llama.cpp's `llama-server`, or Ollama; see `docs/PROVIDERS.md`). If it isn't running, `aia` prints a clear message and exits rather than opening a session that fails on every turn. If the provider answers with a different model than the one configured (LM Studio serves whatever is loaded when it does not know the id), the CLI says so once per session. If only the embedding provider is down, memory degrades to lexical search (with a warning) and the session still opens.
 
 ### One-shot prompt mode
 

@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { findProjectRoot, listDirectoriesUpTo } from "@/core/io/project-root";
+
 export type AgentsInstructionDocument = {
   content: string;
   path: string;
@@ -28,7 +30,8 @@ export async function loadAgentsInstructionDocuments(params: {
 }
 
 async function loadProjectDocuments(projectRoot: string, cwd: string): Promise<AgentsInstructionDocument[]> {
-  const directories = buildDirectoryChain(projectRoot, cwd);
+  // Root first: the closer a document is to the working directory, the later it comes.
+  const directories = listDirectoriesUpTo(cwd, projectRoot).reverse();
   const documents: AgentsInstructionDocument[] = [];
 
   for (const directory of directories) {
@@ -39,25 +42,6 @@ async function loadProjectDocuments(projectRoot: string, cwd: string): Promise<A
   }
 
   return documents;
-}
-
-function buildDirectoryChain(projectRoot: string, cwd: string): string[] {
-  const directories: string[] = [];
-  let current = path.resolve(cwd);
-
-  while (true) {
-    directories.push(current);
-    if (current === path.resolve(projectRoot)) {
-      break;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      break;
-    }
-    current = parent;
-  }
-
-  return directories.reverse();
 }
 
 async function readAgentsDocument(
@@ -77,31 +61,4 @@ async function readAgentsDocument(
   } catch {
     return null;
   }
-}
-
-async function findProjectRoot(start: string, markers: string[]): Promise<string> {
-  let current = path.resolve(start);
-
-  while (true) {
-    if (await hasAnyMarker(current, markers)) {
-      return current;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      return path.resolve(start);
-    }
-    current = parent;
-  }
-}
-
-async function hasAnyMarker(directory: string, markers: string[]): Promise<boolean> {
-  for (const marker of markers) {
-    try {
-      await fs.access(path.join(directory, marker));
-      return true;
-    } catch {
-      continue;
-    }
-  }
-  return false;
 }

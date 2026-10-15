@@ -25,6 +25,7 @@ export function authorizeGatewayHttpRequest(
   return authorizeGatewayAccess({
     configuredToken: options.token,
     forwarded: hasForwardingHeaders(request.headers),
+    headers: request.headers,
     remoteAddress: request.socket.remoteAddress,
     presentedToken:
       extractAuthorizationToken(request.headers.authorization) ??
@@ -41,6 +42,7 @@ export function authorizeGatewayUpgradeRequest(
   return authorizeGatewayAccess({
     configuredToken: options.token,
     forwarded: hasForwardingHeaders(request.headers),
+    headers: request.headers,
     remoteAddress: request.socket.remoteAddress,
     presentedToken:
       extractAuthorizationToken(request.headers.authorization) ??
@@ -163,6 +165,7 @@ export function isLoopbackAddress(address: string | undefined): boolean {
 function authorizeGatewayAccess(params: {
   configuredToken?: string;
   forwarded: boolean;
+  headers: IncomingHttpHeaders;
   presentedToken?: string;
   remoteAddress?: string;
 }): GatewayAuthorizationResult {
@@ -196,9 +199,8 @@ function authorizeGatewayAccess(params: {
   // undeclared `cloudflared`/`ngrok` in front of an untokened gateway must not
   // hand every remote client full access.
   if (isLoopbackAddress(params.remoteAddress) && !params.forwarded) {
-    return {
-      ok: true
-    };
+    const refusal = checkTokenlessBrowserAccess(params.headers);
+    return refusal ? { error: createGatewayError("forbidden", refusal), ok: false, statusCode: 403 } : { ok: true };
   }
 
   return {
@@ -211,6 +213,71 @@ function authorizeGatewayAccess(params: {
     ok: false,
     statusCode: 401
   };
+}
+
+/**
+ * Without a token, being on this machine is the only credential, and every web
+ * page the operator opens is on this machine too. A page on another site could
+ * open a WebSocket to 127.0.0.1 (WebSockets are exempt from CORS) or submit a
+ * form to it, and a DNS-rebound name (attacker.example answering 127.0.0.1)
+ * reaches it as well. So a tokenless request must name this machine in its
+ * Host header, and a browser request (one that sends Origin) must come from a
+ * page this server served. Clients that are not browsers (the CLI, the SDK,
+ * `aia attach`, curl) send no Origin and are unaffected.
+ *
+ * Returns why the request is refused, or null when it may proceed.
+ */
+export function checkTokenlessBrowserAccess(headers: IncomingHttpHeaders): string | null {
+  const host = firstHeaderValue(headers.host);
+  const requestHost = host === undefined ? null : parseHostHeader(host);
+  if (host !== undefined && (!requestHost || !isLoopbackHostname(requestHost.hostname))) {
+    return `The Host header "${host}" does not name this machine. Without gateway.auth.token only localhost, 127.0.0.1 and [::1] are served, which keeps DNS-rebinding pages out.`;
+  }
+
+  const origin = firstHeaderValue(headers.origin);
+  if (origin !== undefined && !isOwnLoopbackOrigin(origin, requestHost)) {
+    return `Requests from the page at ${origin} are refused: without gateway.auth.token, only pages this server served may call it.`;
+  }
+  return null;
+}
+
+function parseHostHeader(host: string): URL | null {
+  try {
+    return new URL(`http://${host}`);
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized === "::1" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(normalized)
+  );
+}
+
+// Same port on a loopback name counts as this server's own page: the page and
+// the request may use different spellings (localhost vs 127.0.0.1), but only
+// this process listens on that port. "null" (a sandboxed frame, a file://
+// page) never matches.
+function isOwnLoopbackOrigin(origin: string, requestHost: URL | null): boolean {
+  if (!requestHost) {
+    return false;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !isLoopbackHostname(parsed.hostname)) {
+    return false;
+  }
+  const defaultPort = parsed.protocol === "https:" ? "443" : "80";
+  return (parsed.port || defaultPort) === (requestHost.port || defaultPort);
 }
 
 function firstHeaderValue(value: string | string[] | undefined): string | undefined {

@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { approvalPolicyModeSchema, approvalPolicyRuleSchema, providerIdSchema } from "@/core/contracts";
+import {
+  approvalPolicyModeSchema,
+  approvalPolicyRuleSchema,
+  jsonValueSchema,
+  providerIdSchema
+} from "@/core/contracts";
 import {
   APP_CONFIG_VERSION,
   APPROVALS_CONFIG_VERSION,
@@ -10,6 +15,7 @@ import {
   DEFAULT_GATEWAY_WEBSOCKET_PATH,
   DEFAULT_IMAGE_DEFAULT_PROVIDER_ID,
   DEFAULT_IMAGE_POLL_INTERVAL_MS,
+  DEFAULT_LLAMA_CPP_BASE_URL,
   DEFAULT_LM_STUDIO_BASE_URL,
   DEFAULT_LM_STUDIO_MODEL,
   DEFAULT_OLLAMA_BASE_URL,
@@ -32,6 +38,15 @@ const envSecretIdSchema = z
   .min(1)
   .max(128)
   .regex(/^[A-Z][A-Z0-9_]{0,127}$/);
+// Names of environment variables, as they are spelled (proxy and CA settings
+// are often lowercase): a letter or underscore, then letters, digits, and
+// underscores, so a typo such as `=x` or `FOO BAR` is caught at load.
+const environmentVariableNameSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/u, "must be an environment variable name");
+const environmentVariableNamesSchema = z.array(environmentVariableNameSchema).max(256);
 const jsonPointerSchema = z
   .string()
   .min(1)
@@ -70,6 +85,9 @@ const logLevelSchema = z.enum(["debug", "error", "info", "warn"]);
 const urlLikeStringSchema = z.string().min(1).max(4096);
 const positivePortSchema = z.number().int().min(1).max(65535);
 const positiveTimeoutSchema = z.number().int().positive().max(600_000);
+// Time to a model's first token: a local model can read a long prompt for many
+// minutes before it sends anything, far past the cap on other timeouts.
+const firstTokenTimeoutSchema = z.number().int().positive().max(86_400_000);
 
 const imageWorkflowPathsSchema = z
   .object({
@@ -79,18 +97,71 @@ const imageWorkflowPathsSchema = z
   })
   .strict();
 
+// Retries after a model request's first attempt, for 408/429/5xx and network
+// failures, with exponential backoff that honours Retry-After. Omitted: 3.
+const providerMaxRetriesSchema = z.number().int().min(0).max(10);
+// Extra top-level request fields for an OpenAI-compatible server, for
+// parameters the runtime has no setting for. They may override sampling
+// fields but never model/messages/tools/tool_choice/stream/stream_options.
+export const RESERVED_REQUEST_EXTRAS_KEYS: readonly string[] = [
+  "messages",
+  "model",
+  "stream",
+  "stream_options",
+  "tool_choice",
+  "tools"
+];
+const providerRequestExtrasSchema = z
+  .record(z.string().min(1).max(128), jsonValueSchema)
+  .superRefine((extras, context) => {
+    for (const key of Object.keys(extras)) {
+      if (RESERVED_REQUEST_EXTRAS_KEYS.includes(key)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `"${key}" is set by aia on every request and cannot be given in requestExtras`,
+          path: [key]
+        });
+      }
+    }
+  });
+
 const lmStudioProviderConfigSchema = z
   .object({
     baseUrl: urlLikeStringSchema,
     enabled: z.boolean(),
     headers: z.record(z.string(), secretInputSchema),
+    maxRetries: providerMaxRetriesSchema.optional(),
     model: z.string().min(1).max(256),
+    requestExtras: providerRequestExtrasSchema.optional(),
     // Budget for the first streamed token (prompt evaluation can be slow on big
     // local models); separate from the inter-token idle window below.
-    streamFirstTokenTimeoutMs: positiveTimeoutSchema.optional(),
+    streamFirstTokenTimeoutMs: firstTokenTimeoutSchema.optional(),
     // Abort a streaming response only after this many ms with no new tokens
     // (inactivity), instead of an absolute deadline that kills healthy long
     // streams. `timeoutMs` still bounds non-streaming requests.
+    streamIdleTimeoutMs: positiveTimeoutSchema.optional(),
+    timeoutMs: positiveTimeoutSchema
+  })
+  .strict();
+
+// llama.cpp's llama-server, single-model or router mode. See docs/PROVIDERS.md.
+const llamaCppProviderConfigSchema = z
+  .object({
+    // Sent as `Authorization: Bearer <key>` when the server runs with --api-key.
+    apiKey: secretInputSchema.optional(),
+    baseUrl: urlLikeStringSchema,
+    // A separate server for memory embeddings: `/v1/embeddings` needs a
+    // server started with --embeddings and an embedding model, which is
+    // usually not the chat server. Omitted: baseUrl (a router that serves both).
+    embeddingsBaseUrl: urlLikeStringSchema.optional(),
+    enabled: z.boolean(),
+    headers: z.record(z.string(), secretInputSchema),
+    maxRetries: providerMaxRetriesSchema.optional(),
+    // Required in router mode, where it selects (and auto-loads) the model; a
+    // single-model server ignores it.
+    model: z.string().min(1).max(256).optional(),
+    requestExtras: providerRequestExtrasSchema.optional(),
+    streamFirstTokenTimeoutMs: firstTokenTimeoutSchema.optional(),
     streamIdleTimeoutMs: positiveTimeoutSchema.optional(),
     timeoutMs: positiveTimeoutSchema
   })
@@ -105,8 +176,9 @@ const ollamaProviderConfigSchema = z
     enabled: z.boolean(),
     headers: z.record(z.string(), secretInputSchema),
     keepAlive: z.string().min(1).max(64).optional(),
+    maxRetries: providerMaxRetriesSchema.optional(),
     model: z.string().min(1).max(256).optional(),
-    streamFirstTokenTimeoutMs: positiveTimeoutSchema.optional(),
+    streamFirstTokenTimeoutMs: firstTokenTimeoutSchema.optional(),
     streamIdleTimeoutMs: positiveTimeoutSchema.optional(),
     timeoutMs: positiveTimeoutSchema
   })
@@ -143,6 +215,7 @@ const voiceProviderConfigSchema = z
 const providersConfigSchema = z
   .object({
     imageProviders: z.record(z.string(), imageProviderConfigSchema),
+    llamaCpp: llamaCppProviderConfigSchema,
     lmStudio: lmStudioProviderConfigSchema,
     ollama: ollamaProviderConfigSchema,
     voiceProviders: z.record(z.string(), voiceProviderConfigSchema)
@@ -218,8 +291,9 @@ const tunnelConfigSchema = z
 const memoryConfigSchema = z
   .object({
     // Trigger threshold-based session compaction when the last model request used
-    // at least this many input tokens. Unset: derived from
-    // runtime.modelSettings.contextWindowTokens (80%) or a 100k fallback. 0 disables.
+    // at least this many input tokens. Unset: 80% of the context window
+    // (runtime.modelSettings.contextWindowTokens, else the window the provider
+    // reports) or a 100k fallback. 0 disables.
     autoCompactThresholdTokens: z.number().int().min(0).max(100_000_000).optional(),
     candidateLimit: z.number().int().positive().max(1000),
     chatSessionRoot: z.string().min(1),
@@ -265,6 +339,10 @@ const runtimeModelSettingsSchema = z
 
 const runtimePromptBudgetsSchema = z
   .object({
+    // All the skills the prompt restates after compaction folded their loads
+    // away ("Active Skills"), together. Past it a skill is cut, or named with
+    // its SKILL.md to read, rather than restated whole.
+    activeSkillsChars: z.number().int().min(0).max(10_000_000),
     instructionDocChars: z.number().int().min(0).max(10_000_000),
     memorySummaryChars: z.number().int().min(0).max(10_000_000)
   })
@@ -309,6 +387,27 @@ const toolsConfigSchema = z
   .strict();
 
 /**
+ * Agent Skills (docs/SKILLS.md): where SKILL.md folders are found beyond the
+ * project's `.aia/skills` and `.agents/skills` and the operator's
+ * `~/.aia/skills` and `~/.agents/skills`, and which of them to leave out.
+ */
+const skillsConfigSchema = z
+  .object({
+    // Include the skills aia ships (bundled-skills/), such as skill-creator.
+    bundled: z.boolean(),
+    // Skill names, or SKILL.md paths, that are listed but never used.
+    disabled: z.array(z.string().min(1).max(4096)).max(1024),
+    // false turns skills off: no catalog, no `skill` tool, no `$name` mentions.
+    enabled: z.boolean(),
+    // More skill roots, searched after the project and user roots, in order.
+    extraRoots: z.array(z.string().min(1).max(4096)).max(64),
+    // The catalog's budget in characters. Unset: 2% of the model's context
+    // window, or 8,000 characters when the window is unknown.
+    maxCatalogChars: z.number().int().min(0).max(1_000_000).optional()
+  })
+  .strict();
+
+/**
  * Per-agent settings for long-lived interactive sessions.
  *
  * `args` are appended when the agent is started interactively instead of as a
@@ -324,6 +423,12 @@ const externalAgentInteractiveConfigSchema = z
     args: z.array(z.string().min(1)).max(64),
     /** Milliseconds of byte silence before a turn is considered finished. */
     idleMs: z.number().int().positive().max(600_000),
+    /**
+     * Regex (source form) the bottom of the rendered screen must match before
+     * the agent may send: the CLI's own input prompt. Without it, only a
+     * consent or menu screen blocks a send.
+     */
+    inputPattern: z.string().min(1).max(512).optional(),
     /** Regex (source form) matched against the rendered screen to detect the input prompt. */
     readyPattern: z.string().min(1).max(512).optional(),
     /** Milliseconds the rendered screen must stay unchanged before the turn ends. */
@@ -431,7 +536,7 @@ const externalAgentsConfigSchema = z
      * approvals bypassed, so they must not inherit the whole shell. Empty by
      * default — see docs/EXTERNAL_AGENTS.md for a starter list.
      */
-    passEnv: z.array(z.string().min(1).max(256)).max(256).default([]),
+    passEnv: environmentVariableNamesSchema.default([]),
     pollIntervalMs: z.number().int().positive().max(60_000),
     stateRoot: z.string().min(1)
   })
@@ -508,14 +613,30 @@ const mcpServerProvenanceSchema = z
   })
   .strict();
 
+// Up to an hour: a tool that reports progress keeps resetting its timeout.
+const mcpTimeoutSchema = z.number().int().positive().max(3_600_000);
+// Exact tool names as the server lists them.
+const mcpToolNamesSchema = z.array(z.string().min(1).max(512)).max(2048);
+
 const mcpServerBaseConfigSchema = z
   .object({
     description: z.string().min(1).max(2000).optional(),
+    // These tools are never listed or callable. Applied after enabledTools.
+    disabledTools: mcpToolNamesSchema.optional(),
     enabled: z.boolean(),
+    // Only these tools are listed and callable (even [] means none).
+    enabledTools: mcpToolNamesSchema.optional(),
     provenance: mcpServerProvenanceSchema.optional(),
     required: z.boolean(),
+    // Each phase of connecting (starting and the handshake, then each listing)
+    // gets this long. Default 30 s.
+    startupTimeoutMs: mcpTimeoutSchema.optional(),
     tags: z.array(z.string().min(1).max(128)).max(64),
+    // The older single setting: used for startupTimeoutMs and toolTimeoutMs
+    // when those are not set.
     timeoutMs: positiveTimeoutSchema.optional(),
+    // How long a tool call may go without progress. Default 300 s.
+    toolTimeoutMs: mcpTimeoutSchema.optional(),
     // Approval trust for this server's tools. "trusted" auto-approves them via a
     // synthesized mcp_server allow rule (an explicit operator deny rule still
     // wins); omitted/"prompt" means every tool call is gated by the approval
@@ -530,16 +651,52 @@ const mcpStdioServerConfigSchema = mcpServerBaseConfigSchema
     command: z.string().min(1),
     cwd: z.string().min(1).optional(),
     env: z.record(z.string(), secretInputSchema).default({}),
+    // Variables copied from aia's own environment on top of the base allowlist
+    // (see src/core/process/environment.ts); `env` still wins.
+    passEnv: environmentVariableNamesSchema.optional(),
     stderr: z.enum(["ignore", "inherit", "pipe"]).default("pipe"),
     type: z.literal("stdio")
   })
   .strict();
 
+// OAuth for a remote server (`aia mcp login <name>`). Only needed when the
+// server's authorization server does not support dynamic client registration,
+// or wants specific scopes or a fixed redirect port.
+const mcpOAuthConfigSchema = z
+  .object({
+    callbackPort: positivePortSchema.optional(),
+    clientId: z.string().min(1).max(512).optional(),
+    clientSecret: secretInputSchema.optional(),
+    scopes: z.array(z.string().min(1).max(256)).max(64).optional()
+  })
+  .strict();
+
+// A server's (or template's) name: any characters, since names like
+// "brave search" or "@playwright/mcp" are common, but not empty and no longer
+// than a status can report. An id built from one goes through toMcpIdSegment.
+const mcpServerNameSchema = z.string().min(1).max(128);
+
+// An MCP server is reached over http(s) only (security review M11): a
+// `file:` or custom-scheme URL is never a server, and plain http to another
+// machine is warned about when it connects.
+const mcpServerUrlSchema = urlLikeStringSchema.refine(
+  (value) => {
+    try {
+      const { protocol } = new URL(value);
+      return protocol === "http:" || protocol === "https:";
+    } catch {
+      return false;
+    }
+  },
+  { message: "must be an http:// or https:// URL" }
+);
+
 const mcpHttpServerConfigSchema = mcpServerBaseConfigSchema
   .extend({
     headers: z.record(z.string(), secretInputSchema).default({}),
+    oauth: mcpOAuthConfigSchema.optional(),
     type: z.enum(["auto", "sse", "streamable-http"]),
-    url: urlLikeStringSchema
+    url: mcpServerUrlSchema
   })
   .strict();
 
@@ -578,9 +735,19 @@ const mcpServerTemplateSchema = z
 
 const mcpConfigSchema = z
   .object({
+    // How long an MCP server's question (elicitation) waits for an answer
+    // before it is declined. Default 10 minutes.
+    elicitationTimeoutMs: mcpTimeoutSchema.optional(),
     imports: z.record(z.string(), mcpImportConfigSchema),
-    servers: z.record(z.string(), mcpServerConfigSchema),
-    templates: z.record(z.string(), mcpServerTemplateSchema),
+    // How long a request waits, from startup, for optional servers still
+    // connecting; later ones join once connected. Default 1000; 0 waits for
+    // each server's full startup timeout.
+    optionalStartupGraceMs: z.number().int().min(0).max(600_000).optional(),
+    // Variables every stdio server gets from aia's environment on top of the
+    // base allowlist. Needs workspace trust when a workspace config sets it.
+    passEnv: environmentVariableNamesSchema.optional(),
+    servers: z.record(mcpServerNameSchema, mcpServerConfigSchema),
+    templates: z.record(mcpServerNameSchema, mcpServerTemplateSchema),
     // Hot-reload MCP servers when a config/import file changes. Omitted is
     // treated as true. Disable for long-lived server processes that should not
     // reconnect mid-session on unrelated config edits.
@@ -659,6 +826,7 @@ const appConfigObjectSchema = z
     providers: providersConfigSchema,
     runtime: runtimeConfigSchema,
     secrets: secretsConfigSchema,
+    skills: skillsConfigSchema,
     tools: toolsConfigSchema,
     tunnel: tunnelConfigSchema,
     voice: voiceConfigSchema
@@ -691,7 +859,10 @@ export const approvalSettingsSchema = z
   .strict();
 
 export const appConfigFragmentSchema = appConfigObjectSchema.deepPartial();
-export const approvalSettingsFragmentSchema = approvalSettingsSchema.deepPartial();
+// Rules are never merged field by field (a file's list replaces or extends
+// another's), so each must be complete in its own file, where an error can
+// name that file.
+export const approvalSettingsFragmentSchema = approvalSettingsSchema.partial();
 
 export type AppConfig = z.infer<typeof appConfigSchema>;
 export type AppConfigFragment = z.infer<typeof appConfigFragmentSchema>;
@@ -706,6 +877,10 @@ export type RuntimeModelSettings = z.infer<typeof runtimeModelSettingsSchema>;
 export type SecretInput = z.infer<typeof secretInputSchema>;
 export type SecretProviderConfig = z.infer<typeof secretProviderConfigSchema>;
 export type SecretRef = z.infer<typeof secretRefSchema>;
+export type SkillsConfig = z.infer<typeof skillsConfigSchema>;
+
+/** The `skills` section's defaults: the default config's, and skill discovery's when it is given none. */
+export const DEFAULT_SKILLS_CONFIG: SkillsConfig = { bundled: true, disabled: [], enabled: true, extraRoots: [] };
 export type ToolsConfig = z.infer<typeof toolsConfigSchema>;
 export type VoiceConfig = z.infer<typeof voiceConfigSchema>;
 export type VoiceProviderConfig = z.infer<typeof voiceProviderConfigSchema>;
@@ -780,8 +955,18 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
             // `--no-alt-screen` keeps Codex in inline mode, preserving scrollback;
             // the alternate screen is the single biggest obstacle to reliable
             // capture, so avoiding it helps both the model and the human window.
-            args: ["--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"],
+            // `check_for_update_on_startup=false` keeps Codex from opening on
+            // its "Update available" screen, where the first send chose
+            // "Update now" and started `brew upgrade`.
+            args: [
+              "--no-alt-screen",
+              "--dangerously-bypass-approvals-and-sandbox",
+              "-c",
+              "check_for_update_on_startup=false"
+            ],
             idleMs: 2_000,
+            // Codex's input box; nothing is sent until it is on screen.
+            inputPattern: "Ask Codex to do anything",
             stabilityMs: 1_000,
             turnTimeoutMs: 600_000
           },
@@ -873,12 +1058,22 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
           timeoutMs: 300_000
         }
       },
+      // Enabled like the others: an adapter costs nothing until a turn asks
+      // for it with runtime.defaultProvider "llama_cpp".
+      llamaCpp: {
+        baseUrl: DEFAULT_LLAMA_CPP_BASE_URL,
+        enabled: true,
+        headers: {},
+        streamFirstTokenTimeoutMs: 1_800_000,
+        streamIdleTimeoutMs: 60_000,
+        timeoutMs: 120_000
+      },
       lmStudio: {
         baseUrl: DEFAULT_LM_STUDIO_BASE_URL,
         enabled: true,
         headers: {},
         model: DEFAULT_LM_STUDIO_MODEL,
-        streamFirstTokenTimeoutMs: 300_000,
+        streamFirstTokenTimeoutMs: 1_800_000,
         streamIdleTimeoutMs: 60_000,
         timeoutMs: 120_000
       },
@@ -886,7 +1081,7 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
         baseUrl: DEFAULT_OLLAMA_BASE_URL,
         enabled: true,
         headers: {},
-        streamFirstTokenTimeoutMs: 300_000,
+        streamFirstTokenTimeoutMs: 1_800_000,
         streamIdleTimeoutMs: 60_000,
         timeoutMs: 120_000
       },
@@ -916,6 +1111,7 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
         repetitionPenalty: 1.1
       },
       promptBudgets: {
+        activeSkillsChars: 16_000,
         instructionDocChars: 12_000,
         memorySummaryChars: 4_000
       },
@@ -935,6 +1131,7 @@ export function createDefaultAppConfig(params: { userStateDirectory: string }): 
         }
       }
     },
+    skills: structuredClone(DEFAULT_SKILLS_CONFIG),
     tools: {
       exclude: [],
       include: [],
@@ -971,6 +1168,39 @@ export const DEFAULT_APPROVAL_SETTINGS: ApprovalSettings = {
   // and silently disabled the destructive-command deny rule (security review
   // H1). tests/unit/approval-defaults.test.ts exercises the shipped rules.
   rules: [
+    // These come before the read-only allow: the first matching allow/ask rule
+    // decides, and each is an inspection command used in a way that writes
+    // files or runs other programs. Commands are matched one at a time, so a
+    // pattern anchored at ^ sees each command of a pipeline or `;` list.
+    {
+      id: "rule.command.read.sed-writes.ask",
+      mode: "ask",
+      notes: "sed that edits in place, runs a script file, or whose script writes files (w) or runs commands (e).",
+      pattern: "^sed\\b.*(\\s-[A-Za-z]*[if]|\\s--(in-place|file)\\b|[\\s'\";{}0-9$/=!][ewW]\\b)",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.read.find-actions.ask",
+      mode: "ask",
+      notes:
+        "find that runs commands (-exec, -execdir, -ok, -okdir), deletes (-delete), or writes files (-fprint, -fls).",
+      pattern: "^find\\b.*\\s-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)\\b",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.read.rg-preprocessor.ask",
+      mode: "ask",
+      notes: "rg --pre runs a program on every file it searches.",
+      pattern: "^rg\\b.*\\s--pre\\b",
+      targetKind: "command"
+    },
+    {
+      id: "rule.command.read.git-diff-writes.ask",
+      mode: "ask",
+      notes: "git diff that runs an external diff program (--ext-diff) or writes a file (--output).",
+      pattern: "^git\\s+diff\\b.*\\s--(ext-diff|output)\\b",
+      targetKind: "command"
+    },
     {
       id: "rule.command.read.allow",
       mode: "allow",

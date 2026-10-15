@@ -5,7 +5,9 @@ import path from "node:path";
 import {
   DEFAULT_APPROVAL_SETTINGS,
   createDefaultAppConfig,
+  noWorkspaceTrustNeeded,
   type LanguageModelAdapter,
+  type LanguageModelCallOptions,
   type LanguageModelDescriptor,
   type LanguageModelProvider,
   type LanguageModelRequest,
@@ -22,9 +24,15 @@ import type {
   ModelToolCallProposal
 } from "@/core/contracts";
 
+// A scripted turn gets the call's options too, so a test can act on the
+// request's abort signal the way a real provider does.
 type ScriptedLanguageModelTurn =
   | LanguageModelResponse
-  | ((request: LanguageModelRequest, turnIndex: number) => LanguageModelResponse | Promise<LanguageModelResponse>);
+  | ((
+      request: LanguageModelRequest,
+      turnIndex: number,
+      options: LanguageModelCallOptions
+    ) => LanguageModelResponse | Promise<LanguageModelResponse>);
 
 export type ExampleContext = {
   loaded: LoadedAIAgentConfig;
@@ -52,7 +60,10 @@ export class ScriptedLanguageModelAdapter implements LanguageModelAdapter {
     this.providerId = options.providerId;
   }
 
-  async generate(request: LanguageModelRequest): Promise<LanguageModelResponse> {
+  async generate(
+    request: LanguageModelRequest,
+    options: LanguageModelCallOptions = {}
+  ): Promise<LanguageModelResponse> {
     this.requests.push(request);
     const response = this.options.responses[this.turnIndex];
     if (!response) {
@@ -60,11 +71,14 @@ export class ScriptedLanguageModelAdapter implements LanguageModelAdapter {
     }
 
     this.turnIndex += 1;
-    return typeof response === "function" ? await response(request, this.turnIndex - 1) : response;
+    return typeof response === "function" ? await response(request, this.turnIndex - 1, options) : response;
   }
 
-  async *stream(request: LanguageModelRequest): AsyncIterable<LanguageModelStreamEvent> {
-    const response = await this.generate(request);
+  async *stream(
+    request: LanguageModelRequest,
+    options: LanguageModelCallOptions = {}
+  ): AsyncIterable<LanguageModelStreamEvent> {
+    const response = await this.generate(request, options);
     const reasoning = typeof response.metadata.reasoning === "string" ? response.metadata.reasoning : "";
     if (reasoning.length > 0) {
       yield { delta: reasoning, kind: "response.reasoning" };
@@ -283,12 +297,7 @@ function createExampleLoadedConfig(params: {
   return {
     approvals: DEFAULT_APPROVAL_SETTINGS,
     config,
-    workspaceTrust: {
-      fingerprint: null,
-      required: false,
-      trusted: true,
-      untrustedProviderNames: []
-    },
+    workspaceTrust: noWorkspaceTrustNeeded(),
     paths: {
       globalApprovalsPath: path.join(params.userStateDirectory, "approvals.global.jsonc"),
       globalConfigPath: path.join(params.userStateDirectory, "config.global.jsonc"),

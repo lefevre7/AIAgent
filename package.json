@@ -55,9 +55,12 @@
     "test:coverage": "vitest run --coverage --config vitest.coverage.config.ts",
     "test:live": "vitest run --config vitest.live.config.ts",
     "test:live:browser": "vitest run --config vitest.live.config.ts tests/live/browser-service.live.test.ts",
+    "test:live:cli": "vitest run --config vitest.live.config.ts tests/live/cli-workspace.live.test.ts",
+    "test:live:commands": "vitest run --config vitest.live.config.ts tests/live/command-tools.live.test.ts",
     "test:live:external-agents": "vitest run --config vitest.live.config.ts tests/live/external-agent-codex.live.test.ts",
     "test:live:external-agents-interactive": "vitest run --config vitest.live.config.ts tests/live/external-agent-interactive.live.test.ts",
     "test:live:image": "vitest run --config vitest.live.config.ts tests/live/image-service.live.test.ts",
+    "test:live:llama-cpp": "vitest run --config vitest.live.config.ts tests/live/llama-cpp.live.test.ts",
     "test:live:lm-studio": "vitest run --config vitest.live.config.ts tests/live/lm-studio.live.test.ts",
     "test:live:memory": "vitest run --config vitest.live.config.ts tests/live/memory-embeddings.live.test.ts",
     "test:live:mcp": "vitest run --config vitest.live.config.ts tests/live/mcp-manager.live.test.ts",
@@ -68,7 +71,7 @@
     "validate:penultimate": "npm run typecheck && npm run lint && npm run format:check && npm run test:coverage && npm run test:e2e && npm run test:live"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.28.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@xterm/headless": "^5.5.0",
     "express": "^5.1.0",
     "jsonc-parser": "^3.3.1",
@@ -80,6 +83,7 @@
     "react-dom": "^19.0.0",
     "sqlite": "^5.1.1",
     "ws": "^8.20.0",
+    "yaml": "^2.9.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {

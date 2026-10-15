@@ -11,7 +11,19 @@ import {
 } from "@/core/contracts/common";
 
 export const mcpTransportTypeSchema = z.enum(["auto", "sse", "stdio", "streamable-http"]);
-export const mcpServerConnectionStateSchema = z.enum(["connected", "connecting", "degraded", "disabled", "failed"]);
+// `untrusted`: declared by a workspace config that has not been trusted, so it
+// was never started (security review M11; see src/core/config/trust.ts).
+// `needs_login`: an HTTP server that wants OAuth credentials aia does not have
+// yet (`aia mcp login <name>`).
+export const mcpServerConnectionStateSchema = z.enum([
+  "connected",
+  "connecting",
+  "degraded",
+  "disabled",
+  "failed",
+  "needs_login",
+  "untrusted"
+]);
 export const mcpCapabilityKindSchema = z.enum(["prompt", "resource", "resource_template", "server_template", "tool"]);
 export const mcpCapabilityAccessSchema = z.enum(["api_only", "model_and_api"]);
 export const mcpImportFormatSchema = z.enum(["claude_desktop", "generic_mcp_servers_json", "roo_project"]);
@@ -37,6 +49,8 @@ export const mcpServerStatusSchema = z
       .strict(),
     checkedAt: isoTimestampSchema,
     error: structuredErrorSchema.optional(),
+    // The server's own usage notes, from its initialize result.
+    instructions: z.string().min(1).optional(),
     lastConnectedAt: isoTimestampSchema.optional(),
     serverName: z.string().min(1).max(128),
     state: mcpServerConnectionStateSchema,
@@ -191,6 +205,10 @@ export const mcpServerSummarySchema = z
   .object({
     capabilities: mcpServerStatusSchema.shape.capabilities,
     error: z.string().min(1).optional(),
+    // The error's code, so a surface can tell kinds of failure apart
+    // (mcp_reconnect_gave_up, needs-login) without reading the message.
+    errorCode: z.string().min(1).max(128).optional(),
+    instructions: z.string().min(1).optional(),
     lastConnectedAt: isoTimestampSchema.optional(),
     serverName: z.string().min(1).max(128),
     state: mcpServerConnectionStateSchema,
@@ -207,6 +225,13 @@ export const mcpServerSummarySchema = z
   })
   .strict();
 
+/**
+ * What the `mcp.updated` event carries: a server's state, without its tools or
+ * instructions. It fires on every transition and reaches every subscriber, so
+ * a surface that wants the tools asks `mcp.list`.
+ */
+export const mcpServerUpdateSchema = mcpServerSummarySchema.omit({ instructions: true, tools: true });
+
 export type MCPCapability = z.infer<typeof mcpCapabilitySchema>;
 export type MCPCapabilityAccess = z.infer<typeof mcpCapabilityAccessSchema>;
 export type MCPCapabilityKind = z.infer<typeof mcpCapabilityKindSchema>;
@@ -220,6 +245,7 @@ export type MCPServerConnectionState = z.infer<typeof mcpServerConnectionStateSc
 export type MCPServerProvenance = z.infer<typeof mcpServerProvenanceSchema>;
 export type MCPServerStatus = z.infer<typeof mcpServerStatusSchema>;
 export type MCPServerSummary = z.infer<typeof mcpServerSummarySchema>;
+export type MCPServerUpdate = z.infer<typeof mcpServerUpdateSchema>;
 export type MCPServerTemplateCapability = z.infer<typeof mcpServerTemplateCapabilitySchema>;
 export type MCPTemplateBootstrapStep = z.infer<typeof mcpTemplateBootstrapStepSchema>;
 export type MCPToolCapability = z.infer<typeof mcpToolCapabilitySchema>;

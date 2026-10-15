@@ -9,7 +9,6 @@ import {
   ToolRuntime,
   createDefaultToolRegistry,
   createDefaultToolRuntime,
-  createExternalAgentApprovalTargetResolver,
   createToolApprovalDecider,
   toolCallRecordSchema,
   turnRecordSchema,
@@ -101,13 +100,10 @@ describe("external-agent tool", () => {
         }
       ]
     };
+    // No resolveAdditionalTargets: the tool adds the agent and the command
+    // line to its own approval (resolveApprovalScope).
     const runtime = new ToolRuntime({
-      approvalDecider: createToolApprovalDecider({
-        resolveAdditionalTargets: createExternalAgentApprovalTargetResolver({
-          service
-        }),
-        settings
-      }),
+      approvalDecider: createToolApprovalDecider({ settings }),
       registry: createDefaultToolRegistry({
         externalAgentService: service
       })
@@ -165,10 +161,7 @@ describe("external-agent tool", () => {
       ]
     };
     const runtime = new ToolRuntime({
-      approvalDecider: createToolApprovalDecider({
-        resolveAdditionalTargets: createExternalAgentApprovalTargetResolver({ service }),
-        settings
-      }),
+      approvalDecider: createToolApprovalDecider({ settings }),
       registry: createDefaultToolRegistry({ externalAgentService: service })
     });
     const session = buildExternalAgentSession({

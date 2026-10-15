@@ -71,9 +71,17 @@ export async function resolveConfigPaths(params: {
   };
 }
 
-export function resolveAbsolutePath(value: string, baseDirectory: string): string {
+/** `value` as an absolute path: `~` is the home directory, and a relative path is under `baseDirectory`. */
+export function resolveAbsolutePath(
+  value: string,
+  baseDirectory: string,
+  homeDirectory: string = os.homedir()
+): string {
+  if (value === "~") {
+    return homeDirectory;
+  }
   if (value.startsWith("~/")) {
-    return path.join(os.homedir(), value.slice(2));
+    return path.join(homeDirectory, value.slice(2));
   }
 
   return path.isAbsolute(value) ? value : path.resolve(baseDirectory, value);

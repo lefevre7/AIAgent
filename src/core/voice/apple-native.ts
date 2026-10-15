@@ -497,7 +497,10 @@ export class AppleNativeVoiceAdapter implements VoiceAdapter {
       return helperBinaryPath;
     }
 
+    // `-parse-as-library`: the helper's entry point is an `@main` type, which
+    // swiftc refuses in a single file not named main.swift without it.
     const compileResult = await runProcess(this.swiftCompilerPath, [
+      "-parse-as-library",
       helperSourcePath,
       "-framework",
       "AVFoundation",

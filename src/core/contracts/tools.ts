@@ -35,6 +35,13 @@ export const toolSideEffectSchema = z.enum([
   "workspace_write"
 ]);
 
+/**
+ * Call metadata naming the tools a call made callable for the rest of its
+ * session (`tool_search` sets it to the tools it found); the agent loop adds
+ * them to the session's tools, whatever the tool that set it is called.
+ */
+export const ACTIVATES_TOOLS_METADATA_KEY = "activatesTools";
+
 export const toolApprovalModeSchema = z.enum(["always", "ask", "never"]);
 export const toolStreamingModeSchema = z.enum(["chunked", "none", "progress"]);
 export const toolOutputKindSchema = z.enum(["artifact", "json", "markdown", "mixed", "text"]);

@@ -47,7 +47,7 @@ describe("assistant token streaming", () => {
 
         try {
           const run = await created.handle.sendMessage({ text: "Say hello." });
-          await run.wait();
+          await run.wait({ timeoutMs: 10_000 });
         } finally {
           unsubscribe();
         }
@@ -104,7 +104,7 @@ describe("assistant token streaming", () => {
 
         try {
           const run = await created.handle.sendMessage({ text: "Make the site." });
-          await run.wait();
+          await run.wait({ timeoutMs: 10_000 });
         } finally {
           unsubscribe();
         }
@@ -219,7 +219,7 @@ describe("assistant token streaming", () => {
 
         try {
           const run = await created.handle.sendMessage({ text: "Hi." });
-          await run.wait();
+          await run.wait({ timeoutMs: 10_000 });
         } finally {
           unsubscribe();
         }

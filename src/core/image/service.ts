@@ -1,4 +1,5 @@
 import type { AppConfig, ImageProviderConfig } from "@/core/config/schema";
+import { materializeSecretRecord, withBearerApiKey } from "@/core/config/secrets";
 import type {
   ImageGenerationAdapter,
   ImageGenerationInput,
@@ -127,28 +128,9 @@ export function createImageServiceFromConfig(
 }
 
 function materializeHeaders(providerConfig: ImageProviderConfig): Record<string, string> {
-  const headers = Object.fromEntries(
-    Object.entries(providerConfig.headers).map(([key, value]) => {
-      if (typeof value !== "string") {
-        throw new Error(
-          `Image provider has unresolved secret-backed header "${key}". Use resolvedConfig when creating the image service.`
-        );
-      }
-      return [key, value] as const;
-    })
+  return withBearerApiKey(
+    materializeSecretRecord(providerConfig.headers, "Image provider", "header"),
+    providerConfig.apiKey,
+    "Image provider"
   );
-
-  if (providerConfig.apiKey) {
-    if (typeof providerConfig.apiKey !== "string") {
-      throw new Error(
-        "Image provider apiKey contains an unresolved secret reference. Use resolvedConfig when creating the image service."
-      );
-    }
-    const hasAuthorizationHeader = Object.keys(headers).some((key) => key.toLowerCase() === "authorization");
-    if (!hasAuthorizationHeader) {
-      headers.Authorization = `Bearer ${providerConfig.apiKey}`;
-    }
-  }
-
-  return headers;
 }

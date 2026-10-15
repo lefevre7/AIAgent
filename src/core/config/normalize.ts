@@ -36,6 +36,21 @@ export function normalizeConfigFragmentPaths<T extends AppConfigFragment>(fragme
     }
   }
 
+  if (next.skills?.extraRoots) {
+    next.skills.extraRoots = next.skills.extraRoots.map((root) =>
+      typeof root === "string" && root.trim().length > 0 ? resolveAbsolutePath(root, path.resolve(baseDirectory)) : root
+    );
+  }
+  // A path entry (a SKILL.md or its folder) is resolved like extraRoots; a
+  // name stays a name. A `~/` or relative path used to disable nothing.
+  if (next.skills?.disabled) {
+    next.skills.disabled = next.skills.disabled.map((entry) =>
+      typeof entry === "string" && isSkillPathEntry(entry)
+        ? resolveAbsolutePath(entry, path.resolve(baseDirectory))
+        : entry
+    );
+  }
+
   if (next.channels?.whatsapp) {
     resolvePathField(next.channels.whatsapp, "sessionDirectory", baseDirectory);
   }
@@ -107,4 +122,9 @@ function resolvePathField(target: Record<string, unknown>, key: string, baseDire
     return;
   }
   target[key] = resolveAbsolutePath(value, path.resolve(baseDirectory));
+}
+
+/** Whether a `skills.disabled` entry is a path rather than a skill name (names have no slashes). */
+export function isSkillPathEntry(entry: string): boolean {
+  return /[\\/]/u.test(entry) || entry === "~" || entry.startsWith(".");
 }

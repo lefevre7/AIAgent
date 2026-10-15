@@ -14,9 +14,102 @@ combine across layers), while arrays and scalars are replaced wholesale.
    `./.aia` and `./memory` resolve against it, so `aia` started in `~` keeps its state in `~/.aia`.
 4. Environment overrides — `AIA_*` variables (see `src/core/config/env-overrides.ts`).
 
-Secret references (`{ "source": "env" | "file" | "exec", "id": "…" }`) are
-resolved after merging; any string-valued field, including MCP `headers`, accepts
-either a literal string or a secret reference.
+The state directory (`memory.stateRoot`, `./.aia` by default) is created and checked for write access
+before anything else starts, on every surface. When that fails, `aia` stops with the reason and where
+the directory came from: the workspace config that set the workspace root, or, with no config found,
+the directory `aia` started in, plus what to do instead (start somewhere writable, or set
+`memory.stateRoot` / `AIA_MEMORY_STATE_ROOT`). It used to fail later, often after MCP servers had been
+started, with an `EACCES` from wherever the first write happened.
+
+Secret references (`{ "source": "env" | "file" | "exec", "id": "…" }`, or the
+shorthand string `"${ENV_VAR}"`) are resolved after merging; any string-valued field,
+including MCP `headers` and `providers.llamaCpp.apiKey`, accepts either a literal string
+or a secret reference.
+
+## Keeping secrets out of config files
+
+A literal API key in a config file is readable by anything that can read the file (and
+by any tool that prints the config). Reference it instead:
+
+```jsonc
+{
+  "mcp": {
+    "servers": {
+      "drps-jira": {
+        "type": "streamable-http",
+        "url": "https://…/mcp",
+        // from the environment; the shorthand for { "source": "env", "id": "DRPS_API_KEY" }
+        "headers": { "x-drps-api-key": "${DRPS_API_KEY}" },
+        "enabled": true,
+        "required": false,
+        "tags": []
+      }
+    }
+  }
+}
+```
+
+Or keep it in the macOS Keychain (`security add-generic-password -a "$USER" -s drps-api-key -w`
+prompts for the value, so it never lands in your shell history), and read it with an `exec`
+provider. Raw stdout is the secret, so the reference's id is `"value"`:
+
+```jsonc
+{
+  "secrets": {
+    "providers": {
+      "keychain": {
+        "source": "exec",
+        "command": "/usr/bin/security",
+        "args": ["find-generic-password", "-a", "you", "-s", "drps-api-key", "-w"]
+      }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "drps-jira": {
+        // …
+        "headers": { "x-drps-api-key": { "source": "exec", "provider": "keychain", "id": "value" } }
+      }
+    }
+  }
+}
+```
+
+Declared in the user-global config, an `exec` provider needs no trust. Declared in a
+workspace config, it does (see "Workspace config trust").
+
+## Model providers
+
+LM Studio (`providers.lmStudio`), llama.cpp (`providers.llamaCpp`), and Ollama
+(`providers.ollama`) are built in; `runtime.defaultProvider` picks one. Each takes
+`maxRetries` (default 3) and the stream timeouts; the two OpenAI-compatible ones also take
+`requestExtras`. See `docs/PROVIDERS.md` for setup, llama.cpp's router mode and API key,
+retries, and context-overflow recovery.
+
+## Agent Skills
+
+`skills` controls which Agent Skills (SKILL.md folders) the agent can load:
+
+```jsonc
+{
+  "skills": {
+    "bundled": true, // include bundled-skills/ (skill-creator)
+    "disabled": [], // names or SKILL.md paths to list but never use
+    "enabled": true, // false: no catalog, no `skill` tool, no `$name` mentions
+    "extraRoots": [] // more roots; relative to this file's directory, or `~/`
+    // "maxCatalogChars": 8000 // catalog budget; unset (the default) = 2% of the context window, or 8,000 when unknown
+  }
+}
+```
+
+Skills are always read from the project's `.aia/skills` and `.agents/skills` and from
+`~/.aia/skills` and `~/.agents/skills`; `extraRoots` adds to those. Set in a workspace config,
+`extraRoots` needs `aia trust`, and those roots are searched like the project's own: inside
+the project only, ahead of yours. Other lists replace rather than merge, but
+`skills.disabled` adds up across the files: a skill disabled in any of them stays disabled.
+`aia skills disable <name>` adds it to your user config (`~/.aia/config.jsonc` when it exists),
+and `aia skills enable <name>` removes it from every file that lists it, keeping their
+comments. See `docs/SKILLS.md`.
 
 ## User-global config files
 
@@ -43,7 +136,8 @@ Filenames are defined by `GLOBAL_CONFIG_FILE_NAMES` in
 
 MCP servers are keyed by name under `mcp.servers`. Because servers merge by key
 across layers, a server defined globally is available in every workspace, and a
-workspace can add or override servers locally.
+**trusted** workspace can add or override servers locally. Until the workspace config
+is trusted, its MCP entries are held back (see "Workspace config trust" below).
 
 Stdio server:
 
@@ -83,23 +177,65 @@ HTTP server (`type` is one of `auto`, `sse`, `streamable-http`):
 }
 ```
 
+`url` must be `http://` or `https://`. Plain http to another machine works, but warns once
+(`AIA_MCP_INSECURE_URL`): its headers and every tool call travel unencrypted. `headers` go only
+to the server's own origin, never to an OAuth authorization server it points aia at.
+
+Servers connect in parallel and in the background: startup waits only for `required` servers
+and a short grace for the rest (see `docs/MCP.md`, "Startup"). A stdio server runs in its own
+process group (on macOS and Linux), so the Ctrl-C that stops a turn in the REPL reaches `aia` only.
+With `stderr: "pipe"` (the default) its stderr is drained continuously and the last few KB kept, so
+a crash is reported with what the server said.
+
 Optional per-server fields:
 
-- `timeoutMs` — request timeout (ms) applied to every SDK call to the server (connect,
-  tool calls, listings). Omitted → the SDK default (60s).
+- `startupTimeoutMs` (default 30 000) — each phase of connecting (starting and the handshake,
+  then each listing) gets this long.
+- `toolTimeoutMs` (default 300 000) — how long a tool call may go without progress. Progress
+  notifications restart it; it stops while you answer the server's question.
+- `timeoutMs` — the older single setting; used for both of the above when they are unset.
+- `enabledTools` / `disabledTools` — exact tool names as the server lists them. `enabledTools`,
+  when set, is the whole list (even `[]`); `disabledTools` removes names from what is left.
+- `passEnv` (stdio) — variables copied from aia's environment, on top of the base allowlist
+  (`HOME`, `PATH`, `LANG` and the locale categories, proxies, CA bundles, ...; on Windows also
+  `SystemRoot`, `ComSpec`, `PATHEXT` and the profile folders). Nothing else in your shell is
+  inherited, API keys included; `env` sets values outright and wins. Each entry must be a
+  variable name.
+- `oauth` (HTTP) — `{ clientId?, clientSecret?, scopes?, callbackPort? }` for `aia mcp login`,
+  when the server's authorization server has no dynamic client registration or wants
+  specific scopes or a fixed redirect port. `clientSecret` may be a secret reference.
 - `trust` — `"prompt"` (default) or `"trusted"`. A trusted server's tools are
   auto-approved via a synthesized `mcp_server` allow rule; an explicit operator deny rule
   still wins, whether it targets the server (`mcp_server`) or a specific tool
-  (`mcp_tool`/`tool`), so you can trust a server yet deny one of its tools. Otherwise every
+  (`mcp_tool`/`tool`), so you can trust a server yet deny one of its tools. An `mcp_tool` rule
+  matches `<server>.<tool>`, the server's name and the tool's own name as the server lists it
+  (`docs.lookup` for the `lookup` tool of server `docs`); a `tool` rule matches the invocation name
+  the model sees (`mcp_docs_lookup`). Otherwise every
   MCP tool call is gated by the approval policy — MCP tools are never silently executed on
   the strength of a server's `readOnlyHint`. See `docs/MCP.md`.
+
+Top-level `mcp` settings:
+
+- `passEnv` — variables every stdio server gets. A workspace config needs trust to set it.
+- `optionalStartupGraceMs` (default 1 000) — how long a request waits, from startup, for
+  optional servers still connecting. `0` waits for each server's full startup timeout.
+- `elicitationTimeoutMs` (default 600 000) — how long a server's question waits for your
+  answer before it is declined.
+
+`aia mcp add|remove` edit these entries for you (user config by default, `--workspace` for the
+workspace one), keeping the file's comments: the user file that defines a server is the one
+edited, and a new one goes to `~/.aia/config.jsonc` when it exists. Every edit is written
+atomically, and a new file is created readable by its owner only (0600). `aia mcp login <name>`
+signs in to an OAuth server and stores the tokens in `~/.aia/mcp-credentials.json` (mode 0600).
+See `docs/MCP.md`.
 
 Servers can also be pulled in via `mcp.imports` (formats: `claude_desktop`,
 `generic_mcp_servers_json`, `roo_project`) or injected for a single run with the
 `AIA_MCP_CONFIG_JSON` environment variable.
 
-The MCP manager watches every global and workspace config file (plus imported
-files) and hot-reloads when they change, unless `mcp.watch` is set to `false`
+The MCP manager watches every global and workspace config file, imported files, the trust
+store, and the MCP credentials file, and reloads when they change (a sign-in in another
+terminal reconnects the servers that were waiting on it), unless `mcp.watch` is `false`
 (useful for long-lived server processes that should not reconnect on unrelated edits).
 
 Vision note: image content returned by MCP tools is forwarded to the model unless
@@ -139,8 +275,16 @@ floor, a starter list, and why there is no inherit-everything switch.
 | `autoAttachOnStart`       | `true`       | Open the shared terminal window as soon as a session starts.    |
 
 Each agent in `externalAgents.agents` may carry its own `interactive` block (`args`,
-`idleMs`, `readyPattern?`, `stabilityMs`, `turnTimeoutMs`) which wins over the defaults.
-An agent with no `interactive` block can still run one-shot jobs but cannot start a session.
+`idleMs`, `inputPattern?`, `readyPattern?`, `stabilityMs`, `turnTimeoutMs`) which wins over the
+defaults. An agent with no `interactive` block can still run one-shot jobs but cannot start a session.
+
+A send is refused while the bottom of the screen shows something that answers to Enter by choosing:
+"Enter to confirm", "Press enter to continue", or a numbered menu with a selection cursor. The model
+is told a person needs to attach and answer it. `inputPattern` (a regex source) goes further: when set,
+a send is refused unless the bottom of the screen matches it, the CLI's own input prompt. The Codex
+preset sets it to `Ask Codex to do anything`, and adds `-c check_for_update_on_startup=false` so Codex
+does not open on its update screen, where a send once chose "Update now" and started `brew upgrade`.
+If a Codex update changes that prompt, sends are refused with a message naming this key.
 
 **The shipped `args` include the external agent's own approval-bypass flag**
 (`--dangerously-skip-permissions` for Claude, `--dangerously-bypass-approvals-and-sandbox`
@@ -149,13 +293,35 @@ the security section of `docs/EXTERNAL_AGENTS.md` before leaving it enabled.
 
 ## Workspace config trust
 
-Workspace config is discovered by walking **up** from the cwd, and a config file can
-declare secret providers. The `exec` provider runs an arbitrary command; the `file`
-provider reads an arbitrary path. Both are rebased against the config's own directory,
-so merely running `aia` inside a cloned repo used to be enough to execute
-`<repo>/payload.sh` with your environment (security review H3).
+Workspace config is discovered by walking **up** from the cwd, so a cloned repository can put
+an `aia.config.jsonc` (and an `aia.approvals.jsonc`) in your path. Merely running `aia` inside
+one used to be enough to execute `<repo>/payload.sh` through an `exec` secret provider
+(security review H3), or a stdio MCP server's command (M11).
 
-Those two provider kinds are therefore **inert until you trust the config**:
+What a workspace config may only use once you trust it (`TRUST_GATED_SETTINGS` and friends in
+`src/core/config/trust.ts`):
+
+- `exec` and `file` secret providers (they run a command, read a path);
+- `mcp.servers`, `mcp.imports`, `mcp.templates`, and `mcp.passEnv` (even `[]`, which would
+  replace yours): a stdio server's command runs the moment aia starts;
+- where model requests go and what they carry: `providers.lmStudio`/`llamaCpp`/`ollama`
+  `baseUrl`, `headers`, `apiKey`, `requestExtras`, `embeddingsBaseUrl`, and the image and
+  voice providers;
+- `externalAgents`, `gateway`, `tunnel`, and `channels`;
+- `skills.extraRoots` and `memory.extraPaths` (folders read into the model's context);
+- any secret reference (`"${NAME}"` or `{ "source": …, "id": … }`) anywhere else, which
+  would copy one of your environment variables into a setting.
+
+Untrusted, the workspace layer is merged **without** those, and the rest of it applies.
+It can neither start a server nor change one from your user-global config; withheld servers
+show as `untrusted` in `/mcp` and `mcp_status`. One `AIA_UNTRUSTED_CONFIG` warning names what
+was withheld. A value in your own config that references a provider the untrusted workspace
+declares fails with an error saying so.
+
+A workspace `aia.approvals.jsonc` is trusted the same way, but never replaces your settings:
+its rules are added **after** yours, so it can add a refusal or a question but cannot override
+one of your rules. Untrusted, its deny and ask rules and a `defaultMode` at least as strict as
+yours apply; its allow rules and a looser `defaultMode` wait for trust.
 
 ```bash
 aia trust              # show the state and what trusting would allow; asks y/N at a terminal
@@ -164,25 +330,32 @@ aia trust --revoke     # take it back
 aia trust --cwd <path> # act on another workspace
 ```
 
-- Bare `aia trust` never grants on its own. It prints the file, its hash, and one line
-  per provider trusting would enable (`payload: runs /bin/sh -c '…'`,
-  `keyfile: reads /path`), then asks `Trust this exact file now? [y/N]` when stdin is a
-  terminal. Anything but `y`/`yes`, or no terminal at all, leaves it untrusted.
-- Trust is keyed on the config's **path and the SHA-256 of its exact contents**, so a
-  repo you trusted cannot silently grow an `exec` provider later — any edit revokes trust
-  until you grant it again. `aia trust` prints the hash it is acting on.
+- `aia trust` covers both files. Bare `aia trust` never grants on its own: it prints each
+  file, its hash, and one line per thing trusting would enable (`secret provider payload:
+runs /bin/sh -c '…'`, `MCP server docs: runs npx -y …` with its `cwd`, `env` (values whose
+  names look like secrets shown as `<hidden>`), `passEnv`, header names and `trust:
+"trusted"`, the servers an import would load, each withheld setting, each approvals allow
+  rule), then asks `Trust this exact file now? [y/N]` when stdin is a terminal. Anything but
+  `y`/`yes`, or no terminal at all, leaves it untrusted. At a terminal the REPL asks the same
+  before anything starts; a yes it cannot record starts untrusted, saying why.
+- Trust is keyed on the file's **path and the SHA-256 of its exact contents**, plus the
+  contents of every file its `mcp.imports` names, so any edit to the config or to an imported
+  file revokes trust until you grant it again. The hash is of the exact text the loader
+  parsed, not a second read.
+- The path is the file's real directory plus its own name: a workspace config that is a
+  symlink to a trusted file elsewhere needs a grant of its own, since its relative paths
+  resolve where it sits.
 - The record lives in `~/.aia/trust.json`, never in the workspace. A record stored inside
   the repo could simply be shipped pre-populated by whoever wrote the config.
 - A `trust.json` that cannot be read or parsed fails closed with an
   `AIA_TRUST_STORE_UNREADABLE` warning: every workspace config is treated as untrusted,
   and `--grant`/`--revoke` refuse to rewrite it (that would erase every other grant it
   holds) until you fix or remove it.
-- `env` providers are unaffected: they can only read the environment the process already
-  has.
-- Untrusted providers **fail closed and the load continues**, with one
-  `AIA_UNTRUSTED_CONFIG` warning naming them. Nothing breaks unless a config value
-  actually references one, in which case that resolution raises an error telling you to
-  run `aia trust`.
+- `env` secret providers are unaffected: they can only read the environment the process
+  already has, and only through a reference, which is itself gated.
+- No config, approvals, or import file may use a `__proto__`, `constructor`, or `prototype`
+  key: one would set an object's prototype while parsing, hiding what is under it from these
+  checks.
 
 ## Gateway exposure requires a token
 
@@ -206,6 +379,20 @@ looks like. The headers' _values_ are never trusted — honouring `X-Forwarded-F
 127.0.0.1` was security review H2 — so their presence can only make a request less
 trusted. A raw TCP tunnel adds no headers and stays indistinguishable from local traffic:
 declare it with `tunnel.enabled` or set a token.
+
+Without a token, being on this machine is the only credential, and every web page the operator opens
+is on this machine too. So a tokenless request must also name this machine in its `Host` header
+(`localhost`, `*.localhost`, `127.x.x.x` or `[::1]`), which keeps DNS-rebinding pages out, and a
+browser request (one that sends `Origin`) must come from a page this server served (a loopback origin
+on the same port). This covers the gateway WebSocket, the gateway HTTP API, the control-plane API and
+the dashboard pages. It closes two holes: a page on another site opening a WebSocket to the gateway
+(WebSockets are exempt from CORS), and a form on another site posting to `/api/control-plane`
+(security review M1). Clients that are not browsers (the CLI, the SDK, `aia attach`, curl) send no
+`Origin` and are unaffected. With a token, the token is the check, so a tunnel's own `Host` works.
+
+The server's `hostname` and `port` default to `gateway.hostname` / `gateway.port`; `--hostname` /
+`--port` and the `HOSTNAME` / `PORT` environment variables override them. A port already in use stops
+the server with that reason instead of an uncaught error.
 
 ## Channel operator identities
 

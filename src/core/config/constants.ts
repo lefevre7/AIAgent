@@ -24,6 +24,9 @@ export const DEFAULT_LM_STUDIO_BASE_URL = "http://localhost:1234/v1";
 // runtime.defaultModel + providers.lmStudio.model.
 export const DEFAULT_LM_STUDIO_MODEL = "qwen3.8-27b-mlx";
 export const DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
+// llama-server's default listen address. Upstream has announced it will move to
+// :9931 in a future release, so set providers.llamaCpp.baseUrl explicitly.
+export const DEFAULT_LLAMA_CPP_BASE_URL = "http://127.0.0.1:8080/v1";
 export const DEFAULT_GATEWAY_HOSTNAME = DEFAULT_HOSTNAME;
 export const DEFAULT_GATEWAY_PORT = DEFAULT_PORT;
 export const DEFAULT_GATEWAY_WEBSOCKET_PATH = "/api/gateway/ws";
